@@ -88,4 +88,16 @@ describe('chat — no-content and network failures surface as RouterError', () =
     await expect(scoped(() => chat({ messages: [{ role: 'user', content: 'hi' }], model: 'openrouter:x/y' })))
       .rejects.toThrow(RouterError);
   });
+
+  it('a timeout firing DURING body read (fetch() already resolved ok) is still mapped to RouterError', async () => {
+    // Regression: an earlier version only wrapped the fetch() call itself, so an AbortSignal
+    // firing while streaming/parsing the response body (res.json()) let a raw DOMException
+    // escape uncaught — observed live during the A17 eval run against a real slow completion.
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: () => Promise.reject(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' })),
+    })) as unknown as typeof fetch;
+    await expect(scoped(() => chat({ messages: [{ role: 'user', content: 'hi' }], model: 'openrouter:x/y' })))
+      .rejects.toThrow(RouterError);
+  });
 });

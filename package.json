@@ -11,7 +11,10 @@
     "call": "bun run src/api/call.ts",
     "mcp": "bun run src/api/mcp.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "seed:a17": "bun run scripts/seed-a17.ts",
+    "load:a17": "bun run scripts/load-a17-corpus.ts",
+    "eval:a17": "bun run scripts/run-a17-eval.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

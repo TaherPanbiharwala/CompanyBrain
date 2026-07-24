@@ -48,16 +48,20 @@ export interface ChatMessage {
   content: string;
 }
 
-async function errBody(res: Response): Promise<string> {
-  return (await res.text()).slice(0, MAX_ERR_BODY);
-}
-
-/** fetch that maps a timeout/abort/network failure to a RouterError, so a caller (and dispatch's
- *  error sink) can tell "provider down / timed out" apart from a server bug — an unwrapped
- *  TimeoutError/TypeError would otherwise surface as a generic internal_error. */
-async function routerFetch(url: string, init: RequestInit, provider: string): Promise<Response> {
+/** fetch + status-check + json-parse, ALL inside one try/catch. A timeout/abort can fire while
+ *  reading the response body (a slow/streamed completion) just as easily as during the initial
+ *  connection — wrapping only the fetch() call (as an earlier version of this did) let a bare
+ *  DOMException{name:'TimeoutError'} escape from res.json()/res.text() uncaught (observed live
+ *  during the A17 eval run). Every failure mode here — connect timeout, body-read timeout, abort,
+ *  network error, non-2xx status — becomes one catchable RouterError. */
+async function fetchJson(url: string, init: RequestInit, provider: string): Promise<unknown> {
   try {
-    return await fetch(url, init);
+    const res = await fetch(url, init);
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, MAX_ERR_BODY);
+      throw new RouterError(`${provider} ${res.status}: ${body}`);
+    }
+    return await res.json();
   } catch (err) {
     if (err instanceof RouterError) throw err;
     const name = (err as { name?: string } | null)?.name;
@@ -84,7 +88,7 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
   const body: Record<string, unknown> = { model, messages: opts.messages };
   if (scope.zdr) body.provider = { data_collection: 'deny' }; // ZDR routing preference
 
-  const res = await routerFetch(
+  const json = (await fetchJson(
     'https://openrouter.ai/api/v1/chat/completions',
     {
       method: 'POST',
@@ -96,9 +100,7 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
       signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     },
     'openrouter',
-  );
-  if (!res.ok) throw new RouterError(`openrouter ${res.status}: ${await errBody(res)}`);
-  const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  )) as { choices?: { message?: { content?: string } }[] };
   const content = json.choices?.[0]?.message?.content;
   // Distinguish "no content" (tool-call-only, moderation refusal, finish_reason:length with null
   // content) from a real answer — returning '' would make a downstream caller treat it as success.
@@ -112,7 +114,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
   if (provider !== 'openai') throw new RouterError(`embed provider not wired: ${provider}`);
   if (!config.OPENAI_API_KEY) throw new RouterError('OPENAI_API_KEY not set');
 
-  const res = await routerFetch(
+  const json = (await fetchJson(
     'https://api.openai.com/v1/embeddings',
     {
       method: 'POST',
@@ -124,9 +126,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
       signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     },
     'openai',
-  );
-  if (!res.ok) throw new RouterError(`openai ${res.status}: ${await errBody(res)}`);
-  const json = (await res.json()) as { data: { index: number; embedding: number[] }[] };
+  )) as { data: { index: number; embedding: number[] }[] };
   // Reorder by the provider's `index`, never positionally: OpenAI may return items out of input
   // order, and mapping positionally would store each chunk with another chunk's vector (silent
   // retrieval corruption). The count must also match 1:1 with the inputs.

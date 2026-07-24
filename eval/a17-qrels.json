@@ -1,0 +1,52 @@
+[
+  {
+    "id": "q1",
+    "question": "Who is the engineering lead at Northstar Robotics?",
+    "relevantSlugs": ["priya-nair", "northstar-robotics"]
+  },
+  {
+    "id": "q2",
+    "question": "Who is the CEO and founder of Northstar Robotics?",
+    "relevantSlugs": ["rohan-mehta", "northstar-robotics"]
+  },
+  {
+    "id": "q3",
+    "question": "What discount did Finch Logistics ask for in their renewal negotiation?",
+    "relevantSlugs": ["finch-logistics-renewal", "2026-06-10-customer-call-finch"]
+  },
+  {
+    "id": "q4",
+    "question": "What counter-offer did Rohan approve for the Finch Logistics renewal?",
+    "relevantSlugs": ["finch-logistics-renewal", "2026-06-10-customer-call-finch"]
+  },
+  {
+    "id": "q5",
+    "question": "What algorithm approach does the warehouse routing engine use to avoid robot collisions?",
+    "relevantSlugs": ["warehouse-routing-engine"]
+  },
+  {
+    "id": "q6",
+    "question": "What is Project Falcon and what is its current status?",
+    "relevantSlugs": ["project-falcon", "warehouse-routing-engine"]
+  },
+  {
+    "id": "q7",
+    "question": "What was decided about the fleet API rate limiter in the June 3rd standup?",
+    "relevantSlugs": ["2026-06-03-standup-notes"]
+  },
+  {
+    "id": "q8",
+    "question": "What pricing tiers does Northstar Robotics offer?",
+    "relevantSlugs": ["pricing-model"]
+  },
+  {
+    "id": "q9",
+    "question": "What problem is the onboarding flow v2 project trying to solve?",
+    "relevantSlugs": ["onboarding-flow-v2"]
+  },
+  {
+    "id": "q10",
+    "question": "Who leads sales at Northstar Robotics and which customer deal have they closed?",
+    "relevantSlugs": ["sara-kim", "finch-logistics"]
+  }
+]

@@ -7,6 +7,8 @@ import type { OperationContext } from '../core/context.ts';
 import type { Role } from './roles.ts';
 import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
+import { importPage } from '../ingest/import.ts';
+import { answerQuestion } from '../answer/answer.ts';
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -81,9 +83,37 @@ const list_members = defineOp({
       select principal_id, role, created_at from workspace_members order by created_at`),
 });
 
+// ── A17 answer-quality spike: ingest + ask ────────────────────────────────
+// M3's first real draft (see docs/plan.md's M3 file layout + DECISIONS D31), not throwaway —
+// src/ingest/import.ts and src/search+answer/ get hardened (content-sanity, dedup, leak-canary,
+// reranker activation) later; the core loop proved here carries forward unchanged.
+
+const ingest = defineOp({
+  name: 'ingest',
+  description: 'Ingest a page: chunk the body, embed each chunk, and write page + chunks atomically.',
+  params: z.object({
+    slug: z.string(),
+    title: z.string(),
+    body: z.string(),
+    tags: z.array(z.string()).optional(),
+    scope: z.string().optional(),
+  }),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) => importPage(ctx, params),
+});
+
+const ask = defineOp({
+  name: 'ask',
+  description: 'Answer a question by retrieving relevant chunks (hybrid search + RRF) and generating a cited answer.',
+  params: z.object({ question: z.string() }),
+  requiredRole: 'member',
+  handler: async (ctx, params) => answerQuestion(ctx, params.question),
+});
+
 // ── Registry + integrity guards (AM2/AM5) ─────────────────────────────────
 
-export const operations: Operation[] = [whoami, echo, get_workspace, list_members];
+export const operations: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask];
 
 // Null-prototype map: a request for an op named after an Object.prototype member (toString,
 // constructor, __proto__, hasOwnProperty, …) must resolve to `undefined` (→ unknown_op), NOT an
