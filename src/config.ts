@@ -4,6 +4,9 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.string().default('development'),
+  // Dev-only: when 1 (and NODE_ENV != production), POST /api/:op trusts x-cb-* identity headers with
+  // NO verification (src/api/dev-auth.ts). Replaced by real auth at M2. NEVER set in production.
+  DEV_AUTH: z.coerce.number().default(0),
 
   // Database = Supabase (managed Postgres + pgvector), DECISIONS D22.
   //   DATABASE_URL       = the dedicated NON-BYPASSRLS role `cb_app` (RLS applies), via the
@@ -22,6 +25,11 @@ const EnvSchema = z.object({
   DB_POOL_MAX: z.coerce.number().default(10),
   DB_IDLE_TIMEOUT: z.coerce.number().default(20),
   DB_CONNECT_TIMEOUT: z.coerce.number().default(30),
+  // Per-connection GUCs on the APP pool (ms). Bound a runaway query and an abandoned open tx so a
+  // stuck statement (or a tx that ever spans an LLM call) becomes a bounded error, not a fleet-wide
+  // hang — neither idle_timeout nor connect_timeout bounds a *running* query. Applies to cb_app only.
+  DB_STATEMENT_TIMEOUT: z.coerce.number().default(15000),
+  DB_IDLE_IN_TX_TIMEOUT: z.coerce.number().default(15000),
   // Password migrate.ts assigns to the cb_app role (must match the one embedded in DATABASE_URL).
   CB_APP_DB_PASSWORD: z.string().default(''),
 
@@ -54,7 +62,9 @@ export function parseConfig(env: Record<string, string | undefined>) {
   const d = parsed.data;
   return {
     ...d,
-    isPooler: d.DB_TRANSACTION_POOLER === 1,
+    // Any non-zero value enables pool-safe mode (prepare:false). Guard against a stray value like 2
+    // silently falling back to prepare:true, which is unsafe behind the transaction pooler.
+    isPooler: d.DB_TRANSACTION_POOLER !== 0,
     OIDC_REDIRECT_URI: d.OIDC_REDIRECT_URI || `http://localhost:${d.PORT}/auth/google/callback`,
   } as const;
 }

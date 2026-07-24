@@ -152,12 +152,17 @@ Files to create:
 
 **Done when:** boots, migrates, `/health` responds, DB has no public endpoint.
 
-### M1 · Contract spine *(4–5 days)*
-`operations.ts` (ops as data: `{name, params(zod), scopes, required_role, handler}` — **RBAC governs
-verbs; ACL/ReBAC governs nouns**) → `dispatch.ts` (single path: validate → context → role check →
-run → redacted log) → `server.ts` (`/api/:op`) + `redact.ts` (shape-only, 1KB buckets). Port the
-spine; swap gbrain's shallow validator for zod; `workspace_id` is a required ctx field and a
-required engine-method param. **Done when** `whoami` works and the log contains shapes, never values.
+### M1 · Contract spine *(4–5 days)* — BUILT (superseded by DECISIONS D26–D31)
+`operations.ts` (ops as data — **RBAC governs verbs; ACL/ReBAC governs nouns**) → `dispatch.ts`
+(single path: validate → context → role check → run → redacted log) → `server.ts` (`/api/:op`) +
+`redact.ts` (shape-only, 1KB buckets). Port the spine; swap gbrain's shallow validator for zod.
+**Done when** `whoami` works and the log contains shapes, never values.
+
+> **As-built (refines this sketch):** the `Operation` shape is `{name, description, params (zod
+> object), requiredRole?, mutating?, handler}` — a **single role axis** (owner ⊃ admin ⊃ member),
+> not a separate `scopes` + `required_role` (agent-token scopes deferred to M3). Plus a stdio MCP
+> transport, `GET /api/_ops` discovery, a `bun run call` CLI, and a `reqId` on every log line +
+> envelope. See DECISIONS D26–D31 and the M1 `/autoplan` review in the plan file.
 
 ### M2 · Identity *(~1.5 weeks — net-new)*
 `auth/google.ts` (Google OIDC relying-party) · `auth/tokens.ts` (hashed sessions, short-lived +

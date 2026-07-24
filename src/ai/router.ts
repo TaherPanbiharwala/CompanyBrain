@@ -52,6 +52,21 @@ async function errBody(res: Response): Promise<string> {
   return (await res.text()).slice(0, MAX_ERR_BODY);
 }
 
+/** fetch that maps a timeout/abort/network failure to a RouterError, so a caller (and dispatch's
+ *  error sink) can tell "provider down / timed out" apart from a server bug — an unwrapped
+ *  TimeoutError/TypeError would otherwise surface as a generic internal_error. */
+async function routerFetch(url: string, init: RequestInit, provider: string): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (err instanceof RouterError) throw err;
+    const name = (err as { name?: string } | null)?.name;
+    if (name === 'TimeoutError') throw new RouterError(`${provider} request timed out`);
+    if (name === 'AbortError') throw new RouterError(`${provider} request aborted`);
+    throw new RouterError(`${provider} network error: ${(err as Error)?.message ?? String(err)}`);
+  }
+}
+
 export async function chat(opts: { messages: ChatMessage[]; model?: string }): Promise<string> {
   const scope = requireScope();
   const modelId = opts.model || config.CHAT_MODEL;
@@ -69,18 +84,26 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
   const body: Record<string, unknown> = { model, messages: opts.messages };
   if (scope.zdr) body.provider = { data_collection: 'deny' }; // ZDR routing preference
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
-      'content-type': 'application/json',
+  const res = await routerFetch(
+    'https://openrouter.ai/api/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
-  });
+    'openrouter',
+  );
   if (!res.ok) throw new RouterError(`openrouter ${res.status}: ${await errBody(res)}`);
   const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  return json.choices?.[0]?.message?.content ?? '';
+  const content = json.choices?.[0]?.message?.content;
+  // Distinguish "no content" (tool-call-only, moderation refusal, finish_reason:length with null
+  // content) from a real answer — returning '' would make a downstream caller treat it as success.
+  if (content == null) throw new RouterError('openrouter returned no message content');
+  return content;
 }
 
 export async function embed(texts: string[]): Promise<number[][]> {
@@ -89,18 +112,28 @@ export async function embed(texts: string[]): Promise<number[][]> {
   if (provider !== 'openai') throw new RouterError(`embed provider not wired: ${provider}`);
   if (!config.OPENAI_API_KEY) throw new RouterError('OPENAI_API_KEY not set');
 
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.OPENAI_API_KEY}`,
-      'content-type': 'application/json',
+  const res = await routerFetch(
+    'https://api.openai.com/v1/embeddings',
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.OPENAI_API_KEY}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model, input: texts }),
+      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     },
-    body: JSON.stringify({ model, input: texts }),
-    signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-  });
+    'openai',
+  );
   if (!res.ok) throw new RouterError(`openai ${res.status}: ${await errBody(res)}`);
-  const json = (await res.json()) as { data: { embedding: number[] }[] };
-  const vectors = json.data.map((d) => d.embedding);
+  const json = (await res.json()) as { data: { index: number; embedding: number[] }[] };
+  // Reorder by the provider's `index`, never positionally: OpenAI may return items out of input
+  // order, and mapping positionally would store each chunk with another chunk's vector (silent
+  // retrieval corruption). The count must also match 1:1 with the inputs.
+  if (json.data.length !== texts.length) {
+    throw new RouterError(`openai returned ${json.data.length} embeddings for ${texts.length} inputs`);
+  }
+  const vectors = [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
   // The vector(N) column and HNSW index are fixed at config.EMBEDDING_DIM (DECISIONS D13). A
   // provider/model returning a different width would silently fail at insert — catch it here.
   for (const v of vectors) {

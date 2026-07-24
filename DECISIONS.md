@@ -128,3 +128,51 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
   `workspace_members` / `teams` route through the admin/auth connection or gain admin-only
   `WITH CHECK` (a member's `cb_app` context must not self-grant `role:admin`) — add to the leak
   canary. (per M0 `/review` sec S1/S6/S7/S8, adv #1) (2026-07-23)
+
+## Contract spine (M1)
+
+- **D26 — Ops-as-data spine, forked from gbrain.** `src/api/` holds one `operations[]` registry
+  dispatched by a single path (`dispatchOp`: lookup → role-check → validate → run → shape-only log),
+  exposed over REST (`/api/:op`, `/api/_ops`) and stdio MCP. Structure ported from gbrain
+  (`dispatch.ts`/`scope.ts`/`tool-defs.ts`/`OperationError`) under MIT (see `NOTICE`); adapted to
+  company-brain's tenant-identity ctx + **zod** params (D21). Dispatch returns a NEUTRAL result each
+  transport formats. (2026-07-24)
+- **D27 — Single role axis (RBAC governs verbs).** Ops carry `requiredRole` (owner ⊃ admin ⊃ member,
+  default `member`) + `mutating`; dispatch gates on `ctx.role` via `roles.ts`' IMPLIES hierarchy
+  (fail-closed on unknown). gbrain's read/write/admin capability scope is folded into role; **`member`
+  is write-capable by default** (no read-only human role); agent-token capability scopes are deferred
+  to M3 (BYO-agent). Row-level `acl && grants` is NOT exercised in M1 (M3 engine / M4 RLS). (2026-07-24)
+- **D28 — The sacred M1 invariant: shapes, never values.** The request log records the param SHAPE
+  (declared key names + a 1KB-bucketed size + outcome CODE + `reqId`) and never a param value or an
+  error message; a handler's unexpected error goes to a SEPARATE error sink (proved by a value-in-log
+  negative test). `reqId` threads the log and every response envelope. (per M1 `/review` AM1/AM6)
+- **D29 — Dev-auth stub is TEMPORARY + prod-gated.** M1 resolves request identity from `x-cb-*`
+  headers ONLY when `NODE_ENV != production AND DEV_AUTH=1`; the app hard-refuses to boot if that is
+  on in production. Replaced at M2 by the real session→membership resolver (which reuses
+  `buildContext`/`resolveGrants` unchanged). MCP's `CB_MCP_*` env identity is the same single-operator,
+  non-multi-tenant caveat. (per M1 `/review` AM9) (2026-07-24)
+- **D30 — MCP-in-v0 via the standard SDK.** The stdio MCP transport ships in M1 (D19) using
+  `@modelcontextprotocol/sdk` (pinned exact) + `zod-to-json-schema` (zod floor bumped to `^3.25.28`).
+  Cuttable to M3 if M1 slipped; it did not. (per M1 `/review` T1) (2026-07-24)
+- **D31 — Next milestone is the A17 answer-quality spike**, NOT folded into M1: a single-workspace
+  ingest→search→answer run over a real messy corpus + a small hand-graded eval (D15 exit criterion),
+  to validate retrieval + DeepSeek answer quality before more infra. (per M1 `/review` UC1) (2026-07-24)
+
+## M0+M1 bug-fix pass
+
+- **D32 — Registries keyed by attacker-controlled strings must be null-prototype.** `operationsByName`
+  (op names from `req.params.op`/MCP `tools/call`) and any future lookup keyed on untrusted input use
+  `Object.create(null)` or an `Object.hasOwn` guard, never a plain `{}` — a plain object resolves
+  inherited `Object.prototype` members (`toString`, `constructor`, `__proto__`, `hasOwnProperty`) as
+  truthy, which crashed dispatch *before* its try-block and silently skipped the request-log line
+  (found by a 3-reviewer `/review` sweep, confirmed live). `roles.ts`' `hasRole` carries the same guard.
+  (2026-07-24)
+- **D33 — Dev-auth env gate is an allowlist, not a blocklist.** `devAuthEnabled`/`assertDevAuthSafe`
+  require `NODE_ENV ∈ {development, test}` — NOT `NODE_ENV !== 'production'` — so an unset or
+  misspelled `NODE_ENV` (`prod`, `Production`, blank) can never leave the header-trusting dev-auth
+  stub live. This was the sole barrier to cross-tenant reads in M1; it now fails closed on the
+  environment axis too, and the boot guard runs at module import time (not only under
+  `import.meta.main`). Also hardened this pass: an explicit Express terminal error middleware (closed
+  envelope for malformed/oversized JSON, no stack leak), `statement_timeout`/
+  `idle_in_transaction_session_timeout` on the `cb_app` pool, `embed()` ordering by provider `index`
+  (not position), and a widened `TXN_CONTROL` migration guard. (per `/review` 2026-07-24)

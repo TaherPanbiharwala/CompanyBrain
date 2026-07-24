@@ -36,9 +36,13 @@ function sha256(text: string): string {
 }
 
 const PRAGMA_NO_TX = /^\s*--\s*migrate:no-transaction\s*$/im;
-// Standalone transaction-control statements (require the trailing ';', so PL/pgSQL BEGIN/END
-// blocks inside DO $$ ... $$ — which never have a ';' after BEGIN — are not matched).
-const TXN_CONTROL = /^\s*(begin|commit|rollback|start\s+transaction)\s*;\s*$/im;
+// Standalone transaction-control statements the runner must reject (it wraps each file in one tx).
+// Covers every Postgres synonym: BEGIN/START TRANSACTION (with optional TRANSACTION/WORK/options),
+// COMMIT, END (a COMMIT synonym), ROLLBACK, ABORT. Requires the keyword to stand alone on its line
+// ending in ';', so PL/pgSQL constructs inside DO $$ … $$ are NOT matched: block `begin` has no
+// trailing ';', and `end $$;` / `end if;` / `end loop;` have tokens between the keyword and the ';'.
+export const TXN_CONTROL =
+  /^\s*(?:(?:begin|commit|end|rollback|abort)(?:\s+(?:transaction|work))?|start\s+transaction[^;]*)\s*;\s*$/im;
 
 async function ensureBootstrap(sql: postgres.Sql): Promise<void> {
   // pgvector. On Supabase the type may live in the `extensions` schema; keep it on the search_path.
@@ -90,8 +94,10 @@ end $$;`);
 
 async function grantExisting(sql: postgres.Sql): Promise<void> {
   // Grant DML on every table EXCEPT the migration ledger — cb_app must never be able to rewrite
-  // migration history (review sec S2 / data-mig D7). _migrations has no policy, so it is
-  // default-deny for cb_app anyway; this makes the intent explicit and revokes any prior grant.
+  // migration history (review sec S2 / data-mig D7). NOTE: _migrations has RLS DISABLED, so "no
+  // policy" is NOT default-deny — table GRANTs fully govern it, so this revoke is load-bearing (it
+  // also strips the DML that `grant … on all tables` just re-granted). The ledger is additionally
+  // revoked at creation time in run(), so a mid-migration failure never leaves cb_app able to write it.
   await sql`grant select, insert, update, delete on all tables in schema public to cb_app`;
   await sql`revoke all on table _migrations from cb_app`;
   await sql`grant usage, select on all sequences in schema public to cb_app`;
@@ -150,6 +156,10 @@ async function run(): Promise<void> {
       )
     `;
     await sql`alter table _migrations add column if not exists checksum text`;
+    // Revoke the ledger from cb_app NOW (it inherited the default-privilege DML grant on creation),
+    // so even if a migration below fails before grantExisting runs, the app role can never write
+    // migration history. cb_app exists by here (ensureBootstrap created/verified it).
+    await sql`revoke all on table _migrations from cb_app`;
 
     const appliedRows = await sql<{ filename: string; checksum: string | null }[]>`
       select filename, checksum from _migrations`;

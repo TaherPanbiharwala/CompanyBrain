@@ -87,7 +87,8 @@ CREATE TABLE sessions (
   expires_at          timestamptz NOT NULL,
   refresh_expires_at  timestamptz,
   -- The active workspace MUST be a real membership of this principal. Column-specific SET NULL
-  -- (PG15+) nulls only active_workspace_id when the membership is revoked, leaving the session
+  -- REQUIRES PostgreSQL 15+ (Supabase is 15+); on an older server the first migrate fails here with
+  -- a bare syntax error. It nulls only active_workspace_id when the membership is revoked, leaving the session
   -- (and its NOT NULL principal_id) intact. This is the DB backstop for "workspaceId taken on
   -- trust" (review sec S1 / adv #1); the M2 resolver must still derive app.workspace from a
   -- verified membership, never from raw request input.

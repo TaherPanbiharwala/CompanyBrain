@@ -5,7 +5,7 @@
 // Note: assert rejections with try/catch, NOT `expect(query).rejects` — a postgres.js tagged
 // template is a lazy thenable and bun's rejects matcher hangs when handed one directly.
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { appSql, adminSql, withScopedTx } from '../src/db/client.ts';
+import { appSql, adminSql, withScopedTx, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 
 const live = !!process.env.DATABASE_URL && !!process.env.DATABASE_ADMIN_URL;
@@ -41,9 +41,7 @@ describe.skipIf(!live)('RLS smoke — tenant isolation + integrity FKs', () => {
     const admin = adminSql();
     await admin`delete from workspaces where id in (${ws1}, ${ws2})`; // cascades pages/members/chunks
     await admin`delete from principals where id in (${p1}, ${p2})`; // cascades sessions
-    // Bound the close — a graceful .end() over Supabase's pooler can otherwise hang and stall bun.
-    await appSql().end({ timeout: 5 });
-    await admin.end({ timeout: 5 });
+    await closePools({ timeout: 5 }); // ends + resets singletons so the api live test gets fresh pools
   });
 
   it('no GUC set -> cb_app sees 0 rows (fail closed)', async () => {

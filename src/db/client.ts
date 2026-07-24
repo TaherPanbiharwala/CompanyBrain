@@ -37,6 +37,12 @@ export function appSql(): postgres.Sql {
       max: config.DB_POOL_MAX,
       idle_timeout: config.DB_IDLE_TIMEOUT,
       connect_timeout: config.DB_CONNECT_TIMEOUT,
+      // Bound a runaway query / abandoned open tx so a stuck statement can't pin a pooled connection
+      // indefinitely and hang the fleet (set as GUCs on every cb_app connection).
+      connection: {
+        statement_timeout: config.DB_STATEMENT_TIMEOUT,
+        idle_in_transaction_session_timeout: config.DB_IDLE_IN_TX_TIMEOUT,
+      },
       onnotice: () => {},
     });
   }
@@ -54,6 +60,20 @@ export function adminSql(): postgres.Sql {
     _admin = postgres(config.DATABASE_ADMIN_URL, { prepare: false, ssl: sslOption(), max: 1, onnotice: () => {} });
   }
   return _admin;
+}
+
+/** End both pools AND reset the singletons so a later appSql()/adminSql() re-creates fresh ones.
+ *  Tests must use this (not `pool.end()`) so live test files don't hand each other a dead pool.
+ *  Test-only helper: the null-before-await ordering is intentional (a concurrent appSql() must not
+ *  reuse a pool that is mid-close). Safe because test files run sequentially. */
+export async function closePools(opts: { timeout?: number } = {}): Promise<void> {
+  const timeout = opts.timeout ?? 5;
+  const app = _app;
+  const admin = _admin;
+  _app = null;
+  _admin = null;
+  if (app) await app.end({ timeout });
+  if (admin) await admin.end({ timeout });
 }
 
 /**
