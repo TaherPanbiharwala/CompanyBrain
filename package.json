@@ -1,0 +1,24 @@
+{
+  "name": "company-brain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-tenant SaaS knowledge brain (fork-and-narrow of gbrain; see NOTICE + DECISIONS.md)",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "migrate": "bun run src/db/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/express": "^5.0.0",
+    "typescript": "^5.7.2"
+  }
+}

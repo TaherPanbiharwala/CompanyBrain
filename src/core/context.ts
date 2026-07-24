@@ -1,0 +1,104 @@
+// The "who is asking" object threaded through every operation.
+//
+// Two invariants the whole product rests on (DECISIONS D2):
+//   * FAIL CLOSED. buildContext throws if workspaceId / principal / grants can't be resolved,
+//     or if principal/workspaceId aren't valid UUIDs (a malformed value would otherwise make the
+//     RLS `::uuid` cast abort the whole transaction). No `{}`/unfiltered fallback, no
+//     `remote === false` scope-widening.
+//   * grants is the keyring: self + workspace now; team:/role: unioned in at M5. A row is
+//     visible iff `acl && grants` (array overlap), enforced in engine queries (M3) and RLS (M4).
+
+export type Grant = string; // e.g. 'self:<uuid>', 'ws:<uuid>', 'team:<uuid>', 'role:admin'
+
+// Grants are serialized into the app.grants GUC (a CSV) that the M4 RLS policy splits with
+// string_to_array. One definition, shared by withScopedTx and (later) the SQL side.
+export const GRANT_SEPARATOR = ',';
+// Strict shape: a known prefix + a safe id. Excludes the separator and empty/whitespace tags,
+// so nothing can smuggle an extra grant through the CSV (review sec S11).
+const GRANT_TAG_RE = /^(self|ws|team|role):[A-Za-z0-9_-]+$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function serializeGrants(grants: readonly Grant[]): string {
+  return grants.join(GRANT_SEPARATOR);
+}
+
+export interface OperationContext {
+  readonly principal: string;   // principal id (uuid)
+  readonly workspaceId: string; // workspace id (uuid) — the tenant
+  readonly grants: readonly Grant[]; // non-empty keyring
+  readonly role: string;        // RBAC role in this workspace (owner|admin|member)
+  readonly actingAgent?: string; // set when an agent acts on a principal's behalf
+  readonly remote: boolean;     // true = untrusted agent/MCP caller. NOT a scope switch.
+}
+
+export interface ContextInput {
+  principal?: string | null;
+  workspaceId?: string | null;
+  grants?: readonly Grant[] | null;
+  role?: string | null;
+  actingAgent?: string;
+  remote: boolean;
+}
+
+// Auth error taxonomy (matches the M1 OperationError codes; review A16).
+export type ContextErrorCode =
+  | 'unauthenticated'
+  | 'no_workspace'
+  | 'no_grant'
+  | 'bad_principal'
+  | 'bad_workspace'
+  | 'bad_grant';
+
+export class ContextError extends Error {
+  readonly code: ContextErrorCode;
+  constructor(code: ContextErrorCode, message: string) {
+    super(message);
+    this.name = 'ContextError';
+    this.code = code;
+  }
+}
+
+export const selfGrant = (principal: string): Grant => `self:${principal}`;
+export const wsGrant = (workspaceId: string): Grant => `ws:${workspaceId}`;
+
+/** Build the request keyring: self + workspace, plus any team/role grants (M5). */
+export function resolveGrants(principal: string, workspaceId: string, extra: readonly Grant[] = []): Grant[] {
+  return [selfGrant(principal), wsGrant(workspaceId), ...extra];
+}
+
+/** The only constructor for an OperationContext. Fail-closed. */
+export function buildContext(input: ContextInput): OperationContext {
+  if (!input.principal) {
+    throw new ContextError('unauthenticated', 'no principal on the request');
+  }
+  if (!UUID_RE.test(input.principal)) {
+    throw new ContextError('bad_principal', 'principal is not a valid uuid');
+  }
+  if (!input.workspaceId) {
+    throw new ContextError('no_workspace', 'no workspace resolved for the request');
+  }
+  if (!UUID_RE.test(input.workspaceId)) {
+    throw new ContextError('bad_workspace', 'workspaceId is not a valid uuid');
+  }
+  if (!input.grants || input.grants.length === 0) {
+    throw new ContextError('no_grant', 'empty grants keyring; refusing to run unscoped');
+  }
+  for (const g of input.grants) {
+    if (!GRANT_TAG_RE.test(g)) {
+      throw new ContextError('bad_grant', `invalid grant tag: ${JSON.stringify(g)}`);
+    }
+  }
+  return {
+    principal: input.principal,
+    workspaceId: input.workspaceId,
+    grants: [...input.grants],
+    role: input.role ?? 'member',
+    actingAgent: input.actingAgent,
+    remote: input.remote,
+  };
+}
+
+/** App-layer visibility check (array overlap). The DB enforces the same via RLS. */
+export function visibleBy(acl: readonly string[], grants: readonly Grant[]): boolean {
+  return acl.some((a) => grants.includes(a));
+}
