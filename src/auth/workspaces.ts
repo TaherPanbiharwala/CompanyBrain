@@ -202,10 +202,28 @@ export async function createWorkspace(input: {
     if (!sess[0]) throw new OperationError('unauthenticated', 'session not found');
     const domain = claimDomain(input.domain, sess[0].login_hd);
 
-    const ws = await tx<{ id: string }[]>`
-      insert into workspaces (name, domain, created_by)
-      values (${input.name}, ${domain}, ${input.principalId})
-      returning id`;
+    // The domain claim is first-come, first-served and PERMANENT (workspaces.domain is UNIQUE), so
+    // "somebody already claimed corp.com" is an ordinary outcome, not an internal error. It used to
+    // surface as a 500: two colleagues both landing workspace-less on a fresh install and both
+    // creating a workspace for their shared domain is the COMMON case, and the second one got
+    // `internal_error` with a reqId and no hint that the domain was simply taken.
+    let ws: { id: string }[];
+    try {
+      ws = await tx<{ id: string }[]>`
+        insert into workspaces (name, domain, created_by)
+        values (${input.name}, ${domain}, ${input.principalId})
+        returning id`;
+    } catch (err) {
+      const e = err as { code?: string; constraint_name?: string };
+      if (e.code === '23505' && e.constraint_name === 'workspaces_domain_key') {
+        throw new OperationError(
+          'already_exists',
+          `the domain "${domain}" is already claimed by another workspace`,
+          'Ask an admin of that workspace to invite you, or create this workspace without claiming a domain.',
+        );
+      }
+      throw err; // any other unique violation is a real bug — do not report the wrong cause
+    }
     const workspaceId = ws[0]?.id;
     if (!workspaceId) throw new Error('createWorkspace: insert returned no row');
 

@@ -125,7 +125,12 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
 
   const cookies = (req as Request & { cookies?: Record<string, unknown> }).cookies;
   const carriesSession = typeof cookies?.[sessionCookieName()] === 'string';
-  const isAuthSurface = req.path.startsWith('/auth/');
+  // toLowerCase because EXPRESS ROUTES CASE-INSENSITIVELY by default (`case sensitive routing` is
+  // off and index.ts never enables it), so `/AUTH/dev-login` reaches the same handler while
+  // `startsWith('/auth/')` returned false — skipping the login-CSRF arm on a request the router
+  // treats as an auth route. Narrow in practice (this arm only covers auth routes carrying no
+  // session cookie) but it is a bypass of a check meant to be unconditional.
+  const isAuthSurface = req.path.toLowerCase().startsWith('/auth/');
   if (!carriesSession && !isAuthSurface) {
     next();
     return;

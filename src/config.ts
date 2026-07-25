@@ -92,6 +92,25 @@ const EnvSchema = z.object({
  *  the last set of strings that should exist more than once. */
 export const DEV_ENVS: ReadonlySet<string> = new Set(['development', 'test']);
 
+/**
+ * Is this a GENUINE development environment — i.e. did somebody actually say so?
+ *
+ * The one place that question is answered, because it was previously answered in three places and
+ * two of them were wrong. `NODE_ENV` is `z.string().default('development')`, so an ABSENT variable
+ * arrives as the string 'development' and sails through a bare `DEV_ENVS.has(cfg.NODE_ENV)` check.
+ * `assertDevAuthSafe` and `boot.ts`'s missing-secrets gate both did exactly that while their
+ * docstrings (and DECISIONS D33) claimed to cover "unset" — so a container with DEV_AUTH=1 and no
+ * NODE_ENV booted with the header-trusting stub live and every auth secret empty.
+ *
+ * `devLoginEnabled` had it right, but via a SECOND mechanism (an `env` parameter read straight from
+ * process.env), which is precisely why the other two could drift away from it. Same shape as
+ * `appBaseUrlExplicit` above: when a default would satisfy the check, the check has to know whether
+ * it is looking at a default.
+ */
+export function isDevEnv(cfg: Pick<Config, 'NODE_ENV' | 'nodeEnvExplicit'>): boolean {
+  return cfg.nodeEnvExplicit && DEV_ENVS.has(cfg.NODE_ENV);
+}
+
 /** Every form a loopback host can arrive in.
  *
  *  `[::1]` is not redundant: `new URL(...).hostname` strips the brackets from an IPv6 literal but
@@ -146,6 +165,10 @@ export function parseConfig(env: Record<string, string | undefined>) {
     // Whether APP_BASE_URL was EXPLICITLY provided. Gate 5 of dev-login would otherwise pass by
     // default (the fallback is loopback), so an unconfigured staging box would look local.
     appBaseUrlExplicit: env.APP_BASE_URL !== undefined && env.APP_BASE_URL !== '',
+    // Whether NODE_ENV was EXPLICITLY provided. Same trap as APP_BASE_URL and strictly more
+    // dangerous: NODE_ENV defaults to 'development', which is the value every dev-only gate treats
+    // as permission. See isDevEnv() above — never test DEV_ENVS.has(NODE_ENV) without this.
+    nodeEnvExplicit: env.NODE_ENV !== undefined && env.NODE_ENV !== '',
     appBaseIsLoopback: loopbackHost(appBaseUrl),
     appBaseIsHttps: httpsBase(appBaseUrl),
   } as const;

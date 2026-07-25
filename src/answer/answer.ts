@@ -41,8 +41,16 @@ export interface AnswerResult {
  * ever". Markers pointing INTO range are left alone; whether the model cited the *right* chunk is a
  * judgement no amount of parsing can make.
  */
-function scrubMarkers(answer: string, sourceCount: number): string {
-  return answer.replace(/\[(\d{1,4})\]/g, (whole, digits: string) => {
+/** Exported for test only. It is pure string logic, and it was reachable in tests ONLY through
+ *  answerQuestion — i.e. only behind a live database and a model call. That is why a marker of five
+ *  or more digits survived here unnoticed: nothing could cheaply enumerate the digit ranges. */
+export function scrubMarkers(answer: string, sourceCount: number): string {
+  // \d+ not \d{1,4}: the bounded form meant a marker of FIVE or more digits never entered this
+  // callback at all, so the range check below never ran on it and `[10000]` shipped verbatim under a
+  // test titled "no dangling footnote, ever". The cap was presumably meant to bound work, but the
+  // input is a model completion of bounded length and Number() handles any digit run — an overflow
+  // to Infinity simply fails `n <= sourceCount`, which is the safe direction.
+  return answer.replace(/\[(\d+)\]/g, (whole, digits: string) => {
     const n = Number(digits);
     return n >= 1 && n <= sourceCount ? whole : '';
   });

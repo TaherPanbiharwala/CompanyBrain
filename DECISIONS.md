@@ -87,6 +87,10 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
 - **D12 — One door for every model call** (`src/ai/router.ts`): OpenRouter, AsyncLocalStorage
   per-workspace (cache key includes workspace/api-key). ZDR as a **per-workspace toggle**
   (cheapest provider default for the demo), not a hard M0 default. (per `/autoplan` T4) (2026-07-23)
+  **Status correction (2026-07-25, D66):** the toggle is NOT IMPLEMENTED. `withRouterScope` carries a
+  `zdr` flag and `chat()` acts on it, but all three call sites pass `zdr: false` and there is no
+  workspace column or setting behind it — so `data_collection: 'deny'` has never been sent. The
+  plumbing is real; the switch is M5. Do not represent ZDR as available to a design partner.
 - **D12.1 — Chat model resolved: DeepSeek via OpenRouter.** Founder ruled out **Anthropic** (too
   expensive) and **OpenAI's chat models**; chose **DeepSeek V4** instead. `CHAT_MODEL =
   openrouter:deepseek/deepseek-v4-flash` (cheap/default — every `chat()` call uses this unless a
@@ -205,10 +209,14 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
   truthy, which crashed dispatch *before* its try-block and silently skipped the request-log line
   (found by a 3-reviewer `/review` sweep, confirmed live). `roles.ts`' `hasRole` carries the same guard.
   (2026-07-24)
-- **D33 — Dev-auth env gate is an allowlist, not a blocklist.** `devAuthEnabled`/`assertDevAuthSafe`
-  require `NODE_ENV ∈ {development, test}` — NOT `NODE_ENV !== 'production'` — so an unset or
-  misspelled `NODE_ENV` (`prod`, `Production`, blank) can never leave the header-trusting dev-auth
-  stub live. This was the sole barrier to cross-tenant reads in M1; it now fails closed on the
+- **D33 — Dev-auth env gate is an allowlist, not a blocklist — and an allowlist has to know a
+  default when it sees one.** `devAuthEnabled`/`assertDevAuthSafe` require
+  `NODE_ENV ∈ {development, test}` rather than `NODE_ENV !== 'production'`, so a misspelled value
+  (`prod`, `Production`, blank) can never leave the header-trusting stub live.
+  **Corrected 2026-07-25 (D66):** this entry used to claim the same for an *unset* `NODE_ENV`, and
+  that was false for eleven days. `NODE_ENV` is `z.string().default('development')`, so an absent
+  variable arrives as `'development'` — the one value the allowlist exists to permit. The gate is now
+  `isDevEnv(cfg)` (config.ts), which requires the value to be **explicit** as well as allowed. This was the sole barrier to cross-tenant reads in M1; it now fails closed on the
   environment axis too, and the boot guard runs at module import time (not only under
   `import.meta.main`). Also hardened this pass: an explicit Express terminal error middleware (closed
   envelope for malformed/oversized JSON, no stack leak), `statement_timeout`/
@@ -551,3 +559,43 @@ fixes made earlier the same day, which is recorded here rather than buried.
   zero while `row_number()` starts at one; RRF ties are common and previously broke on Map insertion
   order, i.e. on whichever arm the database returned first). `rrfFuse` stays the specification, now
   with a deterministic id tie-break, and a live test asserts the SQL agrees with it on real data.
+- **D66 — Fourth review pass: the guards were the thing that needed guarding.** A whole-codebase pass
+  (seven lenses, adversarial verifiers instructed to refute) weighted toward what three prior passes
+  never touched: M0's tenancy core, and `doctor.ts` itself — which reports "46/46" and had never been
+  asked whether its assertions can fail. **No P0. No cross-tenant leak or auth bypass reachable in any
+  shipped configuration.** What it did find was a pattern worth naming: *every one of the highest-value
+  findings was a control that did not control.*
+  - **An unset `NODE_ENV` defeated both boot guards.** `NODE_ENV` is `z.string().default('development')`,
+    so an ABSENT variable arrives as the one value the dev allowlist exists to permit. Both
+    `assertDevAuthSafe` and `boot.ts`'s missing-secrets gate tested `DEV_ENVS.has(cfg.NODE_ENV)`
+    directly, so a container with `DEV_AUTH=1` and no `NODE_ENV` booted with the header-trusting stub
+    live AND every auth secret unchecked. `devLoginEnabled` had it right via a SECOND mechanism (an
+    `env` parameter) — which is exactly why the other two could drift away from it. There is now ONE
+    answer: `isDevEnv(cfg)` in config.ts, and `nodeEnvExplicit` alongside the existing
+    `appBaseUrlExplicit`. The type now forces every caller to state explicitness.
+  - **`doctor`'s PUBLIC-EXECUTE check was green precisely when the property was false.** A function's
+    `proacl` is NULL until something GRANTs or REVOKEs, and NULL means *the default applies* — which
+    for a function is EXECUTE TO PUBLIC. `(fn.acl ?? '')` turned that into a passing regex test.
+  - **The live-gate meta-test inspected 1 of 10 live suites.** It detected "uses the database" by
+    grepping for `process.env.DATABASE_*`; nine suites reach those through `hasDbEnv()` and were
+    invisible. The guard written to stop a suite silently opting out could not see the suites. It now
+    matches on the `src/db/client.ts` import and carries a FLOOR assertion, because an empty offender
+    list looks identical whether every suite is clean or the detector has gone blind.
+  - **`migrate` could print the database password in cleartext.** `format('%L')` expands the literal
+    before `EXECUTE`, and Postgres returns the expanded statement in the error CONTEXT field, which
+    postgres.js exposes as `err.where`. Any failure in the role DDL wrote it to stderr. Now scrubbed,
+    with the GUC wipe moved into a `finally` so a throw cannot leave the plaintext resident either.
+  - **ZDR is documented as a per-workspace toggle and no toggle exists** — all three call sites
+    hardcode `zdr: false`, so `data_collection: 'deny'` has never been sent. The plumbing is real; the
+    switch is M5. Marked unimplemented in D12, `.env.example` and the router rather than left implying
+    a capability we do not have.
+  - Plus: 5+ digit citation markers escaped the scrub (`\d{1,4}`), a duplicate domain claim was a 500,
+    a malformed invite email was a 500, `csrfGuard`'s `/auth/` test was case-sensitive while Express
+    routes case-insensitively, `visibleBy` claimed RLS parity that arrives at M4, and `embed()` would
+    have degraded to positional mapping on a missing `index` (NaN comparator = no-op sort).
+- **D67 — SASLprep matters, settled by asking the database.** Two reviewers disagreed twice on whether
+  `scramMatches` needed it. Measured against a real server: `café-münchen` and `pass word` match from
+  raw bytes, but U+FB01 (ﬁ) and a NFD-decomposed `é` do NOT — PostgreSQL SASLpreps before hashing.
+  `.normalize('NFKC')` closes both, and is tried only after the raw form fails, so it can turn a false
+  negative into a match but never accept a wrong password. Not cosmetic: a false negative re-runs
+  `ALTER ROLE` on every migrate, which is precisely the credential-cache churn D63 exists to stop.

@@ -8,11 +8,11 @@
 //
 // Kept out of config.ts on purpose — parseConfig is pure and runs at import in every unit test, so
 // anything that can throw belongs here.
-import { config as defaultConfig, DEV_ENVS, type Config } from './config.ts';
+import { config as defaultConfig, isDevEnv, type Config } from './config.ts';
 
 type DeploymentConfig = Pick<
   Config,
-  | 'NODE_ENV'
+  | 'NODE_ENV' | 'nodeEnvExplicit'
   | 'TRUST_PROXY'
   | 'APP_BASE_URL'
   | 'appBaseIsLoopback'
@@ -63,7 +63,11 @@ export function assertDeploymentSafe(cfg: DeploymentConfig = defaultConfig): voi
   // (3) Secrets the auth flow needs. All of these default to '' and were asserted nowhere, so the
   // process booted, /health went green, and the user hit a 500 AFTER Google had already
   // authenticated them — the worst possible place to discover a missing environment variable.
-  if (!DEV_ENVS.has(cfg.NODE_ENV)) {
+  // isDevEnv, not DEV_ENVS.has: NODE_ENV defaults to 'development', so an UNSET value used to skip
+  // this entire block — the app started with SESSION_SECRET, DATABASE_AUTH_URL and both Google
+  // credentials empty, /health green, and the first real login 500ing. Same root cause as the
+  // dev-auth gate; both now ask the one question in config.ts.
+  if (!isDevEnv(cfg)) {
     const missing: string[] = [];
     if (cfg.SESSION_SECRET.length < 32) missing.push('SESSION_SECRET (must be >= 32 chars)');
     if (!cfg.DATABASE_AUTH_URL) missing.push('DATABASE_AUTH_URL');
@@ -71,7 +75,8 @@ export function assertDeploymentSafe(cfg: DeploymentConfig = defaultConfig): voi
     if (!cfg.GOOGLE_CLIENT_SECRET) missing.push('GOOGLE_CLIENT_SECRET');
     if (missing.length) {
       throw new Error(
-        `Refusing to start: NODE_ENV=${cfg.NODE_ENV} but the sign-in flow is not fully configured. ` +
+        `Refusing to start: NODE_ENV=${cfg.nodeEnvExplicit ? cfg.NODE_ENV : '(unset — it defaults to "development")'} ` +
+          `but the sign-in flow is not fully configured. ` +
           `Missing: ${missing.join(', ')}. Without these the app boots and /health reports ok, then ` +
           `every login fails — some of them only AFTER the user has authenticated at Google. ` +
           `See docs/auth-setup.md.`,

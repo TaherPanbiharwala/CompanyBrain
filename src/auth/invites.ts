@@ -50,7 +50,19 @@ export async function createInvite(
   }
 
   const token = generateToken();
-  const emailNormalized = normalizeEmail(input.email);
+  // normalizeEmail THROWS on anything that cannot be a mailbox. The op schema bounds the length
+  // (3..320) but not the shape, and MCP/CLI callers bypass Express entirely — so a typo'd address
+  // reached here and left as `500 internal_error`. It is the caller's input; it deserves a 400.
+  let emailNormalized: string;
+  try {
+    emailNormalized = normalizeEmail(input.email);
+  } catch {
+    throw new OperationError(
+      'invalid_params',
+      'email is not a valid address',
+      'Use a full address like name@company.com.',
+    );
+  }
   const rows = await tx<{ id: string; expires_at: Date }[]>`
     insert into invites (workspace_id, email, email_normalized, token_hash, role, invited_by, expires_at)
     values (${ctx.workspaceId}, ${input.email.trim()}, ${emailNormalized}, ${hashToken(token)},

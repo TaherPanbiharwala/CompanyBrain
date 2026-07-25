@@ -69,6 +69,24 @@ describe('scramMatches', () => {
     expect(scramMatches(v, 'iters-matter')).toBe(true);
   });
 
+  it('matches a password PostgreSQL SASLprepped — the case that silently reinstates D63 churn', () => {
+    // PostgreSQL applies SASLprep before hashing, so the server's verifier is built from the
+    // NORMALIZED password. Verified against a real server: 'café' and 'pass word' hash from their
+    // raw bytes, but U+FB01 (ﬁ) and a decomposed 'é' do not — those only match after NFKC.
+    // A false negative here is not cosmetic: migrate would ALTER the password on every single run,
+    // which is the credential-cache churn D63 was written to eliminate.
+    for (const pw of ['\uFB01-ligature', 'e\u0301clair', 'ﬀ-double-f']) {
+      const serverSide = makeVerifier(pw.normalize('NFKC')); // what Postgres actually stores
+      expect(scramMatches(serverSide, pw)).toBe(true);
+    }
+  });
+
+  it('normalization does not make it accept a genuinely wrong password', () => {
+    const v = makeVerifier('correct-password'.normalize('NFKC'));
+    expect(scramMatches(v, 'wrong-password')).toBe(false);
+    expect(scramMatches(v, 'correct-passwor')).toBe(false);
+  });
+
   it('returns null — "do not know", so the caller sets the password — on a shape it cannot parse', () => {
     // null is NOT false: false means "wrong password, rewrite it", null means "cannot verify". Both
     // lead to an ALTER, but only null must never be reported as a mismatch.

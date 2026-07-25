@@ -76,7 +76,14 @@ describe('chunkText', () => {
   it('a body just over the target size still produces a bounded, non-empty chunk set', () => {
     const text = Array.from({ length: 310 }, (_, i) => `word${i}`).join(' ');
     const chunks = chunkText(text, { chunkSize: 300, chunkOverlap: 50 });
+    // `>= 1` was the old assertion and no non-empty chunker can fail it. "Bounded" means a body
+    // barely over the target does not explode into many pieces: 310 words at a 300-word target is
+    // one split at most, so 2 is the ceiling, and every word must still be present exactly once
+    // across the chunks (allowing for the 50-word overlap to repeat some).
     expect(chunks.length).toBeGreaterThanOrEqual(1);
+    expect(chunks.length).toBeLessThanOrEqual(2);
     for (const c of chunks) expect(c.text.trim().length).toBeGreaterThan(0);
+    const joined = chunks.map((c) => c.text).join(' ');
+    for (const w of ['word0', 'word155', 'word309']) expect(joined).toContain(w);
   });
 });

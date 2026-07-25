@@ -36,6 +36,32 @@ function sha256(text: string): string {
 }
 
 /**
+ * Run a statement that embeds a secret via `format('%L', …)`, and make sure a failure cannot print it.
+ *
+ * The GUC indirection keeps the password out of the SQL we SEND — that part was already right. What
+ * it does not cover: PL/pgSQL's `format('%L')` expands the literal before `EXECUTE`, and when an
+ * EXECUTE fails PostgreSQL puts the FULLY EXPANDED statement into the error's CONTEXT and
+ * INTERNAL QUERY fields. postgres.js copies those onto the error object as enumerable own properties
+ * (`where`, `internal_query`), so `console.error('migration failed:', err)` prints the plaintext
+ * password — into your terminal, and into whatever captures CI logs.
+ *
+ * Reachable without doing anything exotic: 42710 from a concurrent role creation, `permission denied
+ * to create role`, `must have admin option on role`, or a platform password-policy hook. So the
+ * fields are stripped here rather than trusted to stay clean.
+ */
+export async function runWithSecret(sql: postgres.Sql, statement: string, label: string): Promise<void> {
+  try {
+    await sql.unsafe(statement);
+  } catch (err) {
+    const e = err as Record<string, unknown>;
+    for (const field of ['where', 'internal_query', 'query', 'detail', 'hint']) {
+      if (typeof e[field] === 'string') e[field] = `[redacted: ${label} embeds a password literal]`;
+    }
+    throw err;
+  }
+}
+
+/**
  * Does `role` ALREADY authenticate with `password`? Returns null when the verifier cannot be read or
  * parsed, which the caller treats as "don't know — go ahead and set it".
  *
@@ -59,10 +85,27 @@ export function scramMatches(verifier: string, password: string): boolean | null
   const iterations = Number(itersRaw);
   if (!Number.isSafeInteger(iterations) || iterations <= 0 || !saltB64 || !storedB64) return null;
   try {
-    const salted = pbkdf2Sync(password, Buffer.from(saltB64, 'base64'), iterations, 32, 'sha256');
-    const stored = createHash('sha256').update(createHmac('sha256', salted).update('Client Key').digest()).digest();
     const expected = Buffer.from(storedB64, 'base64');
-    return stored.length === expected.length && timingSafeEqual(stored, expected);
+    const derives = (pw: string): boolean => {
+      const salted = pbkdf2Sync(pw, Buffer.from(saltB64, 'base64'), iterations, 32, 'sha256');
+      const stored = createHash('sha256').update(createHmac('sha256', salted).update('Client Key').digest()).digest();
+      return stored.length === expected.length && timingSafeEqual(stored, expected);
+    };
+    // Try the raw password, then its NFKC form. PostgreSQL applies SASLprep (RFC 4013) before
+    // hashing, which NFKC-normalizes and maps compatibility characters — so a password containing
+    // a ligature or a decomposed accent hashes to something the raw bytes never reproduce.
+    //
+    // MEASURED against a real server rather than reasoned about, because two reviewers disagreed on
+    // whether this mattered: 'café-münchen' and 'pass word' match raw, while 'ﬁ-ligature' (U+FB01)
+    // and a NFD-decomposed 'é' do NOT — and both match after .normalize('NFKC').
+    //
+    // Trying BOTH is deliberate and cannot weaken the check: an incorrect password fails under every
+    // normalization. What it prevents is the false NEGATIVE — which is not merely cosmetic here,
+    // because a false negative re-runs ALTER ROLE on every migrate and reinstates exactly the
+    // credential-cache churn D63 exists to stop.
+    if (derives(password)) return true;
+    const prepped = password.normalize('NFKC');
+    return prepped === password ? false : derives(prepped);
   } catch {
     return null;
   }
@@ -148,16 +191,22 @@ async function ensureBootstrap(sql: postgres.Sql): Promise<void> {
     // Password travels via a bind param into a session GUC, then into a format(%L) literal —
     // never string-concatenated into SQL.
     await sql`select set_config('cb.app_password', ${config.CB_APP_DB_PASSWORD}, false)`;
-    await sql.unsafe(`do $$
+    // try/finally, because the wipe below is the whole point and an exception used to skip it: the
+    // DDL throwing left the plaintext password resident in the session GUC — the exact state the
+    // comment after this block says must not happen.
+    try {
+    await runWithSecret(sql, `do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'cb_app') then
     execute format('create role cb_app login password %L nosuperuser nobypassrls nocreatedb nocreaterole noreplication', current_setting('cb.app_password'));
   else
     execute format('alter role cb_app login password %L', current_setting('cb.app_password'));
   end if;
-end $$;`);
-    // Do not leave the plaintext password resident in a session GUC (review sec S10).
-    await sql`select set_config('cb.app_password', '', false)`;
+end $$;`, 'cb_app role DDL');
+    } finally {
+      // Do not leave the plaintext password resident in a session GUC (review sec S10).
+      await sql`select set_config('cb.app_password', '', false)`;
+    }
   } else {
     console.log('= cb_app role already exists; CB_APP_DB_PASSWORD unset, leaving its password unchanged');
   }
@@ -206,15 +255,18 @@ async function ensureAuthRole(sql: postgres.Sql): Promise<void> {
     // Same posture as cb_app: the password travels as a bind param into a session GUC, then into a
     // format(%L) literal — never string-concatenated into SQL — and is wiped immediately after.
     await sql`select set_config('cb.auth_password', ${config.CB_AUTH_DB_PASSWORD}, false)`;
-    await sql.unsafe(`do $$
+    try { // see cb_app above — the wipe must survive a failing DDL
+    await runWithSecret(sql, `do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'cb_auth') then
     execute format('create role cb_auth login password %L nosuperuser nobypassrls nocreatedb nocreaterole noreplication', current_setting('cb.auth_password'));
   else
     execute format('alter role cb_auth login password %L', current_setting('cb.auth_password'));
   end if;
-end $$;`);
-    await sql`select set_config('cb.auth_password', '', false)`;
+end $$;`, 'cb_auth role DDL');
+    } finally {
+      await sql`select set_config('cb.auth_password', '', false)`;
+    }
   } else {
     console.log('= cb_auth role already exists; CB_AUTH_DB_PASSWORD unset, leaving its password unchanged');
   }
@@ -240,7 +292,14 @@ async function grantExisting(sql: SqlLike): Promise<void> {
   // (An earlier version of this comment claimed _migrations has RLS DISABLED and that GRANTs were
   // therefore the only control. That was false — Supabase ships an `rls_auto_enable` event trigger
   // that turns RLS on for every new table, so the ledger is RLS-enabled with zero policies, i.e.
-  // default-deny for both roles. `bun run doctor` asserts that state rather than assuming it.)
+  // default-deny for both roles.
+  //
+  // A LATER version of this comment then claimed `bun run doctor` asserts that state. It does not:
+  // doctor.ts EXEMPTS _migrations from both RLS checks by name (`and c.relname <> '_migrations'`)
+  // precisely because it is deliberately policy-less. So the RLS posture here is INFERRED from the
+  // event trigger, not verified — and on a non-Supabase Postgres, or if that trigger changes, the
+  // ledger would be created with RLS off and nothing would say so. The REVOKE on the next line is
+  // the control that is actually asserted and actually load-bearing; treat RLS here as a bonus.)
   await sql`grant select, insert, update, delete on all tables in schema public to cb_app`;
   await sql`revoke all on table _migrations from cb_app`;
   await sql`grant usage, select on all sequences in schema public to cb_app`;

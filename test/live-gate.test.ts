@@ -11,23 +11,49 @@ import { join } from 'node:path';
 
 const TEST_DIR = new URL('.', import.meta.url).pathname;
 
+/** Does this suite touch the database?
+ *
+ *  THREE signals, not one. The first version of this test looked only for a literal
+ *  `process.env.DATABASE_*` in the file — and every live suite reads those through `hasDbEnv()`
+ *  instead, so the scan matched exactly ONE of the ten and the other nine were invisible. The guard
+ *  written to stop a suite silently opting out could not see the suites it was guarding.
+ *
+ *  Importing anything from `src/db/client.ts` is the reliable signal: adminSql/appSql/withScopedTx/
+ *  closePools are the only ways into the pools, and a suite cannot reach the database without one. */
+function touchesDb(src: string): boolean {
+  return (
+    /from '\.\.\/src\/db\/client\.ts'/.test(src) ||
+    /hasDbEnv\s*\(/.test(src) ||
+    /process\.env\.DATABASE_(URL|ADMIN_URL|AUTH_URL)/.test(src)
+  );
+}
+
 test('every suite gated on a live database routes through liveOrFail', () => {
   const offenders: string[] = [];
+  const inspected: string[] = [];
 
   for (const name of readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.ts'))) {
     const src = readFileSync(join(TEST_DIR, name), 'utf8');
-
-    // A suite is "live" if it reads a database connection string from the environment.
-    const usesDb = /process\.env\.DATABASE_(URL|ADMIN_URL|AUTH_URL)/.test(src);
-    if (!usesDb) continue;
+    if (!touchesDb(src)) continue;
+    inspected.push(name);
 
     // …and it must derive its gate from the shared helper, not from a hand-rolled boolean.
     if (!src.includes('liveOrFail')) offenders.push(name);
   }
 
+  // The floor is the anti-vacuity clause, and it is the whole reason the old version passed while
+  // covering one file in ten: `offenders` is empty both when every suite is gated AND when the
+  // detector matches nothing at all. Those two states must not look alike. If a refactor renames
+  // the client module or the suites stop importing it, this fails instead of quietly going blind.
+  expect(
+    inspected.length,
+    `the live-suite detector matched only ${inspected.length} files (${inspected.join(', ')}). ` +
+      `That is too few to be right — it means touchesDb() has gone blind, not that the suites are clean.`,
+  ).toBeGreaterThanOrEqual(8);
+
   expect(
     offenders,
-    `these suites read DATABASE_* directly but do not use liveOrFail(), so they will SKIP ` +
+    `these suites touch the database but do not use liveOrFail(), so they will SKIP ` +
       `instead of FAIL under CB_REQUIRE_LIVE_TESTS=1: ${offenders.join(', ')}`,
   ).toEqual([]);
 });

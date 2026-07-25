@@ -143,6 +143,16 @@ describe.skipIf(!live)('answerQuestion — live (chat mocked)', () => {
     expect(r.answer).not.toContain('[99]'); // no footnote to nothing
   });
 
+  it('a FIVE-digit out-of-range marker is removed too (the \\d{1,4} regression)', () => {
+    // End-to-end companion to test/scrub-markers.test.ts: the bounded pattern meant anything past
+    // 9999 skipped the range check entirely and reached the reader.
+    chatResponse = '{"answer":"Revenue tripled [10000].","citations":[10000]}';
+    return answerQuestion(ctxOf(), 'What is the office plant named?').then((r) => {
+      expect(r.citations).toEqual([]);
+      expect(r.answer).not.toContain('[10000]');
+    });
+  });
+
   it('in-range markers are left alone — whether the model cited the RIGHT chunk is not parseable', async () => {
     chatResponse = '{"answer":"a [1] b [1]","citations":[1]}';
     const r = await answerQuestion(ctxOf(), 'What is the office plant named?');

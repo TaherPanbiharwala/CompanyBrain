@@ -128,7 +128,16 @@ export function buildContext(input: ContextInput): OperationContext {
   };
 }
 
-/** App-layer visibility check (array overlap). The DB enforces the same via RLS. */
+/**
+ * App-layer visibility check (array overlap): does this row's `acl` intersect the caller's grants?
+ *
+ * NOT CALLED BY ANYTHING YET, and the DB does NOT enforce the same thing — the docstring used to say
+ * it did. No policy in schema.sql or any migration references `acl` or `app.grants`; the content
+ * plane is workspace-equality only (`pages_ws`, `content_chunks_ws`). `acl && current_grants()`
+ * becomes the enforced predicate at M3/M4, and this is the reference implementation of the semantics
+ * the SQL will have to match — which is why it is kept and tested (test/context.test.ts) rather than
+ * deleted. Until then it describes an intent, not a control.
+ */
 export function visibleBy(acl: readonly string[], grants: readonly Grant[]): boolean {
   return acl.some((a) => grants.includes(a));
 }

@@ -105,7 +105,12 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
   if (!config.OPENROUTER_API_KEY) throw new RouterError('OPENROUTER_API_KEY not set');
 
   const body: Record<string, unknown> = { model, messages: opts.messages };
-  if (scope.zdr) body.provider = { data_collection: 'deny' }; // ZDR routing preference
+  // ZDR routing preference. NOT REACHABLE YET, stated plainly because D12 and .env.example both
+  // describe it as a live per-workspace toggle: every call site (answer.ts, hybrid.ts, import.ts)
+  // hardcodes `zdr: false`, so `data_collection: 'deny'` has never been sent to a provider. The
+  // plumbing below is correct and tested; what is missing is the workspace column and the UI that
+  // sets it, which is M5. Until then, treat "we support ZDR" as FALSE when talking to a customer.
+  if (scope.zdr) body.provider = { data_collection: 'deny' };
 
   const json = (await fetchJson(
     'https://openrouter.ai/api/v1/chat/completions',
@@ -151,6 +156,16 @@ export async function embed(texts: string[]): Promise<number[][]> {
   // retrieval corruption). The count must also match 1:1 with the inputs.
   if (json.data.length !== texts.length) {
     throw new RouterError(`openai returned ${json.data.length} embeddings for ${texts.length} inputs`);
+  }
+  // Assert `index` EXISTS before sorting on it. `undefined - undefined` is NaN, and a comparator
+  // returning NaN leaves the array in its original order — so a provider that omitted the field
+  // would silently give us exactly the positional mapping this sort was written to prevent, with no
+  // error anywhere. Checking is two lines; the failure mode is every chunk stored under another
+  // chunk's vector, discoverable only as bad answers.
+  for (const d of json.data) {
+    if (!Number.isInteger(d?.index)) {
+      throw new RouterError('openai embedding response is missing a numeric `index`; refusing to map positionally');
+    }
   }
   const vectors = [...json.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
   // The vector(N) column and HNSW index are fixed at config.EMBEDDING_DIM (DECISIONS D13). A

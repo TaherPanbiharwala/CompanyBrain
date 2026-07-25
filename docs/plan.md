@@ -174,7 +174,8 @@ workspace with distinct grants.
 
 ### M3 · The brain loop *(~2 weeks — the heart)*
 `ingest/import.ts` (single waist; stamps scope/acl/owner/workspace at the door; **default scope =
-private**) · `ingest/sanity.ts` · `ingest/chunk.ts` (**recursive only** + thread-grouping; tags +
+workspace** — superseded 2026-07-25 by D0.1, which closed this as workspace-default with a private
+option whose `acl` is derived rather than labelled; this line used to say `private`) · `ingest/sanity.ts` · `ingest/chunk.ts` (**recursive only** + thread-grouping; tags +
 `workspace_id` copied to chunks in-transaction) · `ingest/embed.ts` (batched + backoff via router) ·
 `search/hybrid.ts` (`acl && $grants` **inside the engine query on all three paths**; config-gated
 expansion) · `answer/answer.ts` (retrieve → cheap model → cited answer) · `core/pack.ts` (one

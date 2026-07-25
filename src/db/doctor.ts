@@ -86,9 +86,17 @@ async function snapshotColumnGrants(sql: postgres.Sql) {
     order by 1, 2, 3, 4`;
 }
 
+/** `permissive` is in here deliberately, and was missing until this pass.
+ *
+ *  It is the field that decides whether a policy WIDENS or NARROWS access. Multiple PERMISSIVE
+ *  policies on a table are OR'd — so adding one can only grant more — while a RESTRICTIVE policy is
+ *  AND'd and can only take away. Flipping an existing policy from RESTRICTIVE to PERMISSIVE is
+ *  therefore a real privilege change that left every other column in this snapshot byte-identical.
+ *  Same shape as the `relrowsecurity` gap the M2 review found: the snapshot listed the policies and
+ *  could not see the thing that decided whether they bound. */
 async function snapshotPolicies(sql: postgres.Sql) {
   return sql`
-    select tablename, policyname, coalesce(roles::text, '{public}') as roles, cmd,
+    select tablename, policyname, coalesce(roles::text, '{public}') as roles, cmd, permissive,
            coalesce(qual, '(none)') as qual, coalesce(with_check, '(none)') as with_check
     from pg_policies where schemaname = 'public'
     order by 1, 2`;
@@ -197,7 +205,22 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
     add(`${fn.name}: search_path pinned to 'pg_catalog, public, pg_temp'`,
       (fn.config ?? '').includes('search_path=pg_catalog, public, pg_temp'), fn.config ?? '(unpinned)');
     // A bare `=X/owner` entry (no grantee before the '=') is the PUBLIC grant.
-    add(`${fn.name}: no PUBLIC EXECUTE in acl`, !/(^|[{,])=X\//.test(fn.acl ?? ''), fn.acl ?? '(default)');
+    //
+    // NULL proacl is the trap, and this check used to fall straight into it. A function's proacl is
+    // NULL until something GRANTs or REVOKEs on it, and NULL means THE DEFAULT ACL APPLIES — which
+    // for a function is EXECUTE TO PUBLIC. So NULL is not "no grants", it is the single state this
+    // assertion exists to catch. Coalescing it to '' made the regex find nothing and report ok: the
+    // check was green precisely when the property was false. (The search_path assertion above gets
+    // the same coalesce right by accident — '' fails its .includes(), so it goes red on NULL.)
+    //
+    // Reachable by dropping the REVOKE in ensureAuthFunctions, or by applying a signature change as
+    // DROP+CREATE without re-running it: every role in the cluster gets EXECUTE on
+    // cb_internal.membership_role / revoke_session / revoke_all_sessions, and doctor stayed green.
+    add(
+      `${fn.name}: no PUBLIC EXECUTE in acl`,
+      fn.acl !== null && !/(^|[{,])=X\//.test(fn.acl),
+      fn.acl ?? 'NULL — the DEFAULT acl applies, which is EXECUTE TO PUBLIC. Run migrate to re-apply the REVOKE.',
+    );
   }
 
   // FORCE ROW LEVEL SECURITY would apply RLS even to the table owner, turning resolve_session into

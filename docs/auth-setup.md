@@ -86,6 +86,13 @@ DELETE FROM principals WHERE google_sub LIKE 'dev:%';   -- cascades to their ses
 Gate 2 off ⇒ the route simply does not exist (**404**, never 401 — a 401 would confirm it is there).
 Any *other* gate failing while `DEV_LOGIN=1` ⇒ **boot throws**, naming every failing gate.
 
+Gates 3 and 4 together are `isDevEnv(cfg)` in `src/config.ts`, and **the header stub
+(`DEV_AUTH=1`) and the missing-secrets boot check now use the same function.** They used to test
+only gate 4, which meant an unset `NODE_ENV` — the normal state in a container — satisfied them.
+A deployment with `DEV_AUTH=1` carried in from a `.env` therefore started with the header-trusting
+stub live *and* skipped the check for `SESSION_SECRET`/`DATABASE_AUTH_URL`/`GOOGLE_CLIENT_*`. If you
+are writing a new dev-only gate, call `isDevEnv` — never `DEV_ENVS.has(cfg.NODE_ENV)` on its own.
+
 ---
 
 ## 2. Google Cloud runbook
@@ -278,7 +285,8 @@ with `insufficient_role`. That check is app-layer (the database will happily sto
 since `cb_app` holds table-level INSERT on `invites`), which is why it has a dedicated test.
 
 The invitee redeems it by POSTing the token — **not** by clicking the URL. `acceptUrl` carries the
-token in a URL **fragment** so it never reaches a server log, a Referer header, or browser history,
+token in a URL **fragment** so it never reaches a server log or a Referer header (it IS kept in the
+browser's own history — fragments always are; the guarantee is that it does not leave the machine),
 and the page that reads that fragment ships with the M5 UI. Until then:
 
 ```bash

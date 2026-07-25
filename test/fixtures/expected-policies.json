@@ -4,6 +4,7 @@
     "policyname": "acl_grants_ws",
     "roles": "{cb_app}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "false"
   },
@@ -12,6 +13,7 @@
     "policyname": "content_chunks_ws",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -20,6 +22,7 @@
     "policyname": "invites_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "true"
   },
@@ -28,6 +31,7 @@
     "policyname": "invites_ws",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -36,6 +40,7 @@
     "policyname": "pages_ws",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -44,6 +49,7 @@
     "policyname": "principals_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "true"
   },
@@ -52,6 +58,7 @@
     "policyname": "principals_self",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(none)"
   },
@@ -60,6 +67,7 @@
     "policyname": "sessions_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "true"
   },
@@ -68,6 +76,7 @@
     "policyname": "sessions_self",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(principal_id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(principal_id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -76,6 +85,7 @@
     "policyname": "team_memberships_ws",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -84,6 +94,7 @@
     "policyname": "teams_ws",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
@@ -92,6 +103,7 @@
     "policyname": "workspace_domain_blocks_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "false"
   },
@@ -100,6 +112,7 @@
     "policyname": "workspace_domain_blocks_ws",
     "roles": "{cb_app}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "false"
   },
@@ -108,6 +121,7 @@
     "policyname": "workspace_members_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "true"
   },
@@ -116,6 +130,7 @@
     "policyname": "workspace_members_ws",
     "roles": "{cb_app}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "false"
   },
@@ -124,6 +139,7 @@
     "policyname": "workspaces_auth",
     "roles": "{cb_auth}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "true",
     "with_check": "true"
   },
@@ -132,6 +148,7 @@
     "policyname": "workspaces_current",
     "roles": "{public}",
     "cmd": "ALL",
+    "permissive": "PERMISSIVE",
     "qual": "(id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(none)"
   }

@@ -75,13 +75,27 @@ describe.skipIf(!canRun)('api /api/:op (live, dev-auth)', () => {
     expect(r2.data.name).toBe('api-ws2'); // ws2 caller sees ws2, never ws1 — RLS
   });
 
-  it('list_members is admin-gated (member 403, admin 200)', async () => {
+  it('list_members is admin-gated (member 403, admin 200) and NEVER leaks another tenant', async () => {
     expect((await post('/api/list_members', hdr(p1, ws1, 'member'))).status).toBe(403);
     const ok = await post('/api/list_members', hdr(p1, ws1, 'admin'));
     expect(ok.status).toBe(200);
     const j = await readJson(ok);
-    expect(Array.isArray(j.data)).toBe(true);
-    expect(j.data.map((m: { principal_id: string }) => m.principal_id)).toContain(p1);
+    const ids = j.data.map((m: { principal_id: string }) => m.principal_id);
+    expect(ids).toContain(p1);
+
+    // THE assertion this test was missing. `Array.isArray` plus "contains p1" both hold perfectly
+    // well while the response ALSO carries ws2's members — the failure that matters here is not an
+    // absent row, it is an extra one. workspace_members is the tenancy plane itself, so a leak here
+    // is a leak of who else exists as a customer.
+    expect(ids).not.toContain(p2);
+    const wsIds = j.data.map((m: { workspace_id?: string }) => m.workspace_id).filter(Boolean);
+    for (const w of wsIds) expect(w).toBe(ws1);
+
+    // …and symmetrically from the other side, so the test cannot pass by ws2 simply being empty.
+    const other = await readJson(await post('/api/list_members', hdr(p2, ws2, 'owner')));
+    const otherIds = other.data.map((m: { principal_id: string }) => m.principal_id);
+    expect(otherIds).toContain(p2);
+    expect(otherIds).not.toContain(p1);
   });
 
   it('no identity headers → 401', async () => {
