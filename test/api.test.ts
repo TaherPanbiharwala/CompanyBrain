@@ -7,12 +7,17 @@ import type { Server } from 'node:http';
 import { app } from '../src/index.ts';
 import { adminSql, closePools } from '../src/db/client.ts';
 import { config } from '../src/config.ts';
+import { apiLimiter } from '../src/auth/ratelimit.ts';
+import { liveOrFail, hasDbEnv } from './helpers/live.ts';
 
-const canRun =
-  !!process.env.DATABASE_URL &&
-  !!process.env.DATABASE_ADMIN_URL &&
-  config.DEV_AUTH === 1 &&
-  config.NODE_ENV !== 'production';
+// Per-run unique addresses: email_normalized is UNIQUE, and cleanup only runs in afterAll,
+// so a crashed run would otherwise poison every future run's setup.
+const RUN = crypto.randomUUID().slice(0, 8);
+
+const canRun = liveOrFail(
+  'api',
+  hasDbEnv() && config.DEV_AUTH === 1 && config.NODE_ENV !== 'production',
+);
 
 describe.skipIf(!canRun)('api /api/:op (live, dev-auth)', () => {
   let server: Server;
@@ -34,9 +39,10 @@ describe.skipIf(!canRun)('api /api/:op (live, dev-auth)', () => {
   const readJson = (res: Response): Promise<any> => res.json();
 
   beforeAll(async () => {
+    apiLimiter.reset();
     const admin = adminSql();
-    p1 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${'api-a@ex.com'}, ${'api-a@ex.com'}) returning id`)[0]!.id;
-    p2 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${'api-b@ex.com'}, ${'api-b@ex.com'}) returning id`)[0]!.id;
+    p1 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${`api-a-${RUN}@ex.com`}, ${`api-a-${RUN}@ex.com`}) returning id`)[0]!.id;
+    p2 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${`api-b-${RUN}@ex.com`}, ${`api-b-${RUN}@ex.com`}) returning id`)[0]!.id;
     ws1 = (await admin<{ id: string }[]>`insert into workspaces (name, created_by) values (${'api-ws1'}, ${p1}) returning id`)[0]!.id;
     ws2 = (await admin<{ id: string }[]>`insert into workspaces (name, created_by) values (${'api-ws2'}, ${p2}) returning id`)[0]!.id;
     await admin`insert into workspace_members (workspace_id, principal_id, role) values (${ws1}, ${p1}, 'admin'), (${ws2}, ${p2}, 'owner')`;

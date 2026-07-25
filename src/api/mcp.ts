@@ -6,22 +6,25 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { buildContext, resolveGrants, type OperationContext } from '../core/context.ts';
+import { assertMembership } from '../auth/membership.ts';
 import { operations } from './operations.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchOp } from './dispatch.ts';
 
-function envContext(): OperationContext {
+async function envContext(): Promise<OperationContext> {
   const principal = process.env.CB_MCP_PRINCIPAL;
   const workspaceId = process.env.CB_MCP_WORKSPACE;
-  const role = process.env.CB_MCP_ROLE ?? 'member';
   if (!principal || !workspaceId) {
     throw new Error('MCP bridge needs CB_MCP_PRINCIPAL and CB_MCP_WORKSPACE (uuids of a real membership).');
   }
+  // D25 on the agent surface: the pair must be a real membership, and the role comes from the
+  // database, not from CB_MCP_ROLE (which no longer exists).
+  const role = await assertMembership(principal, workspaceId);
   return buildContext({ principal, workspaceId, role, grants: resolveGrants(principal, workspaceId), remote: true });
 }
 
 async function main(): Promise<void> {
-  const ctx = envContext(); // fail-closed at startup if identity is missing/invalid (before the banner)
+  const ctx = await envContext(); // fail-closed at startup if identity is missing/invalid or not a membership
   console.error(
     '⚠️  MCP bridge — single static identity from CB_MCP_* env; local single-operator only, not multi-tenant (M3 adds token auth).',
   );

@@ -1,0 +1,82 @@
+[
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "privileges": "DELETE,INSERT,SELECT,UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "privileges": "INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "privileges": "DELETE,INSERT,SELECT,UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "team_memberships",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "teams",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_domain_blocks",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_members",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "privileges": "INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "privileges": "INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_domain_blocks",
+    "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "privileges": "INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "privileges": "INSERT,SELECT"
+  }
+]

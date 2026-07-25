@@ -2,13 +2,18 @@
 // mocked (fake-ai helper) so this exercises real Postgres/RLS without real API cost — answer
 // QUALITY is validated separately by `bun run eval:a17`, never by this structural test.
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { liveOrFail, hasDbEnv } from './helpers/live.ts';
 import { adminSql, closePools, withScopedTx } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
 import { config } from '../src/config.ts';
 import { installFakeAiFetch } from './helpers/fake-ai.ts';
 
-const live = !!process.env.DATABASE_URL && !!process.env.DATABASE_ADMIN_URL;
+// Per-run unique addresses: email_normalized is UNIQUE, and cleanup only runs in afterAll,
+// so a crashed run would otherwise poison every future run's setup.
+const RUN = crypto.randomUUID().slice(0, 8);
+
+const live = liveOrFail('ingest', hasDbEnv());
 const mutableConfig = config as unknown as Record<string, unknown>;
 
 describe.skipIf(!live)('importPage — live', () => {
@@ -24,8 +29,8 @@ describe.skipIf(!live)('importPage — live', () => {
     globalThis.fetch = installFakeAiFetch();
 
     const admin = adminSql();
-    p1 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${'ingest-a@ex.com'}, ${'ingest-a@ex.com'}) returning id`)[0]!.id;
-    p2 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${'ingest-b@ex.com'}, ${'ingest-b@ex.com'}) returning id`)[0]!.id;
+    p1 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${`ingest-a-${RUN}@ex.com`}, ${`ingest-a-${RUN}@ex.com`}) returning id`)[0]!.id;
+    p2 = (await admin<{ id: string }[]>`insert into principals (email, email_normalized) values (${`ingest-b-${RUN}@ex.com`}, ${`ingest-b-${RUN}@ex.com`}) returning id`)[0]!.id;
     ws1 = (await admin<{ id: string }[]>`insert into workspaces (name, created_by) values (${'ingest-ws1'}, ${p1}) returning id`)[0]!.id;
     ws2 = (await admin<{ id: string }[]>`insert into workspaces (name, created_by) values (${'ingest-ws2'}, ${p2}) returning id`)[0]!.id;
     await admin`insert into workspace_members (workspace_id, principal_id, role) values (${ws1}, ${p1}, 'owner'), (${ws2}, ${p2}, 'owner')`;

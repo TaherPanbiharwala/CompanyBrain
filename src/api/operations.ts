@@ -9,6 +9,7 @@ import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
 import { importPage } from '../ingest/import.ts';
 import { answerQuestion } from '../answer/answer.ts';
+import { createInvite } from '../auth/invites.ts';
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -111,9 +112,32 @@ const ask = defineOp({
   handler: async (ctx, params) => answerQuestion(ctx, params.question),
 });
 
+// ── Invites (M2, G6) ──────────────────────────────────────────────────────
+
+const create_invite = defineOp({
+  name: 'create_invite',
+  description:
+    'Invite someone to the current workspace by email. Returns a single-use accept URL — the token ' +
+    'is shown ONCE and stored only as a hash, so it cannot be read back. M2 sends no email; copy the URL.',
+  params: z.object({
+    email: z.string().min(3).max(320),
+    role: z.string().default('member'),
+  }),
+  requiredRole: 'admin',
+  mutating: true,
+  // Runs inside withScopedTx on the cb_app lane, so the invites_ws policy's
+  // WITH CHECK (workspace_id = app.workspace) structurally confines the row to one tenant.
+  //
+  // The role ceiling inside createInvite is an APP-LAYER control — cb_app holds table-level INSERT
+  // on invites, so nothing in the database stops an invites.role='owner' write. For most of M2 this
+  // op was not registered at all, which meant that ceiling had never once executed; it now has a
+  // test (test/invites.test.ts) precisely because the database will not catch a regression here.
+  handler: async (ctx, params) => withScopedTx(ctx, (tx) => createInvite(tx, ctx, params)),
+});
+
 // ── Registry + integrity guards (AM2/AM5) ─────────────────────────────────
 
-export const operations: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask];
+export const operations: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask, create_invite];
 
 // Null-prototype map: a request for an op named after an Object.prototype member (toString,
 // constructor, __proto__, hasOwnProperty, …) must resolve to `undefined` (→ unknown_op), NOT an

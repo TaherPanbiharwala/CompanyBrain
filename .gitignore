@@ -9,3 +9,4 @@ build/
 coverage/
 .bun/
 *.local
+.tmp/

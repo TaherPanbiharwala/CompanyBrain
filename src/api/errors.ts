@@ -16,8 +16,14 @@ export type OpErrorCode =
   | 'invalid_params' // 400 — params failed schema validation
   | 'payload_too_large' // 413 — request body exceeded the json limit
   | 'insufficient_role' // 403 — caller role too low for this op
-  | 'permission_denied' // 403 — reserved for acl && grants row denial (M3)
+  | 'permission_denied' // 403 — tenancy/authorization denial (incl. non-membership); acl && grants rows at M3
+  | 'rate_limited' // 429 — fixed-window limiter tripped; pairs with a retry-after header
   | 'not_found' // 404 — handler-level resource miss
+  // M2 auth codes. Kept in this ONE closed set rather than a parallel auth taxonomy, so every
+  // surface (REST, MCP, the auth routes) maps errors through the same statusFor().
+  | 'account_conflict' // 409 — this email already belongs to a different Google account
+  | 'domain_not_verified' // 400 — claimed a workspace domain this login did not verify
+  | 'invite_invalid' // 404 — wrong/expired/already-used/not-yours; deliberately indistinguishable
   | 'internal_error'; // 500 — unexpected failure
 
 export interface WireError {
@@ -38,15 +44,24 @@ export function statusFor(code: OpErrorCode): number {
     case 'bad_workspace':
     case 'bad_grant':
     case 'invalid_params':
+    case 'domain_not_verified':
       return 400;
+    case 'account_conflict':
+      return 409;
     case 'payload_too_large':
       return 413;
+    // 429, not 403: `retry-after` is only meaningful on a status clients treat as retryable, and
+    // sharing 403 with tenancy denial made "you are throttled" indistinguishable from "you are not
+    // a member of that workspace" in both client code and log filters.
+    case 'rate_limited':
+      return 429;
     case 'no_grant':
     case 'insufficient_role':
     case 'permission_denied':
       return 403;
     case 'unknown_op':
     case 'not_found':
+    case 'invite_invalid':
       return 404;
     case 'internal_error':
       return 500;
@@ -88,7 +103,10 @@ function contextSuggestion(code: ContextErrorCode): string | undefined {
     case 'unauthenticated':
       return 'Attach a valid session/identity before calling operations.';
     case 'no_workspace':
-      return 'Select a workspace (by uuid) for this request.';
+      // Deliberately does NOT branch never-had-one vs membership-revoked: the sessions composite FK
+      // nulls active_workspace_id in the same transaction that removes a membership, so the two are
+      // structurally indistinguishable at this layer. Both are fixed by the same action.
+      return 'You are signed in but not acting in any workspace. Create one with POST /auth/workspaces, or accept an invite with POST /auth/invites/accept.';
     case 'no_grant':
       return 'Your keyring is empty; contact a workspace admin if this persists.';
     case 'bad_principal':

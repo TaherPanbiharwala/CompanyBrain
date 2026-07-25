@@ -33,7 +33,6 @@ async function main(): Promise<void> {
 
   console.log(`export CB_CLI_PRINCIPAL=${principalId}`);
   console.log(`export CB_CLI_WORKSPACE=${workspaceId}`);
-  console.log('export CB_CLI_ROLE=owner');
   await closePools({ timeout: 5 });
 }
 

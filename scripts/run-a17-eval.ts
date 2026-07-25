@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
+import { assertMembership } from '../src/auth/membership.ts';
 import { hybridSearch } from '../src/search/hybrid.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
 import { scoreRetrieval, type QrelQuestion } from '../src/search/eval-score.ts';
@@ -17,11 +18,12 @@ const REPORT_PATH = join(here, '..', 'eval', 'a17-report.md');
 async function main(): Promise<void> {
   const principal = process.env.CB_CLI_PRINCIPAL;
   const workspaceId = process.env.CB_CLI_WORKSPACE;
-  const role = process.env.CB_CLI_ROLE ?? 'owner';
   if (!principal || !workspaceId) {
     console.error('set CB_CLI_PRINCIPAL and CB_CLI_WORKSPACE first (run: bun run seed:a17)');
     process.exit(2);
   }
+  // D25: the env names the pair; the database supplies the authoritative role.
+  const role = await assertMembership(principal, workspaceId);
   const ctx = buildContext({ principal, workspaceId, role, grants: resolveGrants(principal, workspaceId), remote: false });
 
   const qrels: QrelQuestion[] = JSON.parse(await readFile(QRELS_PATH, 'utf8'));

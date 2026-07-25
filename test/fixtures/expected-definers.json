@@ -1,0 +1,56 @@
+[
+  {
+    "schema": "cb_internal",
+    "name": "adopt_principal",
+    "args": "p_id uuid, p_sub text",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_auth=X/postgres}",
+    "body_md5": "34d72cb12791418e06a706db0c1bd566"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "membership_role",
+    "args": "p_principal uuid, p_workspace uuid",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "3945f007ce97f1094fe60570b9c63a8a"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "resolve_session",
+    "args": "p_token_hash text",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "99d251261f3e0550549067819a4a68c8"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "revoke_all_sessions",
+    "args": "p_token_hash text",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "2667a3e83782732bd145dc6a5e7e2065"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "revoke_session",
+    "args": "p_token_hash text",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "a35f47e56fdbf480eddbc6749d3d0767"
+  },
+  {
+    "schema": "public",
+    "name": "rls_auto_enable",
+    "args": "",
+    "owner": "postgres",
+    "config": "{search_path=pg_catalog}",
+    "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+    "body_md5": "99be20677b456ea8d3be47bdd44fb369"
+  }
+]

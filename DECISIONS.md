@@ -54,9 +54,14 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
 
 ## Identity / auth
 
-- **D10 — Roll-your-own Google OIDC** (relying-party login, hashed sessions + refresh rotation,
-  workspaces, invites, keyring resolver). Chosen over managed auth for the India data-residency
-  pitch. Highest blast radius → mandates the OperationError/auth-code taxonomy (M1), a 2-tenant
+- **D10 — Roll-your-own Google OIDC** (relying-party login, hashed sessions, workspaces, invites,
+  keyring resolver). **AMENDED 2026-07-25 (G7):** the original rationale — "chosen over managed auth
+  for the India data-residency pitch" — was **factually false** and is withdrawn: the Supabase
+  project is in `aws-1-ap-northeast-2` (**Seoul**), so every page, chunk and principal already lives
+  outside India. The real grounds for the choice are **full control over the session model and no
+  auth-vendor coupling**. The founder chose to stay in Seoul rather than re-provision in
+  `ap-south-1` while the database was empty; if residency later proves to be a genuine buying
+  objection, that move becomes a data migration rather than a ~30-minute re-provision. Highest blast radius → mandates the OperationError/auth-code taxonomy (M1), a 2-tenant
   leak-canary stub at M2, and identity-table RLS + enumeration test. (2026-07-23)
 - **D11 — Workspace CREATE decoupled from domain AUTO-JOIN:** any verified Google login can create
   a personal workspace; the public-domain blocklist blocks domain auto-join only (so Gmail-first
@@ -117,9 +122,28 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
   `-- migrate:no-transaction` pragma and must be idempotent. Adding NOT NULL to a populated table =
   expand→backfill(batched)→contract. New tables ship their RLS `ENABLE`+policy in the same file
   (Supabase auto-RLS enables RLS with no policy = default-deny). (per M0 `/review`) (2026-07-23)
-- **D24 — `doctor.ts` checks (built at M4).** Assert: `cb_app` is `NOBYPASSRLS`; every
-  cb_app-privileged `public` table has RLS enabled; no table is RLS-enabled-with-zero-policies;
-  `content_chunks.embedding` dimension === `EMBEDDING_DIM`. (per M0 `/review` sec S2, data-mig D7/D8)
+- **D24 — `doctor.ts` checks (PULLED FORWARD to M2-5, was M4).** Shipped as `bun run doctor`: 43
+  assertions plus four checked-in snapshot fixtures (definers, table grants, **column** grants,
+  policies). Pulled forward because M2's whole security posture lives in GRANTs and POLICIES, which
+  no unit test can observe. Two findings from building it: `information_schema.role_table_grants`
+  **cannot see column grants** (they live in `pg_attribute.attacl` → `role_column_grants`), so a
+  matrix asserted from table grants alone is blind to exactly the cells that carry the boundary; and
+  a real Supabase project **ships its own `SECURITY DEFINER` function in `public`**
+  (`rls_auto_enable`, backing the `ensure_rls` event trigger), so "there must be zero definers in
+  public" is false — the fixture snapshots it instead, which also catches any change to it.
+  **Corrected 2026-07-25 (M2 post-build `/review`):** this entry previously said the four original M4
+  assertions were "all now implemented". Only one was (`cb_app` is `NOBYPASSRLS`). The other three
+  were added during the review, and the gap they left was serious: `doctor` checked
+  `relforcerowsecurity` (the *opposite* flag) and nothing checked `relrowsecurity`, while `pg_policies`
+  lists policies whether or not RLS is enabled — so `ALTER TABLE content_chunks DISABLE ROW LEVEL
+  SECURITY` left all four fixtures byte-identical and every boolean green. The single largest
+  tenant-isolation regression possible was the one the auditor could not see. Now asserted: `cb_app`
+  and `cb_auth` are `NOBYPASSRLS`; **every `public` table has RLS ENABLED** (`_migrations` exempt —
+  it is fully revoked instead); no table is RLS-enabled-with-zero-policies; `content_chunks.embedding`
+  dimension === `EMBEDDING_DIM`. Count is now **46** checks (42 assertions + 4 fixtures), and the
+  fixture snapshots include `PUBLIC` as a grantee, because cb_app/cb_auth hold PUBLIC's privileges in
+  addition to their own and a grant to PUBLIC was previously invisible.
+  (per M0 `/review` sec S2, data-mig D7/D8; corrected per M2 post-build `/review`)
 - **D25 — Deferred tenancy hardening.** **M2:** the keyring resolver must derive `app.workspace`
   only from a verified `workspace_members` row, never raw request input (the sessions FK is the DB
   backstop); a dedicated least-privilege **`cb_auth`** role for pre-auth lookups (so they don't run
@@ -176,3 +200,156 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
   envelope for malformed/oversized JSON, no stack leak), `statement_timeout`/
   `idle_in_transaction_session_timeout` on the `cb_app` pool, `embed()` ordering by provider `index`
   (not position), and a widened `TXN_CONTROL` migration guard. (per `/review` 2026-07-24)
+
+## Identity (M2) — built 2026-07-25
+
+- **D34 — Refresh-token rotation is CUT from M2 (G2).** The design as reviewed was
+  *unimplementable*: only SHA-256 hashes are stored, so the specified grace-window behaviour
+  ("return the already-rotated pair") could not be performed — the raw tokens do not exist anywhere.
+  It also had no caller (no `/auth/refresh` route), i.e. it was dead code. M2 ships a single session
+  token with an ABSOLUTE 7-day expiry (**G5**, halved from 14 because with rotation cut there is no
+  reuse detection). "Sign out everywhere" is `principals.session_epoch`, bumped through a definer
+  function and compared against a per-session `sessions.epoch` stamp. Rotation + reuse detection
+  return at M5 with the real UI. `sessions.refresh_hash`/`refresh_expires_at` stay NULL.
+- **D35 — The per-request tenant read is a `SECURITY DEFINER` function (G3).** `cb_internal.
+  resolve_session(token_hash)` does session lookup + expiry + epoch + the D25 membership
+  re-verification in ONE statement, and returns `(reason, principal_id, workspace_id, member_role)`.
+  Its signature is **locked**: it takes no principal or workspace argument, because such a parameter
+  would make it a membership oracle keyed on request input. `workspace_id` and `member_role` are
+  selected only from the membership row, so "no membership ⇒ no workspace" is structural. This keeps
+  `USING(true)` off every `/api/:op` request; `cb_auth` (**G8**, retained) is now touched only by
+  login/onboarding writes. Postgres grants `EXECUTE` to PUBLIC on every new function, so the
+  `REVOKE ALL … FROM PUBLIC` is load-bearing and must be re-asserted on every migrate — which is why
+  these live in `migrate.ts`, not in a checksummed migration file.
+- **D36 — The grant deny-matrix is the real tenant-isolation control, and it lives in `migrate.ts`.**
+  `grantExisting()` re-grants `select,insert,update,delete on ALL tables` on EVERY run, so anything
+  revoked inside a migration file is silently re-broadened moments later. `narrowGrants()` runs
+  after it, and all three grant steps commit in ONE transaction — a transaction beginning after
+  `grantExisting` committed would leave exactly the window it claims to close. Two defects this
+  closes: **`WITH CHECK (false)` does not block DELETE** (Postgres governs DELETE by `USING` alone),
+  so without the revoke any member could `DELETE FROM workspaces` and cascade away an entire tenant;
+  and `workspaces_current` is `USING`-only, so `UPDATE workspaces SET domain=…` would let a member
+  hijack another org's auto-join.
+- **D37 — A workspace domain may only be claimed from the Google-signed `hd` claim of THAT login**,
+  carried on `sessions.login_hd` (the ID token and the oauth cookie are both gone by the time the
+  bootstrap request arrives). The email's domain is **never** a substitute: Google sets `hd` only for
+  Workspace accounts, so a consumer account can own a mailbox at any custom domain and would
+  otherwise permanently squat that domain's auto-join (`workspaces.domain` is UNIQUE). dev-login
+  always has `login_hd = NULL` and therefore can never claim a domain.
+- **D38 — Invites are consumed ONLY by presenting the token.** A pending invite is never
+  auto-consumed on login: otherwise anyone who knows your email could make you a member of their
+  workspace and have it become your ACTIVE workspace on first sign-in, so your first upload would
+  land in their tenant. The claim is a single `UPDATE … WHERE token_hash AND status='pending' AND
+  expires_at > now() AND email_normalized = …`, which is also the only enforcement of
+  `INVITE_TTL_DAYS`. Wrong token, expired, already-accepted and addressed-to-someone-else all return
+  the SAME generic `404 invite_invalid` — distinguishing them would confirm an invite exists.
+- **D39 — D25 holds on every surface, not just HTTP.** `bun run call`, the stdio MCP bridge and the
+  A17 scripts all call `assertMembership()`, which verifies the (principal, workspace) pair and
+  returns the **authoritative** role. `CB_CLI_ROLE`/`CB_MCP_ROLE` are deleted — an env-supplied role
+  is ignored by construction. Consequence: those entrypoints now touch the database at startup.
+- **D40 — `POST /auth/dev-login` has five gates and must not EXIST unless all pass.** It mints a real
+  session for any email with no verification. Gates: `DEV_AUTH=1`, `DEV_LOGIN=1`, `NODE_ENV` set
+  **explicitly**, `NODE_ENV` ∈ {development,test}, and `APP_BASE_URL` set **explicitly** and
+  loopback. The two "explicitly" gates exist because both values have defaults that would otherwise
+  pass unnoticed on an unconfigured box. Gate 2 off ⇒ the route 404s (never 401 — that would confirm
+  it exists); any other gate failing while `DEV_LOGIN=1` ⇒ **the app refuses to boot**.
+
+## M2 post-build review (2026-07-25)
+
+A `/review` of the built M2 — six specialist passes plus an adversarial pass — found one dominant
+failure mode, and it was not "the code is wrong". It was **security controls that were written,
+documented, and then never wired up**, with green tests and a green `doctor` throughout. The
+decisions below encode the fixes so the pattern does not repeat.
+
+- **D41 — A guard a caller can skip is not a guard: hand out the pool only through the assertion.**
+  `assertAuthPoolRole()` was written, exported, described in `client.ts` as protecting against "the
+  likeliest catastrophic M2 misconfiguration", documented in `docs/auth-setup.md` with the exact
+  error string an operator should expect — and **called by nothing**. Eight `cb_auth` call sites had
+  each independently forgotten it, and no test could notice, because the guard exists to catch a
+  misconfiguration the test environment never has. Consequence had it shipped: pasting
+  `DATABASE_ADMIN_URL` into `DATABASE_AUTH_URL` runs every login and onboarding query as the
+  **RLS-bypassing owner**, silently. Fix: `authLane()` in `src/db/client.ts` is now the only way to
+  obtain the cb_auth pool, and it awaits the (memoized) assertion first. Prefer this shape — a
+  guarded accessor — over a guard the caller must remember.
+- **D42 — CSRF is scoped by request PROPERTY, and mounted once, app-wide.** `checkCsrf` had exactly
+  one call site, `app.use('/auth', …)`, while its own header said the rule "applies to any non-GET
+  request that authenticated via cookie" and named `/api/:op` — the cookie-authenticated surface
+  carrying every mutating operation — as the motivating case. `/api/:op` was unchecked. The test that
+  should have caught it asserted `expect(res.status).toBeGreaterThan(0)`, which no HTTP response can
+  fail. `csrfGuard` is now mounted in `index.ts` ahead of both routers. Honest severity: SameSite=Lax
+  plus JSON-only body parsing blocked the classic exploit; the real gap was `Sec-Fetch-Site:
+  same-site` (a sibling subdomain or another port), which Lax *does* send the cookie for.
+- **D43 — `CB_REQUIRE_LIVE_TESTS` is enforced by `liveOrFail()`, and a meta-test enforces that.** The
+  flag was declared in config and documented in `.env.example` as the switch that makes CI fail
+  rather than skip; **nothing read it**. Every live suite skipped green on a machine with no
+  database, including the entire cross-tenant canary. `test/helpers/live.ts` now throws when the flag
+  is set and the environment is not configured, and `test/live-gate.test.ts` scans the suite files so
+  a suite added later cannot quietly opt out. Fixing six files was not the fix; enforcing the property
+  was.
+- **D44 — Deployment-shape gates are boot failures, not warnings.** A `console.warn` that fires only
+  under `import.meta.main` is not a control, and the configuration it warned about was the DEFAULT.
+  `src/boot.ts` now refuses to start when `APP_BASE_URL` is non-loopback and `TRUST_PROXY` is unset
+  (otherwise `req.ip` is the proxy's address and the `/auth` limiter collapses to ONE bucket for the
+  whole fleet — 31 anonymous requests take sign-in offline for every user), when a non-loopback base
+  URL is plain http (the cookie loses both `Secure` and `__Host-`, letting a sibling subdomain set a
+  `cb_session` for the parent domain), and, outside dev, when `SESSION_SECRET`/`DATABASE_AUTH_URL`/
+  `GOOGLE_CLIENT_*` are missing — those used to let the process boot green and fail the user *after*
+  Google had already authenticated them.
+- **D45 — A presented-and-rejected session must never fall through to the dev-auth stub.** The
+  resolver returns `null` for `expired`, and `server.ts` did `?? resolveDevContext(req)` — so an
+  expired cookie plus forged `x-cb-*` headers authenticated, making session expiry decorative in
+  every environment with `DEV_AUTH=1`. The stub is now reachable only when NO session was presented
+  (`hasSessionCookie(req)`). Found by writing the test, not by reading the code.
+- **D46 — Membership revocation must be durable: `workspace_domain_blocks` (migration 0002).**
+  Memberships are rows that exist or do not, with no "was removed" state, so removing someone from a
+  domain-claimed workspace silently undid itself on their next sign-in — domain auto-join put them
+  straight back as `member`, also undoing the composite-FK `SET NULL`. The tombstone outlives the
+  membership row, which is the entire point. Read-only for both `cb_app` and `cb_auth`: a login lane
+  that could clear its own block is not a block. M2 ships no removal endpoint (cb_app holds no
+  DELETE on `workspace_members`), so removal remains a deliberate admin action — now with a supported
+  shape. The admin UI that writes both rows in one transaction is M5.
+- **D47 — The id_token signature is NOT what establishes trust; TLS to the token endpoint is.**
+  Verified against `oauth4webapi`'s source, not assumed: it validates the ID token signature only via
+  an explicitly-called `validateApplicationLevelSignature()`, and the authorization-code path does
+  not call it. OIDC Core §3.1.3.7 permits exactly this — the token arrives over a direct,
+  TLS-authenticated back-channel POST. So the trust anchor is TLS to `accounts.google.com` plus the
+  client secret and PKCE verifier; claims (iss/aud/exp/nonce) *are* checked. `google.ts` said
+  "signature against Google's JWKS", which was false. Practical consequence, now documented: anything
+  replacing `fetch` (the test harness does, via `customFetch`) bypasses the anchor entirely.
+  `test/google.test.ts` pins the real behaviour so a library upgrade that starts enforcing signatures
+  is noticed rather than assumed.
+- **D48 — Per-connection `statement_timeout` does not survive the transaction pooler; use `SET
+  LOCAL`.** Measured, not inferred: with `DB_STATEMENT_TIMEOUT=15000` configured as a startup-packet
+  parameter, `current_setting('statement_timeout')` inside a scoped transaction returned Supabase's
+  default `2min`, and `idle_in_transaction_session_timeout` returned `0`. In transaction-pooling mode
+  the client socket is not 1:1 with a backend, so those parameters never reached the session the
+  query ran on — the documented "a runaway statement can't pin a pooled connection and hang the
+  fleet" protection did not exist. Both are now set via `set_config(…, true)` in the same single
+  round trip as the three tenancy GUCs in `withScopedTx`.
+- **D49 — Destructive confirmations must name something that actually distinguishes the target.**
+  `migrate:reset` required `CB_CONFIRM_RESET` to equal `current_database()` — which is literally
+  `postgres` for every Supabase project, so the operator typed the same word for a scratch project
+  and for the one holding the corpus. With `NODE_ENV` defaulting to `development`, three
+  "independent" confirmations reduced to one: `--yes-destroy`. It now confirms on the Supabase
+  **project ref** parsed from the admin URL, prints **real** `count(*)` values (not `n_live_tup`,
+  an estimate that reads 0 for a never-analyzed table), pauses, and holds the migrate advisory lock
+  across the drop.
+- **D50 — `create_invite` ships as an op (G6 honoured), and its role ceiling has a test.** It had
+  been written with a comment claiming "it has its own test for that reason", registered as no
+  operation, reachable from no route, and referenced by no test — so the app-layer guard stopping an
+  admin from minting an `owner` invite had never once executed, on a table where `cb_app` holds
+  table-level INSERT and the database will happily store `role='owner'`. Also fixed: `acceptUrl` was
+  a GET link to a POST-only route (the one documented redemption path 404'd) with the token in a
+  query string; it is now a fragment on a landing path, and the accept route reads the token from the
+  body only. `acceptByToken` now returns the role the DATABASE holds rather than the invite's — with
+  `ON CONFLICT DO NOTHING`, an existing member keeps their role, so the old return told a member who
+  accepted an owner invite that they were an owner.
+- **D51 — Deferred deliberately, recorded so it is a decision and not an omission.** (a) The `/auth/*`
+  success envelope is inconsistent with `/api/:op` (four routes wrap in `data`, four splat; snake_case
+  vs camelCase) — changing it now churns docs and tests for no user benefit, and M5 brings the UI that
+  actually consumes it. (b) Nothing reaps expired `sessions` or `invites` rows; harmless at
+  design-partner scale, and after `narrowGrants` nobody holds DELETE on `sessions`, so the reaper
+  needs a definer or the admin connection (M5). (c) The A17 performance items — no GIN index on
+  `to_tsvector('english', content)`, `hnsw.iterative_scan` never set despite `schema.sql:262`
+  requiring it, and chunk inserts one round trip at a time — are pre-existing and get their own
+  commit.

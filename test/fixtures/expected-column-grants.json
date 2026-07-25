@@ -1,0 +1,1256 @@
+[
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "column_name": "grant_tag",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "acl_grants",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "acl",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "acl",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "acl",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "content",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "content",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "content",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "created_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "embedding",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "embedding",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "embedding",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "ord",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "ord",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "ord",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "page_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "page_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "page_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "tags",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "tags",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "tags",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "token_count",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "token_count",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "token_count",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "accepted_by",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "accepted_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "email",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "email",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "email_normalized",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "email_normalized",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "expires_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "expires_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "invited_by",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "invited_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "role",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "role",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "status",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "status",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "status",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "token_hash",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "token_hash",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "invites",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "acl",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "acl",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "acl",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "body",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "body",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "body",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "compiled_truth",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "compiled_truth",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "compiled_truth",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "created_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "description",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "description",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "description",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "kind",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "kind",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "kind",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "owner_principal",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "owner_principal",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "owner_principal",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "scope",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "scope",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "scope",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "slug",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "slug",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "slug",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "status",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "status",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "status",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "tags",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "tags",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "tags",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "title",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "title",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "title",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "updated_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "updated_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "updated_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "email",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "email_normalized",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "google_sub",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "name",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "session_epoch",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "principals",
+    "column_name": "updated_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "team_memberships",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "team_memberships",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "team_memberships",
+    "column_name": "team_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "team_memberships",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "teams",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "teams",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "teams",
+    "column_name": "name",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "teams",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "blocked_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "reason",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_members",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_members",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_members",
+    "column_name": "role",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspace_members",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "created_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "domain",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "name",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "workspaces",
+    "column_name": "name",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "accepted_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "accepted_by",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "email",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "email_normalized",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "expires_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "invited_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "role",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "status",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "status",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "token_hash",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "invites",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email_normalized",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email_normalized",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "email_normalized",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "google_sub",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "google_sub",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "name",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "name",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "name",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "session_epoch",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "session_epoch",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "updated_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "updated_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "principals",
+    "column_name": "updated_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "active_workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "active_workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "active_workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "epoch",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "epoch",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "expires_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "expires_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "login_hd",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "login_hd",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "principal_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "refresh_expires_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "refresh_expires_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "refresh_hash",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "refresh_hash",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "token_hash",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "sessions",
+    "column_name": "token_hash",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "blocked_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "reason",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_domain_blocks",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "principal_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "principal_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "role",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "role",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspace_members",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "created_by",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "created_by",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "domain",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "domain",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "name",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_auth",
+    "table_name": "workspaces",
+    "column_name": "name",
+    "privilege_type": "SELECT"
+  }
+]

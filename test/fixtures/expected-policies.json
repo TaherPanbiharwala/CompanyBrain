@@ -1,0 +1,138 @@
+[
+  {
+    "tablename": "acl_grants",
+    "policyname": "acl_grants_ws",
+    "roles": "{cb_app}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "false"
+  },
+  {
+    "tablename": "content_chunks",
+    "policyname": "content_chunks_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "invites",
+    "policyname": "invites_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "invites",
+    "policyname": "invites_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "pages",
+    "policyname": "pages_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "principals",
+    "policyname": "principals_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "principals",
+    "policyname": "principals_self",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(none)"
+  },
+  {
+    "tablename": "sessions",
+    "policyname": "sessions_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "sessions",
+    "policyname": "sessions_self",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(principal_id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(principal_id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "team_memberships",
+    "policyname": "team_memberships_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "teams",
+    "policyname": "teams_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "workspace_domain_blocks",
+    "policyname": "workspace_domain_blocks_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "false"
+  },
+  {
+    "tablename": "workspace_domain_blocks",
+    "policyname": "workspace_domain_blocks_ws",
+    "roles": "{cb_app}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "false"
+  },
+  {
+    "tablename": "workspace_members",
+    "policyname": "workspace_members_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "workspace_members",
+    "policyname": "workspace_members_ws",
+    "roles": "{cb_app}",
+    "cmd": "ALL",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "false"
+  },
+  {
+    "tablename": "workspaces",
+    "policyname": "workspaces_auth",
+    "roles": "{cb_auth}",
+    "cmd": "ALL",
+    "qual": "true",
+    "with_check": "true"
+  },
+  {
+    "tablename": "workspaces",
+    "policyname": "workspaces_current",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "(id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(none)"
+  }
+]

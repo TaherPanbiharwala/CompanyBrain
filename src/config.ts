@@ -32,6 +32,27 @@ const EnvSchema = z.object({
   DB_IDLE_IN_TX_TIMEOUT: z.coerce.number().default(15000),
   // Password migrate.ts assigns to the cb_app role (must match the one embedded in DATABASE_URL).
   CB_APP_DB_PASSWORD: z.string().default(''),
+  //   DATABASE_AUTH_URL = the least-privilege `cb_auth` role (M2), via the TRANSACTION pooler. Used
+  //     ONLY for login/onboarding writes — never on the /api/:op hot path (G3). Optional in the
+  //     schema so the offline unit suite boots; authSql() is fatal on FIRST USE when unset.
+  DATABASE_AUTH_URL: z.string().default(''),
+  CB_AUTH_DB_PASSWORD: z.string().default(''),
+
+  // --- auth (M2) ---
+  // APP_BASE_URL is the SINGLE source of truth for: the OIDC redirect URI, the __Host- cookie-name
+  // decision, the CSRF origin check, and the dev-login loopback gate. Printed at boot.
+  APP_BASE_URL: z.string().default('http://localhost:3000'),
+  // G5: absolute session lifetime. Refresh rotation is CUT from M2 (G2), so there is no reuse
+  // detection — a stolen cookie is valid for this whole window. 7 days, deliberately not 14.
+  SESSION_TTL_DAYS: z.coerce.number().default(7),
+  INVITE_TTL_DAYS: z.coerce.number().default(7),
+  // Dedicated flag for POST /auth/dev-login: a route that MINTS A REAL SESSION with no Google
+  // verification needs its own switch, not a shared one (gate 2 of five).
+  DEV_LOGIN: z.coerce.number().default(0),
+  // Unset => never call app.set('trust proxy'). 'loopback', or a numeric hop count.
+  TRUST_PROXY: z.string().default(''),
+  // CI sets 1 so the live-DB security tests FAIL instead of silently skipping.
+  CB_REQUIRE_LIVE_TESTS: z.coerce.number().default(0),
 
   OPENROUTER_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),
@@ -47,12 +68,60 @@ const EnvSchema = z.object({
 
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
-  // Defaults to http://localhost:<PORT>/auth/google/callback when unset (derived below).
+  // DERIVED from APP_BASE_URL below. Kept as an explicit override only — two independently-set
+  // origin values drift into Google's `redirect_uri_mismatch`, which is the #1 OAuth setup failure.
   OIDC_REDIRECT_URI: z.string().default(''),
   SESSION_SECRET: z.string().default(''),
 });
 
-/** Pure: parse an env bag into the resolved config. No process/global reads — testable. */
+/** The environments where dev-only behaviour (identity stubs, dev-login, destructive resets) may be
+ *  permitted at all.
+ *
+ *  Fail CLOSED on this axis: an allowlist, never `!== 'production'`. A negative match fails OPEN for
+ *  an unset, blank, or misspelled NODE_ENV ('prod', 'Production', 'staging').
+ *
+ *  ONE definition. It had drifted into three copies — api/dev-auth.ts, boot.ts and db/migrate.ts —
+ *  each independently deciding where destructive or identity-bypassing behaviour is allowed. That is
+ *  the last set of strings that should exist more than once. */
+export const DEV_ENVS: ReadonlySet<string> = new Set(['development', 'test']);
+
+/** Every form a loopback host can arrive in.
+ *
+ *  `[::1]` is not redundant: `new URL(...).hostname` strips the brackets from an IPv6 literal but
+ *  Express's `req.hostname` KEEPS them, and both feed this set. The M2 review found these two
+ *  callers had each hand-rolled the list and already disagreed — the per-request dev-login belt
+ *  omitted `[::1]`, so a request to `http://[::1]:3000` passed the boot gate and was then 404'd by
+ *  the belt. One list, one predicate. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/** THE loopback test. Takes a bare hostname (not a URL) so request-side and config-side callers
+ *  share it. */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.trim().toLowerCase());
+}
+
+/** Host of APP_BASE_URL is a loopback address (dev-login gate 5). Malformed URL ⇒ false (fail closed). */
+function loopbackHost(baseUrl: string): boolean {
+  try {
+    return isLoopbackHost(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** APP_BASE_URL is https. Picks BOTH the `Secure` cookie attribute and the `__Host-` name prefix —
+ *  one predicate, so the two can never disagree (a `__Host-` cookie without Secure is silently
+ *  discarded by the browser: an infinite login loop with no error anywhere). */
+function httpsBase(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** Pure: parse an env bag into the resolved config. No process/global reads, NO boot assertions —
+ *  this runs at import in every unit test, so anything that can throw belongs in assert*Safe(). */
 export function parseConfig(env: Record<string, string | undefined>) {
   const parsed = EnvSchema.safeParse(env);
   if (!parsed.success) {
@@ -60,12 +129,18 @@ export function parseConfig(env: Record<string, string | undefined>) {
     throw new Error('Invalid environment configuration');
   }
   const d = parsed.data;
+  const appBaseUrl = d.APP_BASE_URL;
   return {
     ...d,
     // Any non-zero value enables pool-safe mode (prepare:false). Guard against a stray value like 2
     // silently falling back to prepare:true, which is unsafe behind the transaction pooler.
     isPooler: d.DB_TRANSACTION_POOLER !== 0,
-    OIDC_REDIRECT_URI: d.OIDC_REDIRECT_URI || `http://localhost:${d.PORT}/auth/google/callback`,
+    OIDC_REDIRECT_URI: d.OIDC_REDIRECT_URI || `${appBaseUrl.replace(/\/+$/, '')}/auth/google/callback`,
+    // Whether APP_BASE_URL was EXPLICITLY provided. Gate 5 of dev-login would otherwise pass by
+    // default (the fallback is loopback), so an unconfigured staging box would look local.
+    appBaseUrlExplicit: env.APP_BASE_URL !== undefined && env.APP_BASE_URL !== '',
+    appBaseIsLoopback: loopbackHost(appBaseUrl),
+    appBaseIsHttps: httpsBase(appBaseUrl),
   } as const;
 }
 

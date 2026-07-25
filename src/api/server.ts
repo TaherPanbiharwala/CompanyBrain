@@ -6,8 +6,10 @@ import { ContextError } from '../core/context.ts';
 import { operations } from './operations.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchOp } from './dispatch.ts';
-import { mapContextError } from './errors.ts';
+import { mapContextError, OperationError } from './errors.ts';
+import { apiLimiter } from '../auth/ratelimit.ts';
 import { resolveDevContext } from './dev-auth.ts';
+import { resolveSessionContext, hasSessionCookie } from '../auth/resolver.ts';
 
 export function mountApi(app: Express): void {
   // Discovery: the same catalog MCP tools/list exposes, over REST (review AM8). Hidden ops excluded.
@@ -21,7 +23,20 @@ export function mountApi(app: Express): void {
 
     let ctx;
     try {
-      ctx = resolveDevContext(req);
+      // The `await` is load-bearing: a Promise is never nullish, so without it `ctx` would be a
+      // pending Promise, sail past the `if (!ctx)` check below, and blow up inside dispatch —
+      // 500ing every unauthenticated request while making the dev-auth fallback unreachable.
+      //
+      // Real session first; the dev-auth header stub is only ever a fallback, and is off entirely
+      // outside local development. A session that exists but has no workspace THROWS ContextError
+      // rather than returning null, so it cannot be silently downgraded onto the stub.
+      const sessionCtx = await resolveSessionContext(req, res);
+      // A session that was PRESENTED and rejected (expired, signed-out-everywhere, unknown token)
+      // must not be quietly downgraded onto the dev-auth header stub. It used to be: the resolver
+      // returns null for expiry, `?? resolveDevContext(req)` picked that up, and an expired cookie
+      // plus forged x-cb-* headers authenticated — making expiry decorative wherever DEV_AUTH=1.
+      // The stub exists for requests that presented NO session at all.
+      ctx = sessionCtx ?? (hasSessionCookie(req) ? undefined : resolveDevContext(req));
     } catch (err) {
       if (err instanceof ContextError) {
         const oe = mapContextError(err);
@@ -37,9 +52,20 @@ export function mountApi(app: Express): void {
         error: {
           code: 'unauthenticated',
           message: 'no authenticated identity',
-          suggestion: 'Dev: set DEV_AUTH=1 and x-cb-principal/x-cb-workspace headers. Real auth lands at M2.',
+          suggestion: 'Sign in at /auth/google. Locally you can also POST /auth/dev-login (no Google project needed) — see docs/auth-setup.md.',
         },
       });
+      return;
+    }
+
+    // Throttle the EXPENSIVE surface, keyed on the principal now that we know it. `ask` runs a
+    // hybrid search plus a paid model call and `ingest` embeds every chunk, so this is where a
+    // runaway agent loop actually costs money — yet only the cheap pre-auth routes were limited.
+    if (apiLimiter.hit(ctx.principal)) {
+      const err = new OperationError('rate_limited', 'too many requests',
+        'Slow down — this workspace has hit its per-minute operation budget.');
+      res.setHeader('retry-after', String(apiLimiter.retryAfterSeconds(ctx.principal)));
+      res.status(err.status).json({ ok: false, reqId, error: err.toWire() });
       return;
     }
 
@@ -50,6 +76,24 @@ export function mountApi(app: Express): void {
     } else {
       res.status(result.status).json({ ok: false, reqId: result.reqId, error: result.error });
     }
+  });
+
+  // Catch-all 404, registered after every route but BEFORE the error middleware. Without it an
+  // unmatched path falls through to Express's default handler, which returns `Cannot POST /x` as
+  // text/html — so a client that JSON.parse()s the body gets a syntax error instead of the closed
+  // {ok:false, reqId, error} envelope this API promises everywhere else. The documented
+  // dev-login-disabled case (404 when the route is not mounted) hit exactly this.
+  app.use((req: Request, res: Response) => {
+    const existing = res.getHeader('x-request-id');
+    const supplied = req.header('x-request-id');
+    const reqId = (typeof existing === 'string' ? existing : undefined)
+      ?? (supplied && supplied.length <= 200 ? supplied : crypto.randomUUID());
+    res.setHeader('x-request-id', reqId);
+    res.status(404).json({
+      ok: false,
+      reqId,
+      error: { code: 'not_found', message: 'not found', suggestion: 'GET /api/_ops lists available operations.' },
+    });
   });
 
   // Terminal error middleware (must be registered LAST). Body-parser errors (malformed / oversized

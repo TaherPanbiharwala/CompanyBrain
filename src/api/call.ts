@@ -2,6 +2,7 @@
 // Ported from gbrain's handleToolCall/call.ts idea: build a ctx directly (no HTTP, no auth surface)
 // and run the op, so you can watch an operation work in seconds. Identity comes from env.
 import { buildContext, resolveGrants } from '../core/context.ts';
+import { assertMembership } from '../auth/membership.ts';
 import { dispatchOp } from './dispatch.ts';
 
 async function main(): Promise<void> {
@@ -21,11 +22,14 @@ async function main(): Promise<void> {
   }
   const principal = process.env.CB_CLI_PRINCIPAL ?? process.env.CB_MCP_PRINCIPAL;
   const workspaceId = process.env.CB_CLI_WORKSPACE ?? process.env.CB_MCP_WORKSPACE;
-  const role = process.env.CB_CLI_ROLE ?? process.env.CB_MCP_ROLE ?? 'owner';
   if (!principal || !workspaceId) {
     console.error('set CB_CLI_PRINCIPAL and CB_CLI_WORKSPACE (uuids of a real membership) in the env.');
     process.exit(2);
   }
+  // D25 on the CLI surface too: the env says WHICH principal and workspace, the database says
+  // whether that pair is a real membership and what the role actually is. Any env-supplied role is
+  // ignored — CB_CLI_ROLE no longer exists. This makes the CLI DB-dependent at startup by design.
+  const role = await assertMembership(principal, workspaceId);
   const ctx = buildContext({
     principal,
     workspaceId,
