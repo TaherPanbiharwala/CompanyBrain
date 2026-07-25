@@ -527,3 +527,27 @@ fixes made earlier the same day, which is recorded here rather than buried.
   is newer.** Fresh code written under time pressure to close a review finding is written in exactly
   the state — confident, unreviewed, and touching security-relevant paths — that produced the findings
   in the first place. Review the fix diff, not just the original.
+- **D65 — Measure first: three of the four planned search optimizations were worth 14ms combined.**
+  The A17 latency work was planned as `Promise.all` the two search arms, drop the `pages` JOIN from
+  the vector arm, and stop over-fetching `content` for 40 candidates to keep 8. Baselined against
+  Supabase ap-northeast-2 (one pooler round trip ≈ 110ms), those measured **0ms, 1ms and 13ms**.
+  `Promise.all` — the headline item — is worth nothing because a transaction holds ONE connection and
+  postgres.js runs its statements in order on it, so concurrency at the JS level buys no parallelism
+  at the wire level. A fourth idea of my own, shrinking the 29KB query-vector literal, was also
+  rejected on measurement: `toPrecision(7)` is 39% smaller and saved 11ms, because the cost is the
+  server-side `::vector` PARSE of 1536 elements rather than the bytes — and it is not even lossless
+  (`eq:false` after the float4 cast; float4 round-trip needs 9 significant digits).
+
+  What did work was the thing the plan did not name: **issue fewer statements**. `hybridSearch` became
+  one statement (both arms plus RRF as CTEs), 930→691ms; `importPage` became one multi-row INSERT
+  instead of one round trip per chunk, 5464→1313ms for 20 chunks — a 40-chunk document had been
+  spending ~4.4 seconds holding a pooled connection doing nothing but waiting. End to end,
+  `ask` went 1035→704ms (−32%), 9.6→6.4 round trips.
+
+  Two things this makes a rule. **A performance plan written from reading code is a list of
+  hypotheses, not a list of tasks** — the baseline is what turns it into work worth doing, and it is
+  cheap next to implementing three changes that do nothing. And **moving tested logic into SQL needs
+  an equivalence test, not confidence**: RRF's move into the query had two traps (`rrfFuse` ranks from
+  zero while `row_number()` starts at one; RRF ties are common and previously broke on Map insertion
+  order, i.e. on whichever arm the database returned first). `rrfFuse` stays the specification, now
+  with a deterministic id tie-break, and a live test asserts the SQL agrees with it on real data.
