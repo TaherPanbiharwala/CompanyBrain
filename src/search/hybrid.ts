@@ -10,7 +10,7 @@ import type { OperationContext } from '../core/context.ts';
 import { withScopedTx } from '../db/client.ts';
 import { embed, withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
-import { rrfFuse } from './rrf.ts';
+import { RRF_K } from './rrf.ts';
 
 export interface ChunkHit {
   chunkId: string;
@@ -20,13 +20,15 @@ export interface ChunkHit {
   content: string;
 }
 
-interface ChunkRow {
+interface FusedRow {
   chunk_id: string;
   page_id: string;
   slug: string;
   ord: number;
   content: string;
+  score: string; // numeric arrives as a string from postgres.js
 }
+
 
 const DEFAULT_TOP_K = 8;
 const ARM_LIMIT = 20; // candidates fetched per arm before RRF fusion narrows to topK
@@ -42,45 +44,63 @@ export async function hybridSearch(
   const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([query]));
   const vectorLiteral = toVectorLiteral(queryVector!);
 
-  const { keywordRows, vectorRows } = await withScopedTx(ctx, async (tx) => {
-    const keywordRows = await tx<ChunkRow[]>`
-      select c.id as chunk_id, c.page_id, p.slug, c.ord, c.content
+  // ONE statement, not two. MEASURED, because the obvious answers were wrong (see DECISIONS D65):
+  //   * `Promise.all` on the two arms saved exactly NOTHING — a transaction holds one connection and
+  //     postgres.js runs its statements in order on it, so concurrency at the JS level buys no
+  //     parallelism at the wire level.
+  //   * Dropping the `pages` JOIN saved 1ms, and fetching full `content` for 40 candidates instead
+  //     of 8 cost 13ms. Both were on the plan; neither was worth doing.
+  //   * The real cost is per-STATEMENT: every extra round trip on this link is ~110ms, and the
+  //     ::vector cast of a 1536-element literal is a second one all by itself (parse cost on the
+  //     server, not bytes — cutting the literal 39% smaller saved 11ms).
+  // So the win is to issue fewer statements, and fusion moves into SQL to make that possible:
+  // 930ms -> 691ms for the search leg.
+  //
+  // The fusion arithmetic MUST match rrfFuse exactly. Two traps, both live here:
+  //   * rrfFuse ranks from ZERO (`1/(k + rank)`), row_number() starts at ONE — hence `rk - 1`.
+  //   * ties are common in RRF and must break the same way, hence `order by score desc, id` against
+  //     rrfFuse's id tie-break.
+  // test/hybrid.test.ts asserts the two agree on real data, so rrfFuse remains the specification and
+  // this is the fast path that has to match it.
+  const rows = await withScopedTx(ctx, (tx) => tx<FusedRow[]>`
+    with kw as (
+      select c.id,
+             row_number() over (
+               order by ts_rank_cd(to_tsvector('english', c.content), plainto_tsquery('english', ${query})) desc
+             ) as rk
       from content_chunks c
-      join pages p on p.id = c.page_id
       where to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})
-      order by ts_rank_cd(to_tsvector('english', c.content), plainto_tsquery('english', ${query})) desc
-      limit ${ARM_LIMIT}`;
-
-    // `embedding is not null` is explicit rather than incidental. The column is nullable by design
-    // (deferred/background embedding stays possible — migration 0004), and a NULL only sorts last
-    // because NULLS LAST is the default for ASC: a property of the sort DIRECTION, not a statement
-    // about relevance. So the filter is not about ordering — an earlier version of this comment
-    // claimed un-embedded rows would "consume ARM_LIMIT slots", which NULLS LAST already prevents
-    // whenever there are ARM_LIMIT embedded rows to fill them.
-    //
-    // What it actually buys: on a SMALL or freshly-ingested workspace, where fewer than ARM_LIMIT
-    // chunks carry an embedding, the tail of this result would otherwise be un-embedded rows in
-    // arbitrary order — rows the vector arm has expressed no opinion about — which then enter RRF
-    // fusion as if they were ranked candidates. The filter keeps the vector arm's output to rows it
-    // actually scored.
-    const vectorRows = await tx<ChunkRow[]>`
-      select c.id as chunk_id, c.page_id, p.slug, c.ord, c.content
+      limit ${ARM_LIMIT}
+    ),
+    -- embedding IS NOT NULL is explicit rather than incidental. The column is nullable by design
+    -- (deferred/background embedding stays possible — migration 0004), and a NULL only sorts last
+    -- because NULLS LAST is the default for ASC: a property of the sort DIRECTION, not a statement
+    -- about relevance. On a small or freshly-ingested workspace the tail would otherwise be rows the
+    -- vector arm has expressed no opinion about, entering fusion as if they were ranked candidates.
+    vec as (
+      select c.id, row_number() over (order by c.embedding <=> ${vectorLiteral}::vector) as rk
       from content_chunks c
-      join pages p on p.id = c.page_id
       where c.embedding is not null
-      order by c.embedding <=> ${vectorLiteral}::vector
-      limit ${ARM_LIMIT}`;
+      limit ${ARM_LIMIT}
+    ),
+    fused as (
+      select id, sum(1.0 / (${RRF_K} + rk - 1)) as score
+      from (select id, rk from kw union all select id, rk from vec) u
+      group by id
+      order by score desc, id
+      limit ${topK}
+    )
+    select c.id as chunk_id, c.page_id, p.slug, c.ord, c.content, f.score
+    from fused f
+    join content_chunks c on c.id = f.id
+    join pages p on p.id = c.page_id
+    order by f.score desc, c.id`);
 
-    return { keywordRows, vectorRows };
-  });
-
-  const byId = new Map<string, ChunkRow>();
-  for (const row of [...keywordRows, ...vectorRows]) byId.set(row.chunk_id, row);
-
-  const fused = rrfFuse([keywordRows.map((r) => r.chunk_id), vectorRows.map((r) => r.chunk_id)]);
-
-  return fused.slice(0, topK).map(({ id }) => {
-    const row = byId.get(id)!;
-    return { chunkId: row.chunk_id, pageId: row.page_id, slug: row.slug, ord: row.ord, content: row.content };
-  });
+  return rows.map((r) => ({
+    chunkId: r.chunk_id,
+    pageId: r.page_id,
+    slug: r.slug,
+    ord: r.ord,
+    content: r.content,
+  }));
 }

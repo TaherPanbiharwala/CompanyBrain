@@ -45,3 +45,22 @@ describe('rrfFuse', () => {
     expect(withDefault).toEqual(withExplicit);
   });
 });
+
+describe('rrfFuse — deterministic tie-breaking', () => {
+  it('breaks exact score ties on id, not on the order the lists arrived in', () => {
+    // 'a' and 'b' each hold rank 0 in one list and rank 1 in the other, so their scores are equal to
+    // the last bit. Before the tie-break this returned whichever the Map saw first — i.e. the answer
+    // depended on which search arm the database happened to return first.
+    const forward = rrfFuse([['a', 'b'], ['b', 'a']]);
+    const reversed = rrfFuse([['b', 'a'], ['a', 'b']]);
+    expect(forward.map((r) => r.id)).toEqual(['a', 'b']);
+    expect(reversed.map((r) => r.id)).toEqual(['a', 'b']); // same answer either way
+    expect(forward[0]!.score).toBe(forward[1]!.score); // genuinely tied, not ordered by score
+  });
+
+  it('score still dominates the tie-break', () => {
+    // 'z' sorts after 'a' alphabetically but outranks it, so id must never override score.
+    const result = rrfFuse([['z', 'a'], ['z', 'a']]);
+    expect(result.map((r) => r.id)).toEqual(['z', 'a']);
+  });
+});

@@ -28,9 +28,19 @@ async function main(): Promise<void> {
 
   const qrels: QrelQuestion[] = JSON.parse(await readFile(QRELS_PATH, 'utf8'));
 
-  console.log(`Scoring retrieval over ${qrels.length} questions...`);
+  // ONE pipeline run per question, not two. This used to call hybridSearch for the scoring pass and
+  // then answerQuestion for the transcript — and answerQuestion runs hybridSearch again internally.
+  // Every question therefore paid for two embeddings and two searches, and (worse for a go/no-go
+  // number) the retrieval being SCORED was not the retrieval the graded answer was written from.
+  // Now it is literally the same result object.
+  console.log(`Running the pipeline over ${qrels.length} questions...`);
+  const results = new Map<string, Awaited<ReturnType<typeof answerQuestion>>>();
+  for (const q of qrels) results.set(q.id, await answerQuestion(ctx, q.question));
+
+  console.log('Scoring retrieval...');
   const summary = await scoreRetrieval(qrels, async (question) => {
-    const hits = await hybridSearch(ctx, question);
+    const q = qrels.find((x) => x.question === question);
+    const hits = q ? results.get(q.id)!.sources : await hybridSearch(ctx, question);
     const slugs: string[] = [];
     for (const h of hits) if (!slugs.includes(h.slug)) slugs.push(h.slug);
     return slugs;
@@ -55,7 +65,7 @@ async function main(): Promise<void> {
   ];
 
   for (const q of qrels) {
-    const result = await answerQuestion(ctx, q.question);
+    const result = results.get(q.id)!;
     console.log(`\n--- ${q.id}: ${q.question} ---`);
     console.log(result.answer);
 

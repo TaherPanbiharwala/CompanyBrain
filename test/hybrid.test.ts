@@ -7,6 +7,10 @@ import { adminSql, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
 import { hybridSearch } from '../src/search/hybrid.ts';
+import { rrfFuse } from '../src/search/rrf.ts';
+import { toVectorLiteral } from '../src/ai/vector.ts';
+import { embed, withRouterScope } from '../src/ai/router.ts';
+import { withScopedTx } from '../src/db/client.ts';
 import { config } from '../src/config.ts';
 import { installFakeAiFetch } from './helpers/fake-ai.ts';
 
@@ -80,6 +84,38 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     // test's own premise says must still be ranked and returned.
     for (const h of hits) expect(WS1_SLUGS).toContain(h.slug);
   });
+
+  it('the SQL fusion agrees with rrfFuse, which stays the specification', async () => {
+    // hybridSearch moved RRF into the query to save a round trip (D65). That is only safe if the SQL
+    // arithmetic matches the reference implementation EXACTLY, and there are two traps in it:
+    // rrfFuse ranks from zero while row_number() starts at one, and RRF ties are common so both
+    // sides must break them the same way. Running the arms separately here and fusing in TypeScript
+    // reproduces the old code path, so this test fails the moment the two drift.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const query = 'zebra salt flats zzzqqqmarker bread';
+
+    const viaSql = await hybridSearch(ctx, query);
+
+    const [qv] = await withRouterScope({ workspaceId: ws1, zdr: false }, () => embed([query]));
+    const lit = toVectorLiteral(qv!);
+    const { kw, vec } = await withScopedTx(ctx, async (tx) => {
+      const kw = await tx<{ id: string }[]>`
+        select c.id from content_chunks c
+        where to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})
+        order by ts_rank_cd(to_tsvector('english', c.content), plainto_tsquery('english', ${query})) desc
+        limit 20`;
+      const vec = await tx<{ id: string }[]>`
+        select c.id from content_chunks c
+        where c.embedding is not null
+        order by c.embedding <=> ${lit}::vector
+        limit 20`;
+      return { kw, vec };
+    });
+    const viaTs = rrfFuse([kw.map((r) => r.id), vec.map((r) => r.id)]).slice(0, 8).map((r) => r.id);
+
+    expect(viaSql.length).toBeGreaterThan(0); // a vacuous [] === [] would prove nothing
+    expect(viaSql.map((h) => h.chunkId)).toEqual(viaTs);
+  }, 30_000);
 
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {
     const ctx2 = buildContext({ principal: p2, workspaceId: ws2, role: 'owner', grants: resolveGrants(p2, ws2), remote: false });

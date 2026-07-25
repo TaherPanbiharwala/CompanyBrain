@@ -35,19 +35,33 @@ async function main(): Promise<void> {
 
   const files = (await readdir(CORPUS_DIR)).filter((f) => f.endsWith('.md')).sort();
   let failed = 0;
-  for (const file of files) {
-    const raw = await readFile(join(CORPUS_DIR, file), 'utf8');
-    const { title, tags, body } = parseFrontmatter(raw);
-    const slug = basename(file, '.md');
-    const result = await dispatchOp(ctx, 'ingest', { slug, title: title || slug, body, tags });
-    if (result.ok) {
-      const data = result.data as { chunkCount: number };
-      console.log(`+ ${slug} -> ${data.chunkCount} chunks`);
-    } else {
-      failed++;
-      console.error(`! ${slug} FAILED: ${result.error.code} ${result.error.message}`);
+
+  // Bounded concurrency, not a bare Promise.all over every file. Each ingest holds one pooled
+  // connection for its whole transaction, so unbounded fan-out would exhaust DB_POOL_MAX (10) and
+  // the surplus would just queue — with the added downside that a burst of embedding calls goes out
+  // at once. Four is comfortably under the pool and still hides most of the round-trip latency.
+  // Files are consumed from one shared cursor so a slow document does not stall a whole batch.
+  const CONCURRENCY = 4;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      const file = files[i];
+      if (!file) return;
+      const raw = await readFile(join(CORPUS_DIR, file), 'utf8');
+      const { title, tags, body } = parseFrontmatter(raw);
+      const slug = basename(file, '.md');
+      const result = await dispatchOp(ctx, 'ingest', { slug, title: title || slug, body, tags });
+      if (result.ok) {
+        const data = result.data as { chunkCount: number };
+        console.log(`+ ${slug} -> ${data.chunkCount} chunks`);
+      } else {
+        failed++;
+        console.error(`! ${slug} FAILED: ${result.error.code} ${result.error.message}`);
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, files.length) }, worker));
   await closePools({ timeout: 5 });
   if (failed > 0) process.exit(1);
 }

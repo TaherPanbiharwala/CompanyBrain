@@ -20,5 +20,11 @@ export function rrfFuse(rankedLists: readonly (readonly string[])[], k: number =
   }
   return [...scores.entries()]
     .map(([id, score]) => ({ id, score }))
-    .sort((a, b) => b.score - a.score);
+    // Tie-break on id, not on Map insertion order. RRF ties are COMMON — any two ids holding the
+    // same rank in the same number of lists score identically — and relying on insertion order made
+    // the result depend on which arm happened to return first. It also made this function impossible
+    // to compare against an equivalent SQL ordering, which is now how hybridSearch fuses (one round
+    // trip instead of two); test/rrf.test.ts pins the tie-break, and the live search test asserts
+    // the SQL agrees with this implementation.
+    .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
