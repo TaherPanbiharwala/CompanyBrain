@@ -9,7 +9,7 @@
 // INSERT on `invites`, so NOTHING in the database prevents an `invites.role = 'owner'` row. This
 // function is the only thing standing there.
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { adminSql, appSql, withScopedTx, closePools } from '../src/db/client.ts';
+import { adminSql, withScopedTx, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { createInvite } from '../src/auth/invites.ts';
 import { hashToken, TOKEN_LENGTH } from '../src/auth/session.ts';
@@ -98,7 +98,9 @@ describe.skipIf(!live)('createInvite — role ceiling and token handling', () =>
   }, 60_000);
 });
 
-describe.skipIf(!live)('create_invite is reachable as an operation', () => {
+// NOT skipIf(!live): every assertion below reads the in-process registry. Gating it behind the DB
+// meant the one check that create_invite is even REACHABLE only ran when Supabase was configured.
+describe('create_invite is reachable as an operation', () => {
   it('is registered in the ops registry as an admin-only mutating op', async () => {
     const { operationsByName } = await import('../src/api/operations.ts');
     const op = operationsByName.create_invite;
@@ -113,6 +115,4 @@ describe.skipIf(!live)('create_invite is reachable as an operation', () => {
     const names = buildToolDefs(operations.filter((o) => !o.hidden)).map((t: { name: string }) => t.name);
     expect(names).toContain('create_invite');
   });
-
-  afterAll(async () => closePools({ timeout: 5 }));
 });

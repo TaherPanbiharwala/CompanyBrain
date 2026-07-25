@@ -16,6 +16,7 @@ import { authLimiter, apiLimiter } from '../src/auth/ratelimit.ts';
 import { onboard } from '../src/auth/workspaces.ts';
 import { assertMembership, membershipRole } from '../src/auth/membership.ts';
 import { liveOrFail, hasDbEnv } from './helpers/live.ts';
+import { scramMatches } from '../src/db/migrate.ts';
 
 const RUN = crypto.randomUUID().slice(0, 8);
 // Needs the auth pool AND the dev-login flags on top of the usual connection strings — this suite
@@ -469,5 +470,41 @@ describe.skipIf(!live)('M2 auth — end to end', () => {
       expect((await post('/auth/logout-all')).status).toBe(429);
       authLimiter.reset();
     }, 120_000);
+  });
+
+  // ── migrate's password idempotence, against a verifier POSTGRES wrote (D63) ──
+  //
+  // test/scram.test.ts covers scramMatches offline, but it builds its fixtures with the same
+  // primitives the function uses, so a shared misreading of RFC 5802 would pass there. This is the
+  // independent check: the verifier here was produced by the database, not by our code.
+  //
+  // What rides on it: if scramMatches returns false (or null) against a real verifier, `migrate`
+  // falls back to ALTER-ing the password on every run — which is what invalidated Supabase's pooler
+  // credential cache, tripped its circuit breaker, and took every lane offline mid-review. The unit
+  // test cannot catch that; only this can.
+  describe('scramMatches against a real Postgres verifier', () => {
+    it('recognizes the configured CB_APP_DB_PASSWORD as already set, so migrate skips the ALTER', async () => {
+      const admin = adminSql();
+      let rows: { rolpassword: string | null }[];
+      try {
+        rows = await admin<{ rolpassword: string | null }[]>`
+          select rolpassword from pg_authid where rolname = 'cb_app'`;
+      } catch (err) {
+        // pg_authid is superuser-only on some platforms. If we cannot read it here, migrate cannot
+        // either — passwordAlreadyCorrect() returns null and the outage-causing ALTER happens every
+        // run. That is a real finding, not a skip.
+        throw new Error(
+          `cannot read pg_authid.rolpassword as the admin role — migrate's password-idempotence ` +
+            `check (D63) therefore degrades to ALTER-on-every-run. Original error: ${String(err)}`,
+        );
+      }
+      const verifier = rows[0]?.rolpassword;
+      expect(typeof verifier).toBe('string');
+      expect(verifier).toContain('SCRAM-SHA-256$'); // md5 would mean the check silently no-ops
+
+      expect(scramMatches(verifier!, config.CB_APP_DB_PASSWORD)).toBe(true);
+      // …and it is a real comparison, not a function that returns true for anything.
+      expect(scramMatches(verifier!, `${config.CB_APP_DB_PASSWORD}x`)).toBe(false);
+    }, 30_000);
   });
 });

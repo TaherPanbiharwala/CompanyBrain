@@ -59,11 +59,10 @@ async function main(): Promise<void> {
     console.log(`\n--- ${q.id}: ${q.question} ---`);
     console.log(result.answer);
 
-    const citedPairs: { n: number; slug: string }[] = [];
-    for (const n of result.citations) {
-      const source = result.sources[n - 1];
-      if (source) citedPairs.push({ n, slug: source.slug });
-    }
+    // `cited` is pre-resolved and index-aligned with `citations`, so this no longer hand-rolls the
+    // 1-based offset (nor silently drops an out-of-range index, which is what the old
+    // `if (source)` guard was quietly doing — answerQuestion now rejects those at the boundary).
+    const citedPairs = result.citations.map((n, i) => ({ n, slug: result.cited[i]!.slug }));
 
     reportLines.push(
       `### ${q.id}: ${q.question}`,

@@ -49,3 +49,40 @@ describe('normalizeEmail — rejects', () => {
     }
   });
 });
+
+// isPublicDomain had ZERO test coverage until `noUnusedLocals` surfaced that this file IMPORTED it
+// and never called it. It is the second layer under D11: it decides whether a workspace may claim a
+// domain, and a false negative auto-joins every Gmail user on the planet into one workspace.
+describe('isPublicDomain — the domain-auto-join gate (D11)', () => {
+  it('blocks the consumer providers, including the ones that alias each other', () => {
+    for (const d of ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'icloud.com',
+                     'me.com', 'proton.me', 'protonmail.com', 'yahoo.com', 'aol.com']) {
+      expect(isPublicDomain(d)).toBe(true);
+    }
+  });
+
+  it('allows a real company domain — the whole point of the feature', () => {
+    for (const d of ['acme.com', 'anthropic.com', 'corp.co.uk']) {
+      expect(isPublicDomain(d)).toBe(false);
+    }
+  });
+
+  it('normalizes case and whitespace before matching, so `  GMAIL.COM ` cannot slip through', () => {
+    expect(isPublicDomain('  GMAIL.COM ')).toBe(true);
+    expect(isPublicDomain('GoogleMail.Com')).toBe(true);
+  });
+
+  it('every entry in the list is already lowercase and trimmed', () => {
+    // The lookup lowercases the INPUT, not the set — so an entry stored as `Gmail.com` would be
+    // unreachable and silently permit the domain it was added to block.
+    for (const d of PUBLIC_EMAIL_DOMAINS) expect(d).toBe(d.trim().toLowerCase());
+  });
+
+  it('does NOT match on a subdomain or a lookalike suffix', () => {
+    // Documents the actual contract: exact match only. Safe because the domain always arrives from a
+    // verified Google `hd` claim, never from user input — if that ever changes, this test is the
+    // place the assumption is written down.
+    expect(isPublicDomain('mail.gmail.com')).toBe(false);
+    expect(isPublicDomain('notgmail.com')).toBe(false);
+  });
+});

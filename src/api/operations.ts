@@ -4,12 +4,13 @@
 // tenant identity (src/core/context.ts); handlers open their own withScopedTx for DB work (D6).
 import { z } from 'zod';
 import type { OperationContext } from '../core/context.ts';
-import type { Role } from './roles.ts';
+import { ROLES_TUPLE, type Role } from './roles.ts';
 import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
 import { importPage } from '../ingest/import.ts';
 import { answerQuestion } from '../answer/answer.ts';
 import { createInvite } from '../auth/invites.ts';
+import { PAGE_SCOPES } from '../core/context.ts';
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -92,12 +93,23 @@ const list_members = defineOp({
 const ingest = defineOp({
   name: 'ingest',
   description: 'Ingest a page: chunk the body, embed each chunk, and write page + chunks atomically.',
+  // Every bound here turns a 500 into a diagnosable 400. Unbounded `z.string()` meant an over-long
+  // slug raised Postgres 54000 ("index row size exceeds btree maximum") from the UNIQUE index, and a
+  // huge body drove an unbounded number of paid embedding calls — both surfacing as a generic
+  // `internal_error`. On the MCP and CLI transports there is no express body cap at all, so nothing
+  // bounded any of this even incidentally.
   params: z.object({
-    slug: z.string(),
-    title: z.string(),
-    body: z.string(),
-    tags: z.array(z.string()).optional(),
-    scope: z.string().optional(),
+    // Lowercase kebab-ish. It is a URL-facing identifier and a UNIQUE btree key, so both the charset
+    // and the length matter; 200 is far under the ~2704-byte index-row limit.
+    slug: z.string().min(1).max(200).regex(/^[a-z0-9][a-z0-9._-]*$/, 'slug must be lowercase alphanumeric with . _ or -'),
+    title: z.string().min(1).max(300),
+    body: z.string().min(1).max(200_000),
+    tags: z.array(z.string().min(1).max(64)).max(50).optional(),
+    // An ENUM, not z.string(). This is an access-control knob: it decides whether the row's acl is
+    // `self:<author>` or `ws:<workspace>`, and the database enforces the acl. Publishing it as an
+    // open string let any value persist into a column M4 branches on, and told agents reading
+    // /api/_ops that anything goes. The CHECK in migration 0003 is the matching DB-side guard.
+    scope: z.enum(PAGE_SCOPES).optional(),
   }),
   requiredRole: 'member',
   mutating: true,
@@ -107,7 +119,10 @@ const ingest = defineOp({
 const ask = defineOp({
   name: 'ask',
   description: 'Answer a question by retrieving relevant chunks (hybrid search + RRF) and generating a cited answer.',
-  params: z.object({ question: z.string() }),
+  // Bounded: `question` reaches embed() AND the chat prompt, both paid calls. Unbounded, a 100kb
+  // question exceeded the embedding input limit and surfaced as `internal_error` — a 500 for what is
+  // plainly an input-validation failure, after the money was already spent.
+  params: z.object({ question: z.string().min(1).max(2_000) }),
   requiredRole: 'member',
   handler: async (ctx, params) => answerQuestion(ctx, params.question),
 });
@@ -121,7 +136,10 @@ const create_invite = defineOp({
     'is shown ONCE and stored only as a hash, so it cannot be read back. M2 sends no email; copy the URL.',
   params: z.object({
     email: z.string().min(3).max(320),
-    role: z.string().default('member'),
+    // An ENUM so the published inputSchema carries the legal set. As a bare string the MCP
+    // tools/list contract said "any string", so an agent would guess 'editor'/'viewer' and get a
+    // handler-thrown error instead of a schema-level one naming the options.
+    role: z.enum(ROLES_TUPLE).default('member'),
   }),
   requiredRole: 'admin',
   mutating: true,
@@ -137,17 +155,33 @@ const create_invite = defineOp({
 
 // ── Registry + integrity guards (AM2/AM5) ─────────────────────────────────
 
-export const operations: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask, create_invite];
+const declared: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask, create_invite];
+
+// ONE registry, and it is strict.
+//
+// `.strict()` is applied here rather than at each definition site so a future op cannot forget it,
+// and it is applied to the EXPORTED array — not only to the by-name map — because the published
+// contract and the runtime must come from the same object. `buildToolDefs` emits
+// `"additionalProperties": false` into every MCP inputSchema and /api/_ops entry, telling agents an
+// undeclared key is invalid, while a plain z.object silently STRIPS unknown keys and returns 200. An
+// agent sending `tag` instead of `tags` got a successful ingest with the metadata quietly discarded,
+// and the only trace was `unknown_key_count` in a log it cannot read. Publishing from a loose array
+// while validating against a strict map would leave exactly that gap one refactor away.
+const strict: Operation[] = declared.map((op) => {
+  if (!(op.params instanceof z.ZodObject)) {
+    throw new Error(`operation "${op.name}": params must be a z.object`);
+  }
+  return { ...op, params: op.params.strict() };
+});
+
+export const operations: Operation[] = strict;
 
 // Null-prototype map: a request for an op named after an Object.prototype member (toString,
 // constructor, __proto__, hasOwnProperty, …) must resolve to `undefined` (→ unknown_op), NOT an
 // inherited function. A plain {} would return that function — truthy — skipping the miss-guard in
 // dispatch and crashing on op.params. Object.create(null) has no prototype, so every miss is undefined.
 const byName: Record<string, Operation> = Object.create(null);
-for (const op of operations) {
-  if (!(op.params instanceof z.ZodObject)) {
-    throw new Error(`operation "${op.name}": params must be a z.object`);
-  }
+for (const op of strict) {
   if (byName[op.name]) throw new Error(`duplicate operation name: ${op.name}`);
   byName[op.name] = op;
 }

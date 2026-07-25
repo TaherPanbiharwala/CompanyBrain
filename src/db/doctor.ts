@@ -33,8 +33,12 @@ interface Check {
 /** Every SECURITY DEFINER function in the schemas we are responsible for.
  *  Includes `public` on purpose: Supabase provisions `public.rls_auto_enable()` (the ensure_rls
  *  event trigger), so "there must be zero definers in public" is FALSE on a real project. Snapshot-
- *  and-diff is strictly stronger anyway — it catches a NEW definer, a changed body, a changed
- *  owner, an unpinned search_path, and a widened ACL, none of which a count would notice. */
+ *  and-diff is strictly stronger anyway — it catches a NEW definer, a changed owner, an unpinned
+ *  search_path, and a widened ACL, none of which a count would notice.
+ *
+ *  A changed BODY is caught for cb_internal definers only. public.rls_auto_enable is Supabase's, and
+ *  its body legitimately changes under vendor maintenance — see the CASE expression below for why
+ *  pinning it trains the operator to run --update reflexively. Everything else about it stays pinned. */
 async function snapshotDefiners(sql: postgres.Sql) {
   return sql`
     select n.nspname                                   as schema,
@@ -43,7 +47,14 @@ async function snapshotDefiners(sql: postgres.Sql) {
            pg_get_userbyid(p.proowner)                 as owner,
            coalesce(p.proconfig::text, '(unpinned)')   as config,
            coalesce(p.proacl::text, '(default: PUBLIC EXECUTE)') as acl,
-           md5(p.prosrc)                               as body_md5
+           -- Body hash ONLY for the definers we author. public.rls_auto_enable() is Supabase's own
+           -- event trigger: its body legitimately changes during vendor maintenance, and a check
+           -- that goes red for a reason the operator cannot act on teaches them to reach for
+           -- --update reflexively — which is precisely how a REAL drift gets rubber-stamped.
+           -- Every security-relevant property of it is still pinned below (owner, pinned
+           -- search_path, ACL), and a NEW definer appearing in public still fails the diff.
+           case when n.nspname = 'cb_internal' then md5(p.prosrc)
+                else '(vendor-owned: body not pinned)' end as body_md5
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where p.prosecdef and n.nspname in ('cb_internal', 'public')
     order by 1, 2, 3`;

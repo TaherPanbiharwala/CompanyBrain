@@ -49,8 +49,13 @@ export function hasSessionCookie(req: Request): boolean {
 export async function resolveSessionRow(req: Request): Promise<SessionRow | null> {
   const raw = readSessionCookie(req);
   if (!raw) return null;
-  // Shape check before touching the database: a flood of junk cookies is answered from memory
-  // rather than by a round trip on a pool that is reachable pre-authentication.
+  // Shape check: MALFORMED cookies are answered from memory rather than by a round trip.
+  //
+  // Note what this does NOT do — the comment here used to claim it stopped "a flood of junk
+  // cookies", which was false and mattered: any random 43-char base64url string passes, so a
+  // deliberate flood walked straight through to the database. The actual flood control is
+  // `preAuthGuard` (src/auth/csrf.ts), mounted app-wide BEFORE this runs. This check only sheds
+  // accidental garbage — a truncated cookie, a stale value from another app on localhost.
   if (!looksLikeToken(raw)) return null;
 
   await assertAppPoolRole();

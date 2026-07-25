@@ -1,5 +1,6 @@
-// TEMPORARY dev-only request→context resolver. Replaced at M2 by the real session→membership
-// resolver (which reuses buildContext/resolveGrants unchanged). This is the ONLY code path that
+// Dev-only request→context resolver. M2 DEMOTED this (it did not remove it): server.ts reaches it
+// only when NO session cookie was presented, so a presented-and-rejected session can never fall
+// through to it (D45). The real session→membership resolver reuses buildContext/resolveGrants. This is the ONLY code path that
 // fabricates identity from untrusted headers, so it is double-gated (NODE_ENV!=='production' AND
 // DEV_AUTH=1) and the app hard-refuses to start if that combination looks production-like (review AM9).
 // Parameterized on config (defaulting to the singleton) so the gate is unit-testable.
@@ -28,7 +29,7 @@ export function assertDevAuthSafe(cfg: AuthConfig = config): void {
   }
   console.warn(
     '⚠️  DEV AUTH ENABLED — POST /api/:op trusts x-cb-principal/x-cb-workspace/x-cb-role headers with NO verification. ' +
-      'Dev only; replaced by real auth at M2. (src/api/dev-auth.ts)',
+      'Dev only; demoted at M2 to a fallback for requests that present NO session. (src/api/dev-auth.ts)',
   );
 }
 

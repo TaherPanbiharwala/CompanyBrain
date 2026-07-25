@@ -3,7 +3,7 @@
 // domain would auto-join every other Gmail user on the planet into their workspace.
 //
 // Checked-in code rather than a table: it is security-load-bearing, tiny, and changes rarely, so it
-// belongs in version control where a change is reviewed — same reasoning as DEV_ENVS in dev-auth.ts.
+// belongs in version control where a change is reviewed — same reasoning as DEV_ENVS in config.ts.
 //
 // In practice a public domain is already unreachable here, because a domain can only be claimed from
 // a verified Google `hd` claim and Google sets `hd` only for Workspace accounts. This is the second

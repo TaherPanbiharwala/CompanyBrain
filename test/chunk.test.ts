@@ -37,13 +37,29 @@ describe('chunkText', () => {
     expect(lenWithOverlap).toBeGreaterThan(lenNoOverlap);
   });
 
-  it('hard char cap is enforced even on whitespace-less input', () => {
-    const text = 'x'.repeat(20000); // no whitespace at all — forces the char-slice fallback path
+  it('the char-slice fallback is LOSSLESS and capped on whitespace-less input', () => {
+    // The fixture is the test. `'x'.repeat(20000)` makes losslessness unverifiable IN PRINCIPLE —
+    // every slice of it looks like every other, so a chunker that silently dropped 3000 chars would
+    // still pass. Position-encoded blocks (no whitespace, so still the char-slice path) make each
+    // slice uniquely locatable, which is what turns the stated property into an assertion.
+    let text = '';
+    for (let i = 0; text.length < 20000; i++) text += `[${i.toString(36).padStart(6, '0')}]`;
+
     const chunks = chunkText(text, { maxChars: 6000 });
-    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(6000);
-    // the pieces should reassemble to cover the original length once overlap is discounted —
-    // at minimum, every char-run must be captured somewhere across the chunks.
     expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(6000);
+
+    // Walk the chunks in order, locating each in the original. `covered` is how far the union of
+    // chunks reaches: a chunk starting past it is a GAP (dropped content), and a chunk that is not
+    // found at all is INVENTED content.
+    let covered = 0;
+    for (const c of chunks) {
+      const at = text.indexOf(c.text);
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(at).toBeLessThanOrEqual(covered);
+      covered = Math.max(covered, at + c.text.length);
+    }
+    expect(covered).toBe(text.length);
   });
 
   it('an explicit chunkOverlap of 0 means NO overlap (0 is not "unset")', () => {

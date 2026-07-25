@@ -7,7 +7,7 @@ import { mountApi } from './api/server.ts';
 import { mountAuth } from './auth/routes.ts';
 import { assertDevAuthSafe, assertDevLoginSafe } from './api/dev-auth.ts';
 import { assertDeploymentSafe } from './boot.ts';
-import { csrfGuard } from './auth/csrf.ts';
+import { csrfGuard, preAuthGuard } from './auth/csrf.ts';
 
 export const app = express();
 // Behind a proxy req.ip is the proxy's address unless this is set, which would collapse the
@@ -19,6 +19,12 @@ if (config.TRUST_PROXY) {
 app.use(express.json({ limit: '100kb' })); // explicit body cap (review AM10)
 // Express 5 has no cookie parsing of its own. Parsing ONLY — the oauth cookie carries its own HMAC.
 app.use(cookieParser());
+// Coarse IP-keyed flood shed, BEFORE anything touches the database. Ordering is the whole point:
+// the per-principal apiLimiter cannot run until resolveSessionContext has already spent a round trip
+// on the cb_app pool, so it could never protect that pool from unauthenticated traffic. A flood of
+// well-formed junk session cookies passes looksLikeToken and reaches the database; at ~10
+// connections that starves every authenticated request. This sheds it from memory first.
+app.use(preAuthGuard);
 // CSRF for EVERY cookie-authenticated mutating request, app-wide — deliberately not inside either
 // router. It sits after cookieParser (it needs to know whether a session cookie is present) and
 // before both mounts, so /api/:op is covered and any router added later inherits it.

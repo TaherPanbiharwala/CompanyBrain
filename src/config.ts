@@ -5,7 +5,8 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.string().default('development'),
   // Dev-only: when 1 (and NODE_ENV != production), POST /api/:op trusts x-cb-* identity headers with
-  // NO verification (src/api/dev-auth.ts). Replaced by real auth at M2. NEVER set in production.
+  // NO verification (src/api/dev-auth.ts). Demoted at M2 to a no-session-presented fallback (D45).
+  // NEVER set in production.
   DEV_AUTH: z.coerce.number().default(0),
 
   // Database = Supabase (managed Postgres + pgvector), DECISIONS D22.
@@ -56,10 +57,16 @@ const EnvSchema = z.object({
 
   OPENROUTER_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),
-  // Chat model is an OPEN decision (DECISIONS D12.1) — founder ruled out Anthropic (too
-  // expensive) and OpenAI's chat models. Left unset until that conversation happens at M3;
-  // router.ts throws a clear error rather than silently defaulting to either.
+  // The chat model is CHOSEN (DECISIONS D12.1: openrouter:deepseek/deepseek-v4-flash) but has no
+  // code default — Anthropic and OpenAI chat models are ruled out on cost, so silently defaulting to
+  // anything would spend money on a provider the operator did not pick. router.ts throws and names
+  // the chosen slug. (This comment said "OPEN decision" for two milestones after D12.1 resolved it,
+  // and the thrown error told the operator to go ask themselves a question they had answered.)
   CHAT_MODEL: z.string().default(''),
+  // RESERVED for M7 (compiled-truth synthesis), per D12.1: openrouter:deepseek/deepseek-v4-pro.
+  // Declared and read by NOTHING today — deliberately, and marked so, because a config key that is
+  // declared-and-unread is otherwise indistinguishable from a forgotten one (D43 records exactly
+  // that failure for CB_REQUIRE_LIVE_TESTS).
   FRONTIER_MODEL: z.string().default(''),
   // Embeddings are a separate, already-locked decision (D13) — OpenAI's embedding model is fine;
   // only the *chat* model is restricted per the founder's cost preference above.

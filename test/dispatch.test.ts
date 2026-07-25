@@ -136,3 +136,64 @@ describe('dispatchOp — the sacred invariant: shapes never values', () => {
     expect(String((errs[0] as Error).message)).toContain(SECRET);
   });
 });
+
+// ── The role gate PREVENTS EXECUTION, it does not merely 403 ──────────────
+// Every existing role test asserted the response code. That is consistent with a handler that ran
+// and had its result discarded — and the ops behind this gate are `list_members` (reads every
+// membership) and `create_invite` (mints workspace access, on a table where cb_app holds
+// table-level INSERT so the database will NOT stop it). "Did it answer 403" and "did it not run"
+// are different questions, and only the second one is the security property.
+describe('dispatchOp — a denied role never RUNS the handler', () => {
+  it('the handler has no side effect when the role check fails', async () => {
+    let ran = 0;
+    operationsByName._sideeffect = defineOp({
+      name: '_sideeffect',
+      description: 'test: admin-only op that records that it ran',
+      params: z.object({}),
+      requiredRole: 'admin',
+      handler: async () => {
+        ran++;
+        return { ran };
+      },
+    });
+    try {
+      const denied = await dispatchOp(ctxMember, '_sideeffect', {});
+      expect(denied.ok).toBe(false);
+      if (!denied.ok) expect(denied.error.code).toBe('insufficient_role');
+      expect(ran).toBe(0); // no write, no invite row, no email
+
+      // …and the op IS runnable, so `ran === 0` above was not vacuously true.
+      expect((await dispatchOp(ctxOwner, '_sideeffect', {})).ok).toBe(true);
+      expect(ran).toBe(1);
+    } finally {
+      delete operationsByName._sideeffect;
+    }
+  });
+
+  it('EVERY admin/owner-gated op in the REAL registry denies a member', async () => {
+    const { operations } = await import('../src/api/operations.ts');
+    const gated = operations.filter((o) => o.requiredRole === 'admin' || o.requiredRole === 'owner');
+    expect(gated.length).toBeGreaterThan(0); // non-vacuity: the loop must actually iterate
+
+    for (const op of gated) {
+      const r = await dispatchOp(ctxMember, op.name, {}, { errorSink: () => {} });
+      expect(r.ok, `${op.name} did not deny a member`).toBe(false);
+      // Must be the ROLE code. `invalid_params` would mean validation ran first (ladder inverted);
+      // any DB error would mean the handler ran. Both are the bug this asserts against.
+      if (!r.ok) expect(r.error.code, `${op.name} denied for the wrong reason`).toBe('insufficient_role');
+    }
+  });
+
+  it('the DEFAULT requiredRole is member — an op declaring none runs for a member', async () => {
+    expect(operationsByName.whoami!.requiredRole).toBeUndefined();
+    expect((await dispatchOp(ctxMember, 'whoami', {})).ok).toBe(true);
+  });
+
+  it('unknown keys are REJECTED, matching the additionalProperties:false we publish', async () => {
+    // z.object strips unknown keys silently; the published JSON Schema says they are invalid. The
+    // registry applies .strict() so the runtime tells the truth.
+    const r = await dispatchOp(ctxOwner, 'echo', { message: 'hi', tpyo: 1 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('invalid_params');
+  });
+});

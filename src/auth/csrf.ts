@@ -16,7 +16,11 @@
 import type { Request, Response, NextFunction } from 'express';
 import { config } from '../config.ts';
 import { OperationError } from '../api/errors.ts';
+import { sendError, shedIfLimited } from '../api/envelope.ts';
 import { sessionCookieName } from './session.ts';
+import { preAuthLimiter } from './ratelimit.ts';
+import { requestId } from '../api/reqid.ts';
+import { logAuth } from './log.ts';
 
 function appOrigin(): string {
   try {
@@ -56,7 +60,43 @@ export function checkCsrf(req: Request): CsrfVerdict {
 }
 
 /**
- * The middleware that makes the rule above actually property-scoped.
+ * Coarse IP-keyed flood shed, mounted app-wide BEFORE anything resolves identity.
+ *
+ * Ordering is the entire point. `apiLimiter` is keyed on the principal, so it cannot run until
+ * `resolveSessionContext` has already spent a database round trip on the `cb_app` pool — meaning the
+ * limiter protecting that pool could never protect it from UNAUTHENTICATED traffic. And the
+ * resolver's shape check rejects malformed cookies from memory but accepts any random 43-char
+ * base64url string, so a junk-cookie flood reached the database unimpeded. At Seoul latency with a
+ * 10-connection pool that is roughly 80 req/s to full saturation.
+ *
+ * This is a shed, not a budget: generous enough that no real client notices, cheap enough that it
+ * costs a map lookup. `apiLimiter` still runs afterwards as the real per-principal budget.
+ */
+export function preAuthGuard(req: Request, res: Response, next: NextFunction): void {
+  // ONLY /health is exempt. It is a pure in-memory response (src/index.ts) that a platform health
+  // checker polls continuously from one address and must never be shed.
+  //
+  // /health/db is NOT exempt, and the exemption that used to cover it was the bug this guard exists
+  // to prevent: it calls appSql() and checks out a connection from the SAME 10-slot cb_app pool
+  // described above, so exempting it left one unauthenticated, DB-touching, unthrottled route —
+  // a cheaper version of the junk-cookie flood, needing no cookie at all. The comment that justified
+  // it ("neither touches the tenant pool") was simply false. A health checker polling once every few
+  // seconds is nowhere near 300/min, so it is unaffected by being shed-eligible.
+  if (req.path === '/health') {
+    next();
+    return;
+  }
+  const key = req.ip ?? 'unknown';
+  const reqId = requestId(req, res);
+  if (shedIfLimited(preAuthLimiter, key, res, reqId, 'Slow down and retry shortly.')) {
+    logAuth(reqId, 'pre_auth_rate_limited', { path: req.path });
+    return;
+  }
+  next();
+}
+
+/**
+ * The middleware that makes the CSRF rule above actually property-scoped.
  *
  * It was path-scoped until the M2 review: `checkCsrf` had exactly one caller, `app.use('/auth', …)`,
  * so `POST /api/:op` — the cookie-authenticated surface carrying every mutating operation, and the
@@ -74,7 +114,10 @@ export function checkCsrf(req: Request): CsrfVerdict {
  * and is rejected on its own merits.
  */
 export function csrfGuard(req: Request, res: Response, next: NextFunction): void {
-  if (checkCsrf(req).ok) {
+  // Evaluated ONCE and reused: this used to call checkCsrf twice and discard the first verdict, so
+  // the `reason` that reached the log came from a second, independent evaluation of the request.
+  const verdict = checkCsrf(req);
+  if (verdict.ok) {
     // Covers the safe-method exemption too — checkCsrf short-circuits on GET/HEAD/OPTIONS.
     next();
     return;
@@ -88,16 +131,8 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     return;
   }
 
-  const verdict = checkCsrf(req);
-  const reqId = (typeof res.getHeader('x-request-id') === 'string' ? (res.getHeader('x-request-id') as string) : null)
-    ?? req.header('x-request-id')
-    ?? crypto.randomUUID();
-  res.setHeader('x-request-id', reqId);
-  console.log(JSON.stringify({
-    level: 'info', kind: 'auth', ts: new Date().toISOString(), reqId,
-    auth_stage: 'csrf_rejected', path: req.path, reason: verdict.reason,
-  }));
-  const err = new OperationError('permission_denied', 'cross-site request rejected',
-    'This request was blocked because it originated from another site.');
-  res.status(err.status).json({ ok: false, reqId, error: err.toWire() });
+  const reqId = requestId(req, res);
+  logAuth(reqId, 'csrf_rejected', { path: req.path, reason: verdict.reason });
+  sendError(res, reqId, new OperationError('permission_denied', 'cross-site request rejected',
+    'This request was blocked because it originated from another site.'));
 }

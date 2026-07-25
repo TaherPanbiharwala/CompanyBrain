@@ -65,4 +65,97 @@ describe.skipIf(!live)('answerQuestion — live (chat mocked)', () => {
     expect(result.answer).toBe(chatResponse);
     expect(result.citations).toEqual([]);
   });
+
+  // ── Citation bounds. Model-generated indices into OUR array. ────────────
+  // Before the M1+M2 review the filter was `typeof n === 'number'` and nothing else, so a model (or
+  // an injected instruction inside a chunk) could emit [0], [99], [-1] or [1.5] and answerQuestion
+  // handed them to the caller as dangling footnotes. Anything doing sources[n-1] then gets undefined.
+  const ctxOf = () =>
+    buildContext({ principal: p, workspaceId: ws, role: 'owner', grants: resolveGrants(p, ws), remote: false });
+
+  it('drops citations past the end of sources, and below 1', async () => {
+    chatResponse = '{"answer":"x [1][99]","citations":[1,99,0,-1]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.citations).toEqual([1]);
+    expect(r.cited.length).toBe(1);
+    for (const n of r.citations) {
+      expect(n).toBeGreaterThanOrEqual(1);
+      expect(n).toBeLessThanOrEqual(r.sources.length);
+    }
+  });
+
+  it('drops non-integers and non-numbers rather than passing them through', async () => {
+    chatResponse = '{"answer":"x","citations":[1,1.5,"2",null,true,{"n":3},[]]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.citations).toEqual([1]);
+  });
+
+  it('collapses duplicates — one source cited twice is one citation', async () => {
+    chatResponse = '{"answer":"x [1] and again [1]","citations":[1,1,1]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.citations).toEqual([1]);
+  });
+
+  it('citations is not an array → empty, no throw', async () => {
+    chatResponse = '{"answer":"x","citations":"1,2"}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.citations).toEqual([]);
+    expect(r.cited).toEqual([]);
+    expect(r.answer).toBe('x');
+  });
+
+  it('valid JSON whose answer is NOT a string degrades — and drops its citations with it', async () => {
+    chatResponse = '{"answer":42,"citations":[1]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.answer).toBe(chatResponse);
+    expect(r.citations).toEqual([]); // never keep citations from a payload we rejected
+  });
+
+  it('`cited` resolves the 1-based indices so no caller has to know the offset', async () => {
+    chatResponse = '{"answer":"The plant is named Fernando [1].","citations":[1]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.cited).toHaveLength(r.citations.length);
+    // THE contract, asserted directly rather than trusted: cited[i] === sources[citations[i] - 1].
+    r.citations.forEach((n, i) => expect(r.cited[i]).toBe(r.sources[n - 1]!));
+    expect(r.cited[0]!.slug).toBeTruthy();
+  });
+
+  it('every returned citation indexes a real source — no dangling footnote, ever', async () => {
+    for (const payload of [
+      '{"answer":"a","citations":[1,2,3,4,5,6,7,8,9,10,11,12]}',
+      '{"answer":"b","citations":[1000000]}',
+      '{"answer":"c","citations":[]}',
+    ]) {
+      chatResponse = payload;
+      const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+      expect(r.citations.every((n) => n >= 1 && n <= r.sources.length)).toBe(true);
+      expect(r.cited.every((c) => c !== undefined)).toBe(true);
+    }
+  });
+
+  it('an out-of-range inline marker is removed from the answer text', async () => {
+    // The clamp guards `citations`; this guards what the human reads. An adversarial pass caught the
+    // gap: `"x [1][99]"` shipped a live [99] while the array was correctly cleaned to [1].
+    chatResponse = '{"answer":"Revenue grew [1] and headcount doubled [99].","citations":[1,99]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.citations).toEqual([1]);
+    expect(r.answer).toContain('[1]');
+    expect(r.answer).not.toContain('[99]'); // no footnote to nothing
+  });
+
+  it('in-range markers are left alone — whether the model cited the RIGHT chunk is not parseable', async () => {
+    chatResponse = '{"answer":"a [1] b [1]","citations":[1]}';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.answer).toBe('a [1] b [1]');
+  });
+
+  it('recovers from a markdown code fence instead of degrading the whole completion', async () => {
+    // The single most common structured-output deviation, and a cheap way for an injected chunk to
+    // blank the citation trail AND widen the output channel (the degrade path returns everything).
+    chatResponse = '```json\n{"answer":"Fernando [1].","citations":[1]}\n```';
+    const r = await answerQuestion(ctxOf(), 'What is the office plant named?');
+    expect(r.answer).toBe('Fernando [1].');
+    expect(r.citations).toEqual([1]);
+    expect(r.cited).toHaveLength(1);
+  });
 });

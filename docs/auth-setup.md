@@ -123,6 +123,64 @@ Needed only for real browser sign-in.
 
 ## 3. Troubleshooting
 
+**Every lane suddenly refuses connections: `08006 econnrefused`, then `XX000 (ECIRCUITBREAKER) too
+many authentication failures, new connections are temporarily blocked`** — Supabase's pooler
+(Supavisor) has tripped a circuit breaker for the whole project, so `cb_app`, `cb_auth` **and**
+`postgres` all fail at once even though nothing about your code changed. The tell that it is the
+breaker and not your credentials: the error comes back from the pooler in Elixir tuple form
+(`{:error, :econnrefused}`), meaning TLS and the pooler handshake succeeded and the pooler itself
+could not reach the database.
+
+It is preceded by a scatter of `28P01 Authentication credentials are invalid. Please reconnect with
+fresh credentials to restore pool functionality` — **these are the leading indicator, not transient
+network noise.** If you see two or three of them, stop and find the cause rather than retrying.
+
+The cause we hit was `bun run migrate`: it used to issue `ALTER ROLE … PASSWORD` on every run, and a
+SCRAM verifier is salted with fresh randomness, so re-setting the *same* password still writes a
+*different* verifier and invalidates the pooler's cached credentials. Four runs in an afternoon was
+enough to trip the breaker (DECISIONS D63). `migrate` now verifies the stored verifier first and
+skips the `ALTER` when the password already matches — you should see
+`= cb_app password already matches CB_APP_DB_PASSWORD; not re-setting it`.
+
+**First, tell the two failure modes apart — they need opposite responses.** Both surface as `08006`,
+and only one resolves by waiting:
+
+```bash
+nc -z -G 8 aws-1-<region>.pooler.supabase.com 5432 && nc -z -G 8 aws-1-<region>.pooler.supabase.com 6543
+```
+
+* **Ports CLOSED** — the pooler itself is unreachable. Network or a Supabase platform incident.
+* **Ports OPEN, and the error is `{:error, :econnrefused}`** — that tuple is Supavisor's own Elixir
+  error, so the pooler is healthy and cannot reach the **Postgres instance behind it**. That is a
+  paused, stopped or restarting project. **Waiting will not fix it** — open the Supabase dashboard
+  and restore/restart the project.
+* **Ports OPEN, and the error names authentication** (`ECIRCUITBREAKER … too many authentication
+  failures`, or a run of `28P01`) — that is the breaker, and it does reset on its own after several
+  minutes. There is no client-side override, and retrying in a tight loop only feeds it.
+
+While you are blocked either way, the offline suites still run in under a second:
+
+```bash
+bun test --env-file=<a copy of .env with the three DATABASE_* lines removed>
+```
+
+That skips every `describe.skipIf(!live)` suite cleanly instead of letting them fail on connect.
+
+If it was *not* migrate, the other way to generate real auth failures is a password mismatch between
+the role and its URL. Check without printing secrets:
+
+```bash
+bun -e "const p=u=>decodeURIComponent(new URL(u).password); console.log('app', p(process.env.DATABASE_URL)===process.env.CB_APP_DB_PASSWORD, '| auth', p(process.env.DATABASE_AUTH_URL)===process.env.CB_AUTH_DB_PASSWORD)"
+```
+
+`decodeURIComponent` is load-bearing: `new URL(u).password` returns the PERCENT-ENCODED field, so a
+password containing `@`, `:`, `/` or `#` (all of which must be encoded to appear in a URL at all)
+would compare unequal to the raw env value and report a mismatch that does not exist.
+
+Both must print `true` — `migrate` sets each role's password from the `CB_*_DB_PASSWORD` variable,
+so if either disagrees with the password embedded in its URL, every connection on that lane fails
+authentication and the breaker is only a matter of time.
+
 **`redirect_uri_mismatch`** — the string in Google Cloud does not match what the app sends. Compare
 it against the exact line printed at boot. Most often a trailing slash, `http` vs `https`, or a port.
 
@@ -181,6 +239,25 @@ Three things worth knowing:
 * It prints real row counts and pauses for 5s before dropping. Ctrl-C works.
 
 Freeze a migration once `bun run doctor` is green.
+
+**`checksum drift` on an applied file — you almost never need to destroy anything.** Applied files
+are content-hashed, so editing one (even a comment) fails the next `bun run migrate`. This has
+already happened once in this repo's history: commit `3722422` edited an applied `schema.sql` and
+`9c8ad3e` reverted it byte-for-byte. Two paths, and the destructive one is almost never right:
+
+1. **The edit was a mistake** — revert it (`git checkout -- <file>`) and put the change in a new
+   `src/db/migrations/NNNN_*.sql`.
+2. **The edit is semantically inert** (a comment or whitespace fix) **and the database already
+   matches** — re-point the ledger. Read `git diff <file>` first and satisfy yourself it changes no
+   DDL, then take the exact hash the error message prints:
+   ```sql
+   UPDATE _migrations SET checksum = '<the sha256 from the error>' WHERE filename = '<file>';
+   ```
+   **Never set it to NULL.** A NULL checksum exempts that file from immutability permanently, and
+   `migrate` now refuses to run rather than trust an unverified file.
+
+`migrate:reset` is not the answer to drift. `.gitattributes` pins `*.sql` to LF so a checkout can
+never manufacture drift on its own.
 
 ---
 

@@ -22,6 +22,7 @@ export type OpErrorCode =
   // M2 auth codes. Kept in this ONE closed set rather than a parallel auth taxonomy, so every
   // surface (REST, MCP, the auth routes) maps errors through the same statusFor().
   | 'account_conflict' // 409 — this email already belongs to a different Google account
+  | 'already_exists' // 409 — a row with this natural key is already here (e.g. an ingest slug)
   | 'domain_not_verified' // 400 — claimed a workspace domain this login did not verify
   | 'invite_invalid' // 404 — wrong/expired/already-used/not-yours; deliberately indistinguishable
   | 'internal_error'; // 500 — unexpected failure
@@ -47,6 +48,7 @@ export function statusFor(code: OpErrorCode): number {
     case 'domain_not_verified':
       return 400;
     case 'account_conflict':
+    case 'already_exists':
       return 409;
     case 'payload_too_large':
       return 413;

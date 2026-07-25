@@ -5,7 +5,8 @@
 // store: this is a single-instance guard for M2. When there is more than one instance, each gets
 // its own bucket — that is a known and acceptable limitation at design-partner scale, not an
 // oversight. (Note: behind a proxy without TRUST_PROXY set, req.ip is the PROXY's address and every
-// caller shares one bucket — index.ts warns loudly about exactly that.)
+// caller shares one bucket — src/boot.ts assertDeploymentSafe() REFUSES TO BOOT on exactly that,
+// D44; it used to be only a console.warn, which is not a control.)
 export interface RateLimitOptions {
   windowMs: number;
   max: number;
@@ -58,6 +59,22 @@ export class FixedWindowLimiter {
 /** 30 requests / 5 minutes / IP across all of /auth/*. Generous for a human signing in, tight
  *  enough that a junk-cookie or invite-token flood cannot occupy the pool. */
 export const authLimiter = new FixedWindowLimiter({ windowMs: 5 * 60_000, max: 30 });
+
+/** 300 requests / minute / IP, app-wide, BEFORE any identity is resolved.
+ *
+ *  This one exists because of an ordering bug the M1+M2 review found: `apiLimiter` below is keyed on
+ *  the PRINCIPAL, which is only known after `resolveSessionContext` has already spent a database
+ *  round trip on the `cb_app` pool. So the limiter meant to protect that pool could not fire until
+ *  after the pool had been used.
+ *
+ *  `looksLikeToken` rejects malformed cookies from memory, but ANY random 43-char base64url string
+ *  passes it — so a flood of well-formed junk cookies walked straight through to the database. At
+ *  Seoul latency and a 10-connection pool that is roughly 80 unauthenticated req/s to saturation,
+ *  starving every authenticated `ask` and `ingest`.
+ *
+ *  Deliberately generous: this is a coarse shed for floods, not a per-user budget. That is what
+ *  apiLimiter is, and it still runs afterwards. Cheap throttle first, expensive one second. */
+export const preAuthLimiter = new FixedWindowLimiter({ windowMs: 60_000, max: 300 });
 
 /** 120 requests / minute / PRINCIPAL on /api/:op.
  *

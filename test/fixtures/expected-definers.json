@@ -51,6 +51,6 @@
     "owner": "postgres",
     "config": "{search_path=pg_catalog}",
     "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
-    "body_md5": "99be20677b456ea8d3be47bdd44fb369"
+    "body_md5": "(vendor-owned: body not pinned)"
   }
 ]

@@ -24,6 +24,23 @@ const CHAT_TIMEOUT_MS = 60_000;
 const EMBED_TIMEOUT_MS = 30_000;
 const MAX_ERR_BODY = 500;
 
+/** A provider's error body is THIRD-PARTY TEXT that ends up inside a RouterError message, and that
+ *  message is printed by the terminal error middleware into a stream of JSON log lines. A body
+ *  containing a newline followed by `{"level":"info","kind":"auth",...}` would therefore append a
+ *  forged record to that stream — the same frame-injection shape as the prompt-injection finding,
+ *  one layer down. Newlines and control characters are what make the forgery possible, so they are
+ *  what gets flattened; the readable text survives, which is the whole point of logging it.
+ *
+ *  Deliberately NOT dropped entirely: `insufficient credits`, `model not found` and `context length
+ *  exceeded` are the messages that make a 500 diagnosable, and none of them is our data. */
+function flattenProviderBody(body: string): string {
+  return body
+    .replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_ERR_BODY);
+}
+
 /** Bind the router to a workspace for the duration of `fn`. */
 export function withRouterScope<T>(scope: RouterScope, fn: () => Promise<T>): Promise<T> {
   return als.run(scope, fn);
@@ -58,7 +75,7 @@ async function fetchJson(url: string, init: RequestInit, provider: string): Prom
   try {
     const res = await fetch(url, init);
     if (!res.ok) {
-      const body = (await res.text()).slice(0, MAX_ERR_BODY);
+      const body = flattenProviderBody(await res.text());
       throw new RouterError(`${provider} ${res.status}: ${body}`);
     }
     return await res.json();
@@ -75,10 +92,12 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
   const scope = requireScope();
   const modelId = opts.model || config.CHAT_MODEL;
   if (!modelId) {
-    // Chat model is an OPEN decision (DECISIONS D12.1) — founder ruled out Anthropic (cost) and
-    // OpenAI's chat models. Left unset on purpose so this fails loudly instead of defaulting.
+    // The chat model IS chosen — DeepSeek via OpenRouter (DECISIONS D12.1); it is simply not set in
+    // this environment. It has no code default on purpose: silently defaulting would spend money on
+    // a provider the operator did not pick, and Anthropic/OpenAI chat models are explicitly ruled
+    // out on cost, so a wrong default is a wrong bill.
     throw new RouterError(
-      'no chat model configured — CHAT_MODEL is intentionally unset (see DECISIONS.md D12.1); ask the founder which provider before wiring a caller to chat()',
+      'no chat model configured — set CHAT_MODEL in .env. The chosen model is openrouter:deepseek/deepseek-v4-flash (DECISIONS.md D12.1); see .env.example.',
     );
   }
   const { provider, model } = parseModelId(modelId);

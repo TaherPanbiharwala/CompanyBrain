@@ -187,7 +187,8 @@ export async function withScopedTx<T>(
   await assertAppPoolRole();
   const grantsCsv = serializeGrants(ctx.grants);
   return appSql().begin(async (tx) => {
-    // FIVE settings, ONE round trip — the tx-pooler backend slot is the scarce resource (D6).
+    // SIX settings, ONE round trip — the tx-pooler backend slot is the scarce resource (D6).
+    // (Count the set_config calls below before changing this line; it is the audit line, not decoration.)
     //
     // The two timeouts are here, not only in the pool's `connection` block, because MEASUREMENT
     // showed the startup-packet form does not survive Supabase's transaction pooler: with
@@ -197,12 +198,21 @@ export async function withScopedTx<T>(
     // backend, so those parameters never reach the session the query actually runs on — meaning the
     // "a runaway statement can't pin a pooled connection and hang the fleet" protection this file
     // claims did not exist. set_config(…, true) is LOCAL to the transaction, so it does.
+    // `hnsw.iterative_scan` rides along in the same statement because it is free to add here and
+    // is NOT merely a performance knob. schema.sql:262 requires it, and without it pgvector's HNSW
+    // scan returns at most ef_search GLOBALLY-nearest candidates and the RLS predicate is applied
+    // afterwards, as a post-filter. With one tenant that is invisible — which is why A17 shipped
+    // clean. M2 made the table genuinely multi-tenant, so a workspace holding a small share of
+    // content_chunks gets a truncated or empty vector arm, and one large tenant silently degrades
+    // every other tenant's retrieval. That is a cross-tenant isolation effect on the code path whose
+    // entire job is answer quality, not a latency nit.
     await tx`select
       set_config('app.workspace', ${ctx.workspaceId}, true),
       set_config('app.principal', ${ctx.principal}, true),
       set_config('app.grants', ${grantsCsv}, true),
       set_config('statement_timeout', ${String(config.DB_STATEMENT_TIMEOUT)}, true),
-      set_config('idle_in_transaction_session_timeout', ${String(config.DB_IDLE_IN_TX_TIMEOUT)}, true)`;
+      set_config('idle_in_transaction_session_timeout', ${String(config.DB_IDLE_IN_TX_TIMEOUT)}, true),
+      set_config('hnsw.iterative_scan', 'relaxed_order', true)`;
     return fn(tx);
   }) as Promise<T>;
 }

@@ -1,0 +1,10 @@
+# Migration files are content-checksummed by src/db/migrate.ts and an applied file is immutable, so
+# a CRLF checkout would drift EVERY applied migration against the one real database at once — and
+# the only documented recovery for drift used to be a destructive reset. Pin the line endings so a
+# checkout can never manufacture that.
+*.sql text eol=lf
+
+# Same reasoning, less severe: keep the whole tree consistent so diffs are about content.
+*.ts   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf

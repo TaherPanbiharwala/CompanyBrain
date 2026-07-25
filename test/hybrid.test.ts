@@ -25,6 +25,8 @@ describe.skipIf(!live)('hybridSearch — live', () => {
   const realFetch = globalThis.fetch;
   const realKey = mutableConfig.OPENAI_API_KEY;
   const EXACT_SENTENCE = 'The zebra migration route crosses the northern salt flats every spring.';
+  // Every page beforeAll ingests into ws1. Kept beside the fixture so an added page updates both.
+  const WS1_SLUGS = ['keyword-doc', 'filler-doc', 'exact-doc'];
 
   beforeAll(async () => {
     mutableConfig.OPENAI_API_KEY = 'test-key';
@@ -64,10 +66,19 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     expect(hits[0]?.slug).toBe('exact-doc');
   });
 
-  it('a query with no keyword match still returns without throwing (vector arm always ranks all rows)', async () => {
+  it('a query with no keyword match still returns hits (the vector arm ranks all rows)', async () => {
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
     const hits = await hybridSearch(ctx, 'qwertyuiopasdfghjklzxcvbnm-no-such-token');
-    expect(Array.isArray(hits)).toBe(true);
+    // The title's claim is "the vector arm ranks ALL rows", so the observable consequence is that a
+    // zero-keyword-match query is still ANSWERABLE. `Array.isArray(hits)` was the old assertion, and
+    // it holds for `[]` — i.e. it passes in exactly the world where the claim is false.
+    expect(hits.length).toBeGreaterThan(0);
+    // ...and every hit came from THIS workspace's pages, not from a globally-nearest neighbour.
+    // The list must be ALL THREE pages beforeAll ingests into ws1: an earlier version of this
+    // assertion omitted `filler-doc`, so it would have failed a perfectly correct implementation —
+    // the vector arm has no relevance cutoff, and filler-doc is exactly the low-relevance row this
+    // test's own premise says must still be ranked and returned.
+    for (const h of hits) expect(WS1_SLUGS).toContain(h.slug);
   });
 
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {

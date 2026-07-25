@@ -25,21 +25,34 @@ is the M0 down payment on it.
 ## Local dev (Supabase)
 
 1. Create a Supabase project (it ships Postgres + pgvector).
-2. Copy connection strings into `.env` (see `.env.example`): the **transaction pooler** URL
-   (port 6543, user `cb_app.<ref>`) as `DATABASE_URL`, and the **session pooler** URL (port 5432,
-   user `postgres.<ref>`) as `DATABASE_ADMIN_URL`. Set `CB_APP_DB_PASSWORD` to the password you want
-   `cb_app` to use. (The direct `db.<ref>.supabase.co` host is IPv6-only without the paid add-on;
-   use the pooler.)
+2. Copy **three** connection strings into `.env` (see `.env.example`). Three, not two — M2 added a
+   dedicated least-privilege lane, and `bun run migrate` refuses to start without it:
+
+   | Variable | Pooler | User | Role it is |
+   |---|---|---|---|
+   | `DATABASE_URL` | transaction, 6543 | `cb_app.<ref>` | the per-request tenant role (non-BYPASSRLS) |
+   | `DATABASE_AUTH_URL` | transaction, 6543 | `cb_auth.<ref>` | login/onboarding writes only |
+   | `DATABASE_ADMIN_URL` | session, 5432 | `postgres.<ref>` | migrations only |
+
+   Set `CB_APP_DB_PASSWORD` and `CB_AUTH_DB_PASSWORD` to the passwords you want those two roles to
+   have — `migrate` creates the roles with them, so they must match the passwords embedded in the
+   URLs above. (The direct `db.<ref>.supabase.co` host is IPv6-only without the paid add-on; use the
+   pooler.)
 
 ```bash
-cp .env.example .env      # fill in Supabase strings + API keys
+cp .env.example .env      # fill in all three Supabase strings + both role passwords + API keys
 bun install
-bun run migrate           # (as postgres) enables pgvector, creates the non-BYPASSRLS cb_app role, applies schema.sql
+bun run migrate           # (as postgres) enables pgvector, creates cb_app + cb_auth, applies schema.sql + every migration, sets the grant matrix
+bun run doctor            # 46 checks on the security posture — green before you trust anything
 bun run dev               # boots Express; GET /health -> {"status":"ok"}
 ```
 
-`migrate` connects as `postgres` to create the `cb_app` role and the schema; the app then connects
-as `cb_app` so Row-Level Security actually applies (a table owner or a `BYPASSRLS` role would skip it).
+`migrate` connects as `postgres` to create the two app roles and the schema; the app then connects
+as `cb_app` so Row-Level Security actually applies (a table owner or a `BYPASSRLS` role would skip
+it), and as `cb_auth` for the pre-authentication login path.
+
+Full runbook, including the Google Cloud OAuth client and the local dev-login shortcut that needs no
+Google project at all: **[docs/auth-setup.md](docs/auth-setup.md)**.
 
 ## Signing in (M2)
 
@@ -117,8 +130,15 @@ a model call — DECISIONS D6).
 - `src/boot.ts` — deployment-shape gates that REFUSE to start (proxy/https/secrets). A warning that
   fires only under `import.meta.main` is not a control, and the shape it warned about was the default.
 - `src/ai/` — `router.ts` (the one door for every model call)
+- `src/ingest/` — **A17**: `chunk.ts` (recursive delimiter-aware chunker), `import.ts` (page →
+  chunks → embeddings; derives `acl` from `scope`, so the label is not decorative)
+- `src/search/` — **A17**: `hybrid.ts` (keyword + vector arms fused by RRF), `eval-score.ts`
+  (hit@1 / hit@3 / MRR — the numbers the A17 go/no-go rests on)
+- `src/answer/` — **A17**: `prompt.ts` (nonce-framed evidence blocks; untrusted page content can
+  never forge a frame or an attribution), `answer.ts` (cited answer, citations clamped to range)
 - `src/api/` — the **contract spine** (M1): `operations.ts` (ops-as-data + registry), `dispatch.ts`
-  (validate → role-check → run → shape-only log), `roles.ts`, `errors.ts`, `redact.ts`, `server.ts`
+  (lookup → role-check → validate → run → shape-only log — authz BEFORE validating attacker-chosen
+  input, deliberately), `roles.ts`, `errors.ts`, `redact.ts`, `reqid.ts`, `server.ts`
   (`/api/:op` + `/api/_ops`), `tool-defs.ts` + `mcp.ts` (stdio MCP), `dev-auth.ts` (the header stub,
   now only a local fallback behind the session resolver), `call.ts` (local CLI)
 - `src/db/doctor.ts` — `bun run doctor`: 42 assertions + 4 snapshot fixtures (46 checks) over the grant matrix,

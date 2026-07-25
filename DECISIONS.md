@@ -8,9 +8,23 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
 
 - **D0 — Category:** multi-tenant SaaS "company brain" (YC RFS), India-first, Google-centric,
   invite-driven, demo-first then design-partner-driven. (2026-07-23)
-- **D0.1 — Open (founder):** default upload scope = **workspace** vs **private** — resolved as
-  "not private-alone" (workspace-default + privacy toggle, or private + forced share-nudge).
-  Pending founder's final product call.
+- **D0.1 — CLOSED (2026-07-25): default upload scope is WORKSPACE, with a private option that is
+  recorded CORRECTLY now and enforced at M4.** Precision matters here, and an earlier wording of this
+  entry ("a private option that actually works") overstated it: at M2 **nothing reads the `acl`**.
+  The only policies on the content plane are workspace-equality (`pages_ws`, `content_chunks_ws` in
+  schema.sql), no policy anywhere references `app.grants`, and `hybridSearch` adds no acl predicate.
+  So `scope:'private'` today means "this row will be private the moment M4 lands", not "other members
+  cannot read it". What was fixed is that the row is now written with an `acl` matching its label —
+  which is the part that is unrecoverable later. `ingest` takes `scope: 'private' | 'workspace'`
+  (default `workspace`), and the row's `acl` is **derived** from it by `aclForScope()` — `private` → `['self:<author>']`,
+  `workspace` → `['ws:<workspace>']`. Forced by the M1+M2 review: `scope` had been free text with no
+  CHECK while `importPage` stamped a workspace-wide `acl` unconditionally, so `private` produced a
+  row every member could read. That was not merely a mislabelled column — at M4 the enforced RLS
+  predicate becomes `acl && current_grants()`, which reads the ACL and never the label, so every row
+  written in between would have been permanently mis-scoped with the author's intent unrecoverable.
+  Deriving one from the other makes a mismatched pair unrepresentable; migration `0003` adds the
+  DB-side CHECK and aligns the column default. Decided while all 12 existing rows were uniform, so
+  no backfill was needed — after M4 this would have been a data migration.
 - **D0.2 — Open (founder):** run 5-10 discovery conversations + pick a sharp India vertical wedge,
   ideally gating the start of M0. Not a build task.
 
@@ -353,3 +367,163 @@ decisions below encode the fixes so the pattern does not repeat.
   `to_tsvector('english', content)`, `hnsw.iterative_scan` never set despite `schema.sql:262`
   requiring it, and chunk inserts one round trip at a time — are pre-existing and get their own
   commit.
+
+## M1+M2 review (2026-07-25)
+
+A second `/review`, this time over **M1 + A17 + M2 together** rather than M2 alone. The framing that
+produced the findings: M1's dispatch spine and A17's answer pipeline were written when identity was a
+dev-only header stub that could not reach production. **M2 made identity real — genuine sessions,
+genuine multi-tenant traffic, a genuine threat model — and several M1/A17 designs that were honest
+under the old assumption became wrong under the new one.** Three of the six P0s were gaps in the M2
+fixes made earlier the same day, which is recorded here rather than buried.
+
+- **D52 — A label that does not drive the enforced predicate is not a control.** Superseded in
+  substance by the D0.1 amendment above; kept as a pointer because the *shape* recurs. `pages.scope`
+  was advertised through `/api/_ops` as an access-control knob while `acl` — the column RLS actually
+  reads at M4 — was hardcoded. The general rule: when a user-facing label and an enforced column can
+  disagree, derive one from the other in exactly one place (`aclForScope()`), and add the CHECK so
+  a second writer cannot reintroduce the disagreement.
+- **D53 — `/api/_ops` is deliberately unauthenticated.** It publishes operation names and
+  JSON-Schemas — the API's own documentation — touches no workspace, principal or tenant pool, and
+  excludes `hidden` ops. The README quickstart curls it before a session exists and an agent needs it
+  to discover what to call, so gating it would break both for no confidentiality gain: anyone who can
+  read the repo has the same list. It is not unprotected — `preAuthGuard` sheds floods at 300/min/IP
+  — and it now carries `reqId` like every other route, so it is no longer the one response shape a
+  client has to special-case. Asserted in `test/api.test.ts` so the decision cannot drift silently.
+- **D54 — Throttle before the round trip you are protecting, not after.** `apiLimiter` (added hours
+  earlier) is keyed on `ctx.principal`, which is only known *after* `resolveSessionContext` has spent
+  a database round trip on the `cb_app` pool — so the limiter protecting that pool could not fire
+  until the pool had already been used. `looksLikeToken` rejects malformed cookies from memory, but
+  any random 43-char base64url string passes it, so a junk-cookie flood walked straight through: at
+  Seoul latency with a 10-connection pool, roughly 80 unauthenticated req/s to saturation. Fix:
+  `preAuthGuard` (IP-keyed, 300/min, app-wide, `/health` exempt) sheds first; `apiLimiter` remains
+  the per-principal budget behind it. Cheap throttle first, expensive one second.
+- **D55 — Escaping cannot defend a frame built from plain-English delimiters.** `prompt.ts`
+  interpolated page content and the caller-controlled slug into a pseudo-XML `<chunk>` block. The
+  first fix escaped angle brackets — and an adversarial pass broke it immediately, because
+  `Question: ` and `Respond with the JSON object…` are delimiters with no escapable character in
+  them. The frame is now keyed by a **per-request random nonce** (`--BEGIN-EVIDENCE-<nonce>--`), the
+  nonce is stripped from all interpolated text, and the slug is sanitized to an allow-listed charset.
+  A poisoned page cannot name a delimiter it cannot predict. Citations are separately clamped to
+  `1..sources.length` and out-of-range markers scrubbed, and `AnswerResult` now returns resolved
+  `cited` hits so no caller has to know the citation base.
+- **D56 — Revocation must be enforced on every surface, and the agent surface was the permissive
+  one.** `mcp.ts` resolved identity once at process start and reused that frozen context for the life
+  of the process. Under M1 that was honest — the role came from a static env var. M2 replaced it with
+  `assertMembership()`, a real database read, which made it *look* authoritative while it was cached
+  indefinitely, so removing or demoting a principal had no effect on a running bridge (MCP hosts keep
+  stdio processes alive for days) while the HTTP path re-read membership on every request. Context is
+  now rebuilt per call with a 30s TTL.
+- **D57 — Unbounded input turns a 400 into a 500.** Every op param now carries a bound (`slug` regex
+  + 200, `title` 300, `body` 200k, `tags` 50×64, `question` 2000), a duplicate slug maps 23505 → a
+  typed 409 instead of `internal_error` *after* the embeddings have been paid for, and the registry
+  is `.strict()` in one place so the published `additionalProperties: false` is true at runtime —
+  previously an agent sending `tag` instead of `tags` got a 200 with the metadata silently stripped.
+- **D58 — `hnsw.iterative_scan` is a tenancy control, not a latency knob.** Filed under D51c as
+  deferred performance; that was wrong. Without it the HNSW scan returns globally-nearest candidates
+  and RLS post-filters them, so **one large tenant silently degrades every other tenant's
+  retrieval** — a cross-tenant effect on the path whose entire job is answer quality. Now set in the
+  same `withScopedTx` round trip as the tenancy GUCs.
+- **D59 — Pin what you own; assert (don't pin) what you don't.** `doctor`'s definer fixture hashed
+  the body of Supabase's own `public.rls_auto_enable()`. Vendor maintenance legitimately changes it,
+  and a check that goes red for a reason the operator cannot act on teaches them to reach for
+  `--update` reflexively — which is exactly how a real regression gets rubber-stamped. Its body is no
+  longer pinned; its owner, pinned `search_path` and ACL still are, and a NEW definer appearing in
+  `public` still fails the diff.
+- **D60 — Third-party text must be flattened before it enters a log stream.** A provider error body
+  (up to 500 bytes) rode verbatim into a `RouterError` message and from there into a stream of JSON
+  log lines, so a body containing a newline plus `{"level":"info","kind":"auth",…}` could append a
+  forged record. Same frame-injection shape as D55, one layer down. Control characters and newlines
+  are now flattened; the readable text survives, because `insufficient credits` and `context length
+  exceeded` are what make a 500 diagnosable.
+- **D61 — Constraints the code relies on belong in the database (migration 0004).** `(page_id, ord)`
+  is now UNIQUE — `ORDER BY ord` is how a page is reassembled, and duplicates make that
+  nondeterministic. The three *attribution* FKs to `principals` (`workspaces.created_by`,
+  `invites.invited_by`, `invites.accepted_by`) are now `ON DELETE SET NULL`: they carried the default
+  NO ACTION, so deleting a principal failed unless you first deleted every workspace they created —
+  making account deletion, and any erasure request before M5, structurally impossible without
+  destroying other tenants' data. `workspace_domain_blocks.principal_id` gets a covering index —
+  **and so, in migration `0005`, do the four the review caught 0004 missing or creating**:
+  `acl_grants.principal_id` (an ON DELETE CASCADE FK whose only index is `workspace_id`-leading, so
+  it never covered it) plus the three attribution columns 0004 itself converted to SET NULL, since
+  SET NULL needs the same referencing-side lookup CASCADE does. 0004's own header calls
+  `workspace_domain_blocks` "the one FK in the schema without a covering index"; that was false when
+  written, and 0004 made it more false. Deliberately NOT constrained: `pages.kind` stays open text (the
+  five-value list is a convention so a new OKF type needs no migration) and `content_chunks.embedding`
+  stays nullable (deferred/background embedding stays possible) — the read path now filters
+  `embedding IS NOT NULL` explicitly instead of relying on NULLs sorting last, which is a property of
+  the sort direction rather than a guarantee.
+- **D62 — A fixture can make a property unprovable.** Two tests asserted a property in a comment and
+  something weaker in code. The chunker's losslessness test used `'x'.repeat(20000)`, where every
+  slice is indistinguishable from every other — so a chunker dropping 5,000 characters passed. It now
+  uses position-encoded content and asserts coverage has no gap; verified by deliberately dropping one
+  window and watching it go red. `noUnusedLocals`/`noUnusedParameters` are now on, which is what
+  surfaced that `normalize.test.ts` *imported* `isPublicDomain` and never called it — the
+  domain-auto-join gate (D11), whose failure mode is auto-joining every Gmail user into one
+  workspace, had zero coverage behind an import that looked like coverage.
+- **D63 — `ALTER ROLE … PASSWORD` is not idempotent, and it was churning the pooler's credential
+  cache.** Found mid-verification, when all three lanes — app, auth AND admin — began refusing
+  connections with `08006 econnrefused` and then `XX000 (ECIRCUITBREAKER) too many authentication
+  failures, new connections are temporarily blocked`. Nothing in the diff touched connection handling.
+
+  **Attribution, stated carefully, because the first version of this entry over-claimed.** Two
+  distinct things were happening and only one of them is ours:
+    * *Ours, and well-evidenced:* the scattered `28P01 Authentication credentials are invalid. Please
+      reconnect with fresh credentials to restore pool functionality` errors, and the
+      `ECIRCUITBREAKER` message that explicitly names authentication failures. Those are the pooler's
+      cached SCRAM credentials going stale, which is exactly what the defect below produces.
+    * *Not established as ours:* the sustained outage that followed. A TCP probe showed both pooler
+      ports (5432, 6543) **open and accepting connections**, and `{:error, :econnrefused}` is
+      Supavisor's own Elixir error failing to reach the Postgres instance BEHIND it. A healthy pooler
+      that cannot reach its backend is a paused/stopped/restarting project, not a tripped breaker.
+      The honest conclusion: the defect below is real and was causing real auth failures; whether it
+      contributed to the instance going down is unproven, and the entry should not claim it did.
+
+  The defect: `ensureBootstrap`/`ensureAuthRole` issued
+  `alter role cb_app login password …` **unconditionally on every run**, and a SCRAM-SHA-256 verifier
+  is salted with fresh randomness — so re-setting the *same* password still writes a *different*
+  verifier. Supabase's pooler (Supavisor) caches tenant SCRAM credentials, so each migrate run
+  invalidated that cache and produced a burst of `28P01` "reconnect with fresh credentials" failures;
+  enough of those trip a circuit breaker that then blocks new connections for the entire project.
+  **The `28P01`s were misread as transient network noise four separate times before the breaker made
+  the pattern legible** — they were the leading indicator, not noise. Fix: `scramMatches()` verifies the configured password against the stored
+  verifier per RFC 5802 (PBKDF2 → HMAC "Client Key" → SHA256 → compare StoredKey) and the `ALTER` is
+  skipped when it already matches. A verifier that cannot be read or parsed returns `null`, not
+  `false`, so "cannot tell" still sets the password and only "definitely correct" skips it.
+  `test/scram.test.ts` covers it with no database — fitting, for a function that exists because the
+  database went away. The general rule: **"idempotent" means the observable state is unchanged, not
+  that the statement is safe to repeat.** A statement that rewrites salted material is a write every
+  time, whatever it looks like.
+- **D64 — Reviewed my own fixes before committing them, and eight held.** The M1+M2 review's most
+  uncomfortable finding was that three of its six P0s were gaps in fixes made hours earlier in the
+  same session. So the fix diff for that review was itself put through an adversarial pass — six
+  lenses, then independent verifiers prompted to REFUTE each finding — before commit. Eight
+  confirmed, two refuted. The confirmed set is instructive because it is the same failure mode
+  again, in fresh code:
+  - **`preAuthGuard` exempted `/health/db` from the flood shed** on the stated grounds that "neither
+    exempt path touches the tenant pool". `/health/db` calls `appSql()` — it is the cb_app pool, the
+    exact 10 connections the guard's own docstring says saturate at ~80 req/s. The new guard shipped
+    with one unauthenticated, DB-touching, unthrottled route: a cheaper junk-cookie flood needing no
+    cookie. Only `/health` (pure in-memory) is exempt now.
+  - **A test I added would have failed a CORRECT implementation.** `hybrid.test.ts` asserted every hit
+    came from an allow-list of two slugs, while the same `beforeAll` ingests *three* pages into that
+    workspace. The vector arm has no relevance cutoff, so the third was always going to be returned —
+    that is the premise of the test's own title.
+  - **The citation scrub guarded only the structured path.** `parseAnswerJson`'s degrade path returned
+    the raw completion unscrubbed — and the degrade path is the one an injected prompt is *most* likely
+    to reach, because "ignore the format" and "ignore the question" are the same instruction.
+  - **The prompt-injection test for the nonce defense was vacuous.** It injected a *different* message's
+    nonce; since each message mints a fresh one, it could never collide, so the test passed with the
+    masking deleted. Verified by deleting it. `stripFrameHazards` is now exported and tested directly
+    — the unreachable-through-the-public-API branch is exactly the one that needs a direct test.
+  - **Migration 0004 asserted the FK-index sweep was complete and made it less complete** (see D61).
+  - Plus four prose claims that were simply false: `client.ts` still said "FIVE settings" beside six,
+    `envelope.ts` claimed "exactly one writer" with six copies surviving in the file it named,
+    `doctor.ts` still promised it catches "a changed body" for a definer it had just stopped hashing,
+    and 0003's persisted `COMMENT ON principals` said `google_sub` is written only by the definer
+    while `workspaces.ts` INSERTs it directly on first login.
+
+  The rule this pass earns: **a fix is not more trustworthy than the code it replaced just because it
+  is newer.** Fresh code written under time pressure to close a review finding is written in exactly
+  the state — confident, unreviewed, and touching security-relevant paths — that produced the findings
+  in the first place. Review the fix diff, not just the original.

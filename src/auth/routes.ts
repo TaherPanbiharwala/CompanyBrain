@@ -9,6 +9,7 @@ import type { Express, Request, Response, NextFunction } from 'express';
 import { config, isLoopbackHost } from '../config.ts';
 import { appSql, authLane } from '../db/client.ts';
 import { OperationError } from '../api/errors.ts';
+import { requestId } from '../api/reqid.ts';
 import { devLoginEnabled } from '../api/dev-auth.ts';
 import { startAuth, completeAuth, safeReturnTo, type VerifiedIdentity } from './google.ts';
 import { onboard, createWorkspace, activateWorkspace } from './workspaces.ts';
@@ -21,6 +22,8 @@ import {
   signPayload, verifyPayload, clearAuthCookie, DEV_LOGIN_TTL_DAYS,
 } from './session.ts';
 import { authLimiter } from './ratelimit.ts';
+import { logAuth } from './log.ts';
+import { sendError, shedIfLimited } from '../api/envelope.ts';
 
 interface OauthState {
   state: string;
@@ -29,28 +32,7 @@ interface OauthState {
   returnTo: string;
 }
 
-/** Structured, shape-only auth logging. The /auth/* routes sit outside mountApi, so they inherit
- *  none of the dispatch logger — without this, a failed login leaves no trace at all. Never logs a
- *  token, a code, or a cookie value. */
-function logAuth(reqId: string, stage: string, fields: Record<string, unknown> = {}): void {
-  console.log(JSON.stringify({ level: 'info', kind: 'auth', ts: new Date().toISOString(), reqId, auth_stage: stage, ...fields }));
-}
-
-function reqIdOf(req: Request, res: Response): string {
-  const existing = res.getHeader('x-request-id');
-  if (typeof existing === 'string') return existing;
-  // Client-supplied, so it is echoed into a response header AND into every log line for this
-  // request. Cap it: unbounded attacker-controlled text in structured logs is a log-volume and
-  // log-parsing problem even though Node rejects the control characters that would allow splitting.
-  const supplied = req.header('x-request-id');
-  const id = supplied && supplied.length <= 200 ? supplied : crypto.randomUUID();
-  res.setHeader('x-request-id', id);
-  return id;
-}
-
-function sendError(res: Response, reqId: string, err: OperationError): void {
-  res.status(err.status).json({ ok: false, reqId, error: err.toWire() });
-}
+const reqIdOf = requestId; // one derivation, one cap — see src/api/reqid.ts
 
 /** Wraps a handler so any throw becomes the standard envelope rather than a stack trace. */
 function handler(stage: string, fn: (req: Request, res: Response, reqId: string) => Promise<void>) {
@@ -89,10 +71,8 @@ export function mountAuth(app: Express): void {
   app.use('/auth', (req: Request, res: Response, next: NextFunction) => {
     const reqId = reqIdOf(req, res);
     const key = req.ip ?? 'unknown';
-    if (authLimiter.hit(key)) {
-      res.setHeader('retry-after', String(authLimiter.retryAfterSeconds(key)));
+    if (shedIfLimited(authLimiter, key, res, reqId, 'Wait a minute and try again.')) {
       logAuth(reqId, 'rate_limited');
-      sendError(res, reqId, new OperationError('rate_limited', 'too many requests', 'Wait a minute and try again.'));
       return;
     }
     next();
@@ -159,7 +139,7 @@ export function mountAuth(app: Express): void {
       // Same predicate as the boot gate (config.isLoopbackHost) — NOT a second hand-rolled list.
       // The two used to disagree over '[::1]', which Express's req.hostname does produce.
       if (!isLoopbackHost(req.hostname || '')) {
-        res.status(404).json({ ok: false, reqId, error: { code: 'not_found', message: 'not found' } });
+        sendError(res, reqId, new OperationError('not_found', 'not found'));
         return;
       }
       const email = (req.body as { email?: unknown } | undefined)?.email;

@@ -2,9 +2,12 @@
 // Ported from gbrain's src/core/scope.ts (IMPLIES / hasScope) under MIT — see NOTICE.
 // Adapted: gbrain's read/write/admin capability scopes are folded into the workspace role;
 // agent-token capability scopes are deferred to M3 (BYO-agent). Role lives on workspace_members.
-export type Role = 'member' | 'admin' | 'owner';
-
-export const ROLES: readonly Role[] = ['member', 'admin', 'owner'];
+/** The legal roles, lowest first. A const TUPLE, not a readonly array: zod's `z.enum` needs the
+ *  literal types, and this is the single list that op schemas publish to agents. It was previously
+ *  `readonly Role[]`, exported and used by nothing, while `create_invite.role` was a bare
+ *  `z.string()` — so the enum existed and the schema that needed it did not use it. */
+export const ROLES_TUPLE = ['member', 'admin', 'owner'] as const;
+export type Role = (typeof ROLES_TUPLE)[number];
 
 const ROLE_IMPLIES: Record<Role, ReadonlySet<Role>> = {
   owner: new Set<Role>(['owner', 'admin', 'member']),

@@ -9,7 +9,7 @@
 //    non-transactional DDL (e.g. CREATE INDEX CONCURRENTLY) must start with the pragma
 //    `-- migrate:no-transaction`; such files must be individually idempotent.
 import { readFile, readdir } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, pbkdf2Sync, timingSafeEqual } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
@@ -35,6 +35,55 @@ function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+/**
+ * Does `role` ALREADY authenticate with `password`? Returns null when the verifier cannot be read or
+ * parsed, which the caller treats as "don't know — go ahead and set it".
+ *
+ * WHY THIS EXISTS — this took the whole database offline (D63). `ALTER ROLE … PASSWORD` was issued
+ * unconditionally on every migrate run, and a SCRAM verifier is SALTED WITH FRESH RANDOMNESS, so
+ * re-setting the SAME password still writes a DIFFERENT verifier. Supabase's pooler caches tenant
+ * SCRAM credentials, so each run invalidated that cache and produced a burst of 28P01
+ * ("reconnect with fresh credentials") failures; enough of those trip Supavisor's circuit breaker,
+ * which then refuses NEW CONNECTIONS ON EVERY LANE — app, auth and admin alike. Four migrate runs in
+ * one afternoon was enough. `migrate` is supposed to be safe to re-run; that is the whole contract.
+ *
+ * Verification follows RFC 5802: SaltedPassword = PBKDF2-HMAC-SHA256(password, salt, iterations),
+ * StoredKey = SHA256(HMAC(SaltedPassword, "Client Key")). Compared with timingSafeEqual out of habit
+ * rather than need — both sides are already on the trusted side of the admin connection.
+ */
+export function scramMatches(verifier: string, password: string): boolean | null {
+  // SCRAM-SHA-256$<iterations>:<base64 salt>$<base64 StoredKey>:<base64 ServerKey>
+  const m = /^SCRAM-SHA-256\$(\d+):([^$]+)\$([^:]+):(.+)$/.exec(verifier);
+  if (!m) return null; // md5 verifier, or a shape we do not understand — do not guess.
+  const [, itersRaw, saltB64, storedB64] = m;
+  const iterations = Number(itersRaw);
+  if (!Number.isSafeInteger(iterations) || iterations <= 0 || !saltB64 || !storedB64) return null;
+  try {
+    const salted = pbkdf2Sync(password, Buffer.from(saltB64, 'base64'), iterations, 32, 'sha256');
+    const stored = createHash('sha256').update(createHmac('sha256', salted).update('Client Key').digest()).digest();
+    const expected = Buffer.from(storedB64, 'base64');
+    return stored.length === expected.length && timingSafeEqual(stored, expected);
+  } catch {
+    return null;
+  }
+}
+
+/** true = already correct (skip the ALTER), false = needs setting, null = cannot tell (set it). */
+async function passwordAlreadyCorrect(sql: postgres.Sql, role: string, password: string): Promise<boolean | null> {
+  let verifier: string | null = null;
+  try {
+    const rows = await sql<{ rolpassword: string | null }[]>`
+      select rolpassword from pg_authid where rolname = ${role}`;
+    verifier = rows[0]?.rolpassword ?? null;
+  } catch {
+    // pg_authid is superuser-only on some platforms. Fall back to the old behaviour rather than
+    // failing the migration — the cost is the churn this function exists to avoid, not a broken run.
+    return null;
+  }
+  if (!verifier) return null;
+  return scramMatches(verifier, password);
+}
+
 const PRAGMA_NO_TX = /^\s*--\s*migrate:no-transaction\s*$/im;
 // Standalone transaction-control statements the runner must reject (it wraps each file in one tx).
 // Covers every Postgres synonym: BEGIN/START TRANSACTION (with optional TRANSACTION/WORK/options),
@@ -44,7 +93,29 @@ const PRAGMA_NO_TX = /^\s*--\s*migrate:no-transaction\s*$/im;
 export const TXN_CONTROL =
   /^\s*(?:(?:begin|commit|end|rollback|abort)(?:\s+(?:transaction|work))?|start\s+transaction[^;]*)\s*;\s*$/im;
 
+/** Minimum server version. `sessions`'s composite FK uses the column-list form of ON DELETE SET
+ *  NULL, which is PostgreSQL 15+ syntax. */
+const MIN_PG_VERSION_NUM = 150_000;
+
 async function ensureBootstrap(sql: postgres.Sql): Promise<void> {
+  // Version FIRST, before any role or extension is created.
+  //
+  // The requirement was documented only in two SQL comments, and one of them lives in 0001 — which
+  // is applied AFTER schema.sql, i.e. after the very failure it exists to explain. On an older
+  // server this used to create cb_app and cb_auth, set their passwords, install default privileges,
+  // and only then die inside schema.sql with a bare `syntax error at or near "("`. It failed loudly
+  // but unintelligibly, having already made changes.
+  const v = await sql<{ n: number }[]>`select current_setting('server_version_num')::int as n`;
+  const versionNum = v[0]?.n ?? 0;
+  if (versionNum < MIN_PG_VERSION_NUM) {
+    const pretty = `${Math.floor(versionNum / 10_000)}.${versionNum % 10_000}`;
+    throw new Error(
+      `company-brain requires PostgreSQL ${MIN_PG_VERSION_NUM / 10_000}+ — this server reports ${pretty}. ` +
+        `sessions uses the column-list form of ON DELETE SET NULL (active_workspace_id), which older ` +
+        `servers reject with an unhelpful syntax error partway through schema.sql.`,
+    );
+  }
+
   // pgvector. On Supabase the type may live in the `extensions` schema; keep it on the search_path.
   await sql`create extension if not exists vector`;
 
@@ -61,7 +132,19 @@ async function ensureBootstrap(sql: postgres.Sql): Promise<void> {
     );
   }
 
-  if (hasPassword) {
+  // Only touch the password when it is actually wrong. See scramMatches() — an unconditional ALTER
+  // rewrites the salted verifier every run and invalidates the pooler's cached credentials (D63).
+  const appPwOk = hasPassword && roleExists
+    ? await passwordAlreadyCorrect(sql, 'cb_app', config.CB_APP_DB_PASSWORD)
+    : false;
+  if (hasPassword && appPwOk === true) {
+    // The old unconditional statement was `alter role cb_app LOGIN password %L`, so it also
+    // re-asserted LOGIN on every run. Skipping the password must not silently drop that repair —
+    // a role left NOLOGIN by an operator or an incident would otherwise stay broken through a
+    // migrate that reports success. LOGIN alone touches no verifier, so it is free to re-assert.
+    await sql`alter role cb_app login`;
+    console.log('= cb_app password already matches CB_APP_DB_PASSWORD; not re-setting it');
+  } else if (hasPassword) {
     // Password travels via a bind param into a session GUC, then into a format(%L) literal —
     // never string-concatenated into SQL.
     await sql`select set_config('cb.app_password', ${config.CB_APP_DB_PASSWORD}, false)`;
@@ -112,7 +195,14 @@ async function ensureAuthRole(sql: postgres.Sql): Promise<void> {
     );
   }
 
-  if (hasPassword) {
+  // Same idempotence rule as cb_app: never rewrite a verifier that is already correct (D63).
+  const authPwOk = hasPassword && roleExists
+    ? await passwordAlreadyCorrect(sql, 'cb_auth', config.CB_AUTH_DB_PASSWORD)
+    : false;
+  if (hasPassword && authPwOk === true) {
+    await sql`alter role cb_auth login`; // see cb_app above: keep the LOGIN repair the ALTER carried
+    console.log('= cb_auth password already matches CB_AUTH_DB_PASSWORD; not re-setting it');
+  } else if (hasPassword) {
     // Same posture as cb_app: the password travels as a bind param into a session GUC, then into a
     // format(%L) literal — never string-concatenated into SQL — and is wiped immediately after.
     await sql`select set_config('cb.auth_password', ${config.CB_AUTH_DB_PASSWORD}, false)`;
@@ -344,6 +434,22 @@ async function run(): Promise<void> {
   if (!config.DATABASE_ADMIN_URL) {
     throw new Error('DATABASE_ADMIN_URL is not set (Supabase `postgres` connection). See .env.example.');
   }
+  // The README states that `bun run migrate` refuses to start without the auth lane. It did not:
+  // migrate never read DATABASE_AUTH_URL (it appeared once, inside an error string), and the only
+  // auth-lane requirement was CB_AUTH_DB_PASSWORD — and even that fired only when the cb_auth role
+  // did not already exist. So a fresh clone could migrate "successfully" and then 500 on the first
+  // login, which is the fresh-clone failure P0-5 was supposed to have closed.
+  //
+  // Making the documented behaviour real rather than deleting the sentence: migrate CREATES the
+  // cb_auth role, so it is the right place to insist the URL that role is reached through exists.
+  // Checked here, before any connection, so the message arrives instead of a confusing later error.
+  if (!config.DATABASE_AUTH_URL) {
+    throw new Error(
+      'DATABASE_AUTH_URL is not set. migrate creates the cb_auth role, and the app needs this URL to ' +
+        'use it — without it every login fails at runtime with a much less obvious error. It is the ' +
+        'transaction pooler (port 6543) with username cb_auth.<project-ref>. See .env.example.',
+    );
+  }
   const sql = adminSql();
   // Serialize concurrent migrate runs (session-level advisory lock; adminSql is max:1).
   await sql`select pg_advisory_lock(${MIGRATE_LOCK_KEY})`;
@@ -374,9 +480,25 @@ async function run(): Promise<void> {
       if (applied.has(file.name)) {
         const prior = applied.get(file.name);
         const now = sha256(text);
-        if (prior && prior !== now) {
+        // A NULL checksum silently exempts a file from immutability FOREVER. The column was added
+        // retroactively (`add column if not exists checksum text`), so a row can legitimately
+        // predate it — and the natural manual repair, `insert into _migrations (filename) values
+        // (…)`, writes exactly that. Treat missing like mismatched: unverified is not verified.
+        if (prior == null) {
           throw new Error(
-            `${file.name} was already applied but its contents changed (checksum drift). Applied files are immutable — revert the edit and add a new src/db/migrations/NNNN_*.sql instead.`,
+            `${file.name} is recorded as applied but has NO checksum, so its contents cannot be verified. ` +
+              `Set it deliberately: UPDATE _migrations SET checksum = '${now}' WHERE filename = '${file.name}'; ` +
+              `— only after confirming the file matches what is actually in the database.`,
+          );
+        }
+        if (prior !== now) {
+          throw new Error(
+            `${file.name} was already applied but its contents changed (checksum drift). Applied files are immutable.\n` +
+              `  * If the edit was a MISTAKE: revert it (git checkout -- ${file.name}) and put the change in a new src/db/migrations/NNNN_*.sql.\n` +
+              `  * If the edit is SEMANTICALLY INERT (a comment or whitespace fix) and the database already matches: re-point the ledger, non-destructively —\n` +
+              `      UPDATE _migrations SET checksum = '${now}' WHERE filename = '${file.name}';\n` +
+              `    Review \`git diff ${file.name}\` first and never set the checksum to NULL.\n` +
+              `  * Do NOT reach for migrate:reset — it DESTROYS the database. See docs/auth-setup.md.`,
           );
         }
         console.log(`= ${file.name} (already applied)`);
@@ -415,10 +537,6 @@ async function run(): Promise<void> {
   }
 }
 
-/** `bun run migrate:reset` — drop everything and re-migrate. Applied files are checksum-immutable,
- *  so this is the only way to iterate on 0001 before it is frozen. THIS DESTROYS ALL DATA, and
- *  there is exactly one Supabase project (it holds the A17 corpus), so it refuses unless all three
- *  independent confirmations line up, and prints what it is about to delete first. */
 /** The Supabase project this connection string points at.
  *
  *  Supabase pooler usernames are `<role>.<project-ref>`, and the project ref is the only part of the
@@ -436,6 +554,10 @@ export function projectRefOf(adminUrl: string): string {
   }
 }
 
+/** `bun run migrate:reset` — drop everything and re-migrate. Applied files are checksum-immutable,
+ *  so this is the only way to iterate on 0001 before it is frozen. THIS DESTROYS ALL DATA, and
+ *  there is exactly one Supabase project (it holds the A17 corpus), so it refuses unless all three
+ *  independent confirmations line up, and prints what it is about to delete first. */
 async function reset(): Promise<void> {
   const confirm = process.env.CB_CONFIRM_RESET ?? '';
   if (!DEV_ENVS.has(config.NODE_ENV)) {

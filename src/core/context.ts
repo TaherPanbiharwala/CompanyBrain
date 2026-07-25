@@ -66,6 +66,36 @@ export function resolveGrants(principal: string, workspaceId: string, extra: rea
   return [selfGrant(principal), wsGrant(workspaceId), ...extra];
 }
 
+// ── Row visibility: scope → acl ───────────────────────────────────────────
+// A row is visible iff `acl && grants`. Since every caller's keyring is
+// [self:<them>, ws:<their workspace>], a row tagged `self:<author>` is readable by that author
+// alone, and a row tagged `ws:<workspace>` by every member. That is the whole mechanism.
+//
+// This lives here, beside the grant constructors, because `scope` is not free-form metadata — it
+// NAMES a visibility policy, and the acl is what the database will actually enforce. Until the M1+M2
+// review those two had drifted apart: `scope` was `z.string()` with no CHECK, and `importPage`
+// stamped `ws:` unconditionally, so `scope:'private'` produced a row every member could read. The
+// label was decorative. That mattered beyond cosmetics because at M4 the enforced predicate becomes
+// `acl && current_grants()` — the database reads the ACL, never the label — so any row written with
+// a mismatched pair would have been permanently mis-scoped with no way to recover the author's
+// intent. Deriving one from the other makes the mismatch unrepresentable.
+
+export const PAGE_SCOPES = ['private', 'workspace'] as const;
+export type PageScope = (typeof PAGE_SCOPES)[number];
+
+/** Default when a caller does not say. Workspace-wide: a company brain nobody else can read is not
+ *  a company brain, and D0.1 settled on workspace-default with a private option that works. */
+export const DEFAULT_PAGE_SCOPE: PageScope = 'workspace';
+
+export function isPageScope(x: string): x is PageScope {
+  return (PAGE_SCOPES as readonly string[]).includes(x);
+}
+
+/** The acl a row with this scope must carry. The ONLY place the mapping exists. */
+export function aclForScope(scope: PageScope, ctx: Pick<OperationContext, 'principal' | 'workspaceId'>): Grant[] {
+  return scope === 'private' ? [selfGrant(ctx.principal)] : [wsGrant(ctx.workspaceId)];
+}
+
 /** The only constructor for an OperationContext. Fail-closed. */
 export function buildContext(input: ContextInput): OperationContext {
   if (!input.principal) {

@@ -16,7 +16,8 @@
     "test": "bun test",
     "seed:a17": "bun run scripts/seed-a17.ts",
     "load:a17": "bun run scripts/load-a17-corpus.ts",
-    "eval:a17": "bun run scripts/run-a17-eval.ts"
+    "eval:a17": "bun run scripts/run-a17-eval.ts",
+    "measure:a17": "bun run scripts/measure-a17.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
