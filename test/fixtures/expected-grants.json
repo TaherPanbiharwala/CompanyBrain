@@ -16,6 +16,11 @@
   },
   {
     "grantee": "cb_app",
+    "table_name": "page_sources",
+    "privileges": "DELETE,INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_app",
     "table_name": "pages",
     "privileges": "DELETE,INSERT,SELECT,UPDATE"
   },
@@ -23,6 +28,11 @@
     "grantee": "cb_app",
     "table_name": "principals",
     "privileges": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "privileges": "DELETE,INSERT,SELECT"
   },
   {
     "grantee": "cb_app",

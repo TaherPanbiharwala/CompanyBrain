@@ -4,10 +4,12 @@
 // A17 scope: markdown/plain-text only, no content-sanity gate, no dedup (all legitimate M3
 // hardening layered on top of this waist later).
 import { aclForScope, DEFAULT_PAGE_SCOPE, type OperationContext, type PageScope } from '../core/context.ts';
+import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { withScopedTx } from '../db/client.ts';
-import { embed, withRouterScope } from '../ai/router.ts';
+import { withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
-import { chunkText } from './chunk.ts';
+import { chunkText, estimateTokens } from './chunk.ts';
+import { embedAll } from './embed.ts';
 import { OperationError } from '../api/errors.ts';
 
 export interface ImportPageInput {
@@ -16,6 +18,7 @@ export interface ImportPageInput {
   body: string;
   tags?: string[];
   scope?: PageScope;
+  kind?: PackKind;
 }
 
 export interface ImportPageResult {
@@ -32,20 +35,26 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
   // matters more than it looks: at M4 the enforced predicate reads the ACL and never the label.
   const scope = input.scope ?? DEFAULT_PAGE_SCOPE;
   const acl = aclForScope(scope, ctx);
+  const kind = input.kind ?? DEFAULT_PACK_KIND;
 
   // Embed OUTSIDE any DB transaction (D6) — a stalled model call must never pin a pooled
-  // connection. Skip the call entirely for an empty body (embed([]) has no well-defined contract).
+  // connection. embedAll batches, so a document large enough to exceed the provider's input limit
+  // or EMBED_TIMEOUT_MS still completes instead of losing every chunk already paid for.
   const embeddings =
     chunks.length === 0
       ? []
-      : await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed(chunks.map((c) => c.text)));
+      : await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embedAll(chunks.map((c) => c.text)));
 
   return withScopedTx(ctx, async (tx) => {
     let rows: { id: string }[];
     try {
+      // `kind` is written EXPLICITLY now. Migration 0004's comment recorded that nothing wrote it —
+      // "every page takes the DDL default until the ingest op exposes it" — so all 12 live pages are
+      // 'note' regardless of what they contain. Passing it here is what makes that comment stale in
+      // the good direction.
       rows = await tx<{ id: string }[]>`
-        insert into pages (workspace_id, slug, title, tags, owner_principal, scope, acl, body)
-        values (${ctx.workspaceId}, ${input.slug}, ${input.title}, ${tags}, ${ctx.principal}, ${scope}, ${acl}, ${input.body})
+        insert into pages (workspace_id, slug, title, kind, tags, owner_principal, scope, acl, body)
+        values (${ctx.workspaceId}, ${input.slug}, ${input.title}, ${kind}, ${tags}, ${ctx.principal}, ${scope}, ${acl}, ${input.body})
         returning id`;
     } catch (err) {
       // Re-ingesting an existing slug is the single most ordinary ingest mistake, and it used to
@@ -53,12 +62,42 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
       // had already been embedded and paid for. ONLY the slug collision is translated; any other
       // 23505 (or any other error) rethrows, because mapping an unknown constraint to "already
       // exists" would report the wrong cause.
+      //
+      // TWO index names. 0007 replaced UNIQUE(workspace_id, slug) with two partial unique indexes
+      // because the single constraint made another principal's INVISIBLE private slug enumerable
+      // (unique checks bypass RLS, and this handler echoes the slug back). If this map falls out of
+      // sync with the migrations, the friendly 409 silently becomes a 500 on the most common mistake
+      // there is.
+      //
+      // 0009's source_sha256 pair is deliberately ABSENT: importPage never writes source_sha256 and
+      // both of those indexes are partial on `IS NOT NULL`, so this path cannot raise them. The live
+      // copy lives in src/ingest/file.ts, next to the code that can. Keyed by index name so an
+      // unlisted 23505 still rethrows rather than being guessed at.
       const e = err as { code?: string; constraint_name?: string };
-      if (e.code === '23505' && e.constraint_name === 'pages_workspace_id_slug_key') {
+      const COLLISIONS: Record<string, { message: string; suggestion: string }> = {
+        pages_ws_slug_shared: {
+          message: `a page with slug "${input.slug}" already exists in this workspace`,
+          suggestion: 'Choose a different slug, or delete the existing page first.',
+        },
+        pages_ws_slug_private: {
+          message: `you already have a private page with slug "${input.slug}"`,
+          suggestion: 'Choose a different slug, or delete your existing page first.',
+        },
+      };
+      const collision = e.code === '23505' && e.constraint_name ? COLLISIONS[e.constraint_name] : undefined;
+      if (collision) {
+        throw new OperationError('already_exists', collision.message, collision.suggestion);
+      }
+      // A policy denial on the write. Unreachable while aclForScope is the only stamper (the writer
+      // always holds the tag it stamps), and reachable the moment anything writes on another
+      // principal's behalf — the succession/re-scope path. Mapping it here rather than there means
+      // the first such writer gets a real error instead of a 500 with a reqId an agent cannot use.
+      if (e.code === '42501') {
         throw new OperationError(
-          'already_exists',
-          `a page with slug "${input.slug}" already exists in this workspace`,
-          'Choose a different slug, or delete the existing page first.',
+          'permission_denied',
+          `the database refused this write: the page acl [${acl.join(', ')}] does not overlap your grants`,
+          "A page can only be written with scope 'private' (acl self:<you>) or scope 'workspace' " +
+            '(acl ws:<workspace>). Call whoami to see the grants you actually hold.',
         );
       }
       throw err;
@@ -82,7 +121,9 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
         tags,
         ord: chunk.index,
         content: chunk.text,
-        token_count: Math.ceil(chunk.text.length / 4),
+        // estimateTokens (UTF-8 bytes), not text.length/4 — see the note in lifecycle.ts. All three
+        // writers of content_chunks.token_count use the same estimator.
+        token_count: estimateTokens(chunk.text),
         embedding: toVectorLiteral(embeddings[i]!),
       }));
       await tx`

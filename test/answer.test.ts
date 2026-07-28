@@ -37,7 +37,13 @@ describe.skipIf(!live)('answerQuestion — live (chat mocked)', () => {
 
     const ctx = buildContext({ principal: p, workspaceId: ws, role: 'owner', grants: resolveGrants(p, ws), remote: false });
     await importPage(ctx, { slug: 'answer-doc', title: 'Answer doc', body: 'The office plant is named Fernando.' });
-  });
+    // Three seeding statements plus an importPage (embed + page insert + chunk insert), each a
+    // round trip to Supabase ap-northeast-2 at ~110ms — comfortably past bun's 5s default. On
+    // timeout the hook aborts PART-WAY, so the failure surfaces as a 23503 FK violation from the
+    // page insert (the workspace row never landed) rather than as a timeout, which sends you
+    // looking in the wrong place entirely. test/hybrid.test.ts already carries this fix for the
+    // same reason; this file was missed.
+  }, 30_000);
 
   afterAll(async () => {
     globalThis.fetch = realFetch;
@@ -56,7 +62,9 @@ describe.skipIf(!live)('answerQuestion — live (chat mocked)', () => {
     expect(result.answer).toBe('The plant is named Fernando [1].');
     expect(result.citations).toEqual([1]);
     expect(result.sources.length).toBeGreaterThan(0);
-  });
+    // Live: an embed round trip plus a scoped transaction, both to a remote region. The parsing
+    // tests below are pure and need no timeout; these two hit the network.
+  }, 30_000);
 
   it('invalid JSON degrades gracefully: raw text becomes the answer, citations is empty, no throw', async () => {
     chatResponse = 'this is not json at all, just a plain sentence.';
@@ -64,7 +72,7 @@ describe.skipIf(!live)('answerQuestion — live (chat mocked)', () => {
     const result = await answerQuestion(ctx, 'What is the office plant named?');
     expect(result.answer).toBe(chatResponse);
     expect(result.citations).toEqual([]);
-  });
+  }, 30_000);
 
   // ── Citation bounds. Model-generated indices into OUR array. ────────────
   // Before the M1+M2 review the filter was `typeof n === 'number'` and nothing else, so a model (or

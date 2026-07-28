@@ -8,9 +8,14 @@ import { ROLES_TUPLE, type Role } from './roles.ts';
 import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
 import { importPage } from '../ingest/import.ts';
+import { listPages, deletePage, replacePage } from '../ingest/lifecycle.ts';
+import { hybridSearch } from '../search/hybrid.ts';
+import { importFile, MAX_FILE_BYTES } from '../ingest/file.ts';
+import { formatLocator } from '../ingest/blocks.ts';
+import { PACK, PACK_KINDS, DEFAULT_PACK_KIND } from '../core/pack.ts';
 import { answerQuestion } from '../answer/answer.ts';
 import { createInvite } from '../auth/invites.ts';
-import { PAGE_SCOPES } from '../core/context.ts';
+import { PAGE_SCOPES, DEFAULT_PAGE_SCOPE } from '../core/context.ts';
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -92,7 +97,11 @@ const list_members = defineOp({
 
 const ingest = defineOp({
   name: 'ingest',
-  description: 'Ingest a page: chunk the body, embed each chunk, and write page + chunks atomically.',
+  description:
+    'Ingest a page: chunk the body, embed each chunk, and write page + chunks atomically. ' +
+    "Writes to shared workspace memory by default; pass scope:'private' to restrict it to yourself. " +
+    'Use replace_page to change the text afterwards and delete_page to remove it; the scope, however, ' +
+    'is fixed at ingest — there is no re-scope operation.',
   // Every bound here turns a 500 into a diagnosable 400. Unbounded `z.string()` meant an over-long
   // slug raised Postgres 54000 ("index row size exceeds btree maximum") from the UNIQUE index, and a
   // huge body drove an unbounded number of paid embedding calls — both surfacing as a generic
@@ -105,11 +114,35 @@ const ingest = defineOp({
     title: z.string().min(1).max(300),
     body: z.string().min(1).max(200_000),
     tags: z.array(z.string().min(1).max(64)).max(50).optional(),
+    // An enum at the OP boundary, deliberately, while the column stays TEXT with no CHECK. Migration
+    // 0004 recorded that on purpose — the list is a convention so a new type needs no migration — so
+    // validating here reports a bad value to the caller as a 400, where a database constraint would
+    // turn the same mistake into a 500.
+    kind: z
+      .enum(PACK_KINDS)
+      .default(DEFAULT_PACK_KIND)
+      .describe(
+        `What this page is about, which shapes what gets extracted from it later. ${PACK.map((p) => `${p.kind}: ${p.description}`).join(' ')}`,
+      ),
     // An ENUM, not z.string(). This is an access-control knob: it decides whether the row's acl is
     // `self:<author>` or `ws:<workspace>`, and the database enforces the acl. Publishing it as an
     // open string let any value persist into a column M4 branches on, and told agents reading
     // /api/_ops that anything goes. The CHECK in migration 0003 is the matching DB-side guard.
-    scope: z.enum(PAGE_SCOPES).optional(),
+    //
+    // .default() rather than .optional(): the default is the MORE EXPOSING value, and an optional
+    // field with no stated default reads to an agent as "omit it and nothing happens". zodToJsonSchema
+    // emits `"default": "workspace"` only for .default(), and /api/_ops is deliberately unauthenticated
+    // (D53) — so this is the one place an agent can learn what omitting the field actually means.
+    // .describe() lands in the published schema for the same reason.
+    scope: z
+      .enum(PAGE_SCOPES)
+      .default(DEFAULT_PAGE_SCOPE)
+      .describe(
+        "Who can read this page. 'workspace' (used when omitted): every member of the current " +
+          "workspace. 'private': only the calling principal — enforced by the database, not " +
+          'advisory. Fixed once set: replace_page keeps the scope and there is no re-scope operation, ' +
+          'so choose it now or delete and re-ingest.',
+      ),
   }),
   requiredRole: 'member',
   mutating: true,
@@ -118,13 +151,214 @@ const ingest = defineOp({
 
 const ask = defineOp({
   name: 'ask',
-  description: 'Answer a question by retrieving relevant chunks (hybrid search + RRF) and generating a cited answer.',
+  description:
+    'Answer a question by retrieving relevant chunks (hybrid search + RRF) and generating a cited ' +
+    'answer. Retrieval is permission-filtered: it searches only the pages your grants allow you to ' +
+    'read, so "not found" can also mean "not visible to you." The response carries ' +
+    '`degraded: "keyword_only"` when the embedding provider was unavailable and only keyword ' +
+    'matching ran — treat a thin answer as incomplete rather than as an empty corpus.',
   // Bounded: `question` reaches embed() AND the chat prompt, both paid calls. Unbounded, a 100kb
   // question exceeded the embedding input limit and surfaced as `internal_error` — a 500 for what is
   // plainly an input-validation failure, after the money was already spent.
   params: z.object({ question: z.string().min(1).max(2_000) }),
   requiredRole: 'member',
   handler: async (ctx, params) => answerQuestion(ctx, params.question),
+});
+
+// ── Lifecycle (M3) ────────────────────────────────────────────────────────
+// These three make ingest reversible. `ingest`'s own description (above) has been updated to point
+// at replace_page and delete_page; the re-scope path deliberately stays closed (D68).
+
+// The two destructive ops share this addressing. pageId is unambiguous; slug is a convenience that
+// can legitimately match two rows since migration 0007 (a shared page and your private page may
+// carry the same slug), so lifecycle.ts refuses rather than guessing. The XOR is enforced in the
+// handler by requireOneRef, NOT by .refine(): the registry calls .strict() on every params object,
+// and a refinement would turn it into a ZodEffects that has no .strict().
+const PAGE_REF = {
+  pageId: z.string().uuid().optional().describe('The page id from list_pages. Unambiguous; prefer this.'),
+  slug: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('The page slug. Rejected if it matches more than one page you can see — pass pageId instead.'),
+};
+
+const list_pages = defineOp({
+  name: 'list_pages',
+  description:
+    'List the pages you can read in this workspace, newest-updated first, with their chunk counts. ' +
+    'Permission-filtered: a colleague\'s private page is absent here for the same reason it is absent ' +
+    'from search. This is how you find a pageId for delete_page or replace_page. ' +
+    'PAGINATED: returns at most `limit` pages and sets `hasMore: true` when more remain — raise ' +
+    '`offset` to continue. There is no total count, so an empty result means "no more from here", ' +
+    'not "the workspace is empty".',
+  params: z.object({
+    limit: z.number().int().min(1).max(200).describe('Maximum pages to return. Default 50.').default(50),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_000_000)
+      .describe('How many pages to skip. Combine with `hasMore` in the response to walk the list.')
+      .default(0),
+  }),
+  requiredRole: 'member',
+  handler: async (ctx, params) => listPages(ctx, params),
+});
+
+const delete_page = defineOp({
+  name: 'delete_page',
+  description:
+    'Delete a page and everything derived from it: its chunks, and the original uploaded file if it ' +
+    'came from one. Irreversible, with no undo and no trash. You may delete pages you authored; ' +
+    'admins may delete any page they can read.',
+  params: z.object(PAGE_REF),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) => deletePage(ctx, params),
+});
+
+const replace_page = defineOp({
+  name: 'replace_page',
+  description:
+    'Replace a page\'s text, re-chunking and re-embedding it. Keeps the page id, slug, scope and ' +
+    'permissions; updates its modified time. Refused for pages created from an uploaded file — ' +
+    'delete and re-ingest those, so the stored file and the indexed text keep describing the same document.',
+  params: z.object({
+    ...PAGE_REF,
+    // Same bound as `ingest`.body, for the same reason: this text reaches a paid embedding call.
+    body: z.string().min(1).max(200_000),
+    title: z.string().min(1).max(300).optional().describe('Leave unset to keep the current title.'),
+    tags: z.array(z.string().min(1).max(64)).max(50).optional().describe('Leave unset to keep the current tags.'),
+  }),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) => replacePage(ctx, params),
+});
+
+// ── File ingest (M3) ──────────────────────────────────────────────────────
+//
+// TAKES BYTES, NEVER A PATH, and this is a security boundary rather than an interface preference.
+// /api/_ops is unauthenticated (D53) and every op below `admin` is callable by any `member` — a role
+// domain auto-join hands to any Workspace account on a claimed domain. An op accepting
+// `{"path": "..."}` would let a caller name `/proc/self/environ` and have the server ingest
+// OPENAI_API_KEY, DATABASE_URL, CB_APP_DB_PASSWORD and SESSION_SECRET into a page, which `ask` would
+// then read back out on request. `bun run ingest-file` reads the file LOCALLY and sends the bytes.
+const ingest_file = defineOp({
+  name: 'ingest_file',
+  description:
+    'Ingest a document from its bytes: PDF, Word (.docx), Excel (.xlsx), CSV, JSON, HTML or plain ' +
+    'text. The format is detected from the CONTENT, not the filename. Chunks carry the page or cell ' +
+    'range they came from, so answers can cite a position, and the original file is retained so that ' +
+    'citation can be opened. Send base64 — there is deliberately no way to name a server-side path. ' +
+    `The decoded file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`,
+  params: z.object({
+    filename: z
+      .string()
+      .min(1)
+      .max(255)
+      .describe('The name as uploaded. Display only — the format is detected from the bytes.'),
+    // DERIVED from the enforced limit, not hand-written beside it. A literal 8_000_000 advertised a
+    // bound ~35% larger than importFile actually accepts, so /api/_ops and the MCP tool list — the
+    // only contract an agent has — overstated what would succeed. base64 is 4 chars per 3 bytes,
+    // plus a little slack for padding and whitespace.
+    content_base64: z
+      .string()
+      .min(1)
+      .max(Math.ceil((MAX_FILE_BYTES * 4) / 3) + 1024)
+      .describe(`Base64-encoded file bytes. The DECODED file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`),
+    slug: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[a-z0-9][a-z0-9._-]*$/, 'slug must be lowercase alphanumeric with . _ or -'),
+    title: z.string().min(1).max(300).optional().describe("Defaults to the document's own title, then the filename."),
+    tags: z.array(z.string().min(1).max(64)).max(50).optional(),
+    kind: z.enum(PACK_KINDS).default(DEFAULT_PACK_KIND),
+    scope: z
+      .enum(PAGE_SCOPES)
+      .default(DEFAULT_PAGE_SCOPE)
+      .describe(
+        "Who can read this file and everything derived from it. 'workspace' (used when omitted): " +
+          "every member. 'private': only you — enforced by the database, and it covers the stored " +
+          'original bytes too, not just the text.',
+      ),
+  }),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) => {
+    let bytes: Uint8Array;
+    try {
+      // Buffer.from is lenient — it ignores characters outside the base64 alphabet rather than
+      // throwing — so a truncated or corrupted upload decodes to SHORTER bytes instead of failing.
+      // That is caught downstream by magic-byte detection (a half PDF is not a PDF) rather than
+      // pretended about here.
+      bytes = new Uint8Array(Buffer.from(params.content_base64, 'base64'));
+    } catch {
+      throw new OperationError('invalid_params', 'content_base64 is not valid base64');
+    }
+    if (bytes.byteLength === 0) {
+      throw new OperationError('invalid_params', 'content_base64 decoded to zero bytes');
+    }
+    return importFile(ctx, {
+      bytes,
+      filename: params.filename,
+      slug: params.slug,
+      title: params.title,
+      tags: params.tags,
+      kind: params.kind,
+      scope: params.scope,
+    });
+  },
+});
+
+// ── Search (M3) ───────────────────────────────────────────────────────────
+//
+// LANDS LAST, and the ordering was a real constraint rather than tidiness: this op's contract is
+// made of things that did not exist until the rest of M3 shipped. `score` was discarded by
+// hybridSearch entirely, `locator` had no column, and `degraded` had no way to be expressed. Both
+// /api/_ops and the MCP tool list publish this schema as stable, so shipping it early would have
+// meant publishing a contract and then breaking it.
+const search = defineOp({
+  name: 'search',
+  description:
+    'Retrieve the passages most relevant to a query, ranked, with the page and position each came ' +
+    'from. No model call and no generated prose — this is the retrieval step of `ask` on its own, ' +
+    'for when you want the evidence rather than an answer. Permission-filtered like everything else: ' +
+    '"nothing found" can also mean "nothing you can read". The response carries ' +
+    '`degraded: "keyword_only"` when the embedding provider was unavailable and only keyword ' +
+    'matching ran — treat a thin result set as incomplete rather than as an empty corpus.',
+  params: z.object({
+    query: z.string().min(1).max(2_000),
+    // Bounded well below the arm limits: asking for more than retrieval fetches would return a
+    // short list and look like a corpus problem.
+    limit: z.number().int().min(1).max(20).default(8),
+  }),
+  requiredRole: 'member',
+  handler: async (ctx, params) => {
+    const { hits, degraded } = await hybridSearch(ctx, params.query, { topK: params.limit });
+    return {
+      // `degraded` is surfaced here for the same reason `ask` carries it: a short result list and a
+      // short result list from half a search look identical, and dispatchOp reads this field to log
+      // `ok_degraded`.
+      degraded,
+      results: hits.map((h) => ({
+        pageId: h.pageId,
+        slug: h.slug,
+        title: h.title,
+        chunkId: h.chunkId,
+        ord: h.ord,
+        content: h.content,
+        // Both forms: the structured locator for a caller that wants to open the file at the right
+        // place, and the rendered one so a human-facing citation does not have to re-implement
+        // formatLocator. Null for pasted text, which has no position inside a source document.
+        locator: h.locator,
+        citation: formatLocator(h.locator ?? undefined) ?? null,
+        score: h.score,
+      })),
+    };
+  },
 });
 
 // ── Invites (M2, G6) ──────────────────────────────────────────────────────
@@ -155,7 +389,20 @@ const create_invite = defineOp({
 
 // ── Registry + integrity guards (AM2/AM5) ─────────────────────────────────
 
-const declared: Operation[] = [whoami, echo, get_workspace, list_members, ingest, ask, create_invite];
+const declared: Operation[] = [
+  whoami,
+  echo,
+  get_workspace,
+  list_members,
+  ingest,
+  ask,
+  list_pages,
+  delete_page,
+  replace_page,
+  ingest_file,
+  search,
+  create_invite,
+];
 
 // ONE registry, and it is strict.
 //

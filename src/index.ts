@@ -3,7 +3,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.ts';
 import { appSql } from './db/client.ts';
-import { mountApi } from './api/server.ts';
+import { mountApi, UPLOAD_PATH } from './api/server.ts';
 import { mountAuth } from './auth/routes.ts';
 import { assertDevAuthSafe, assertDevLoginSafe } from './api/dev-auth.ts';
 import { assertDeploymentSafe } from './boot.ts';
@@ -16,7 +16,15 @@ if (config.TRUST_PROXY) {
   const hops = Number(config.TRUST_PROXY);
   app.set('trust proxy', Number.isFinite(hops) ? hops : config.TRUST_PROXY);
 }
-app.use(express.json({ limit: '100kb' })); // explicit body cap (review AM10)
+// Explicit body cap (review AM10), app-wide EXCEPT the one route that legitimately carries a file.
+//
+// The exemption is about ORDER, not size. This parser runs before preAuthGuard and csrfGuard, so a
+// single 100kb cap here would either reject every upload outright, or — if simply raised — hand an
+// unauthenticated flood a multi-megabyte JSON.parse per request at 300 req/min/IP, ahead of the very
+// shed that exists to stop that. /api/ingest_file therefore parses its own body inside mountApi,
+// AFTER both guards, where an oversized body has already had to get past the flood shed and CSRF.
+const standardJson = express.json({ limit: '100kb' });
+app.use((req, res, next) => (req.path === UPLOAD_PATH ? next() : standardJson(req, res, next)));
 // Express 5 has no cookie parsing of its own. Parsing ONLY — the oauth cookie carries its own HMAC.
 app.use(cookieParser());
 // Coarse IP-keyed flood shed, BEFORE anything touches the database. Ordering is the whole point:

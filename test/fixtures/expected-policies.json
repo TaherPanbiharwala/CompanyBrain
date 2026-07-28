@@ -12,8 +12,8 @@
     "policyname": "content_chunks_ws",
     "roles": "{public}",
     "cmd": "ALL",
-    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
-    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
   },
   {
     "tablename": "invites",
@@ -32,12 +32,20 @@
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
   {
+    "tablename": "page_sources",
+    "policyname": "page_sources_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
+  },
+  {
     "tablename": "pages",
     "policyname": "pages_ws",
     "roles": "{public}",
     "cmd": "ALL",
-    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
-    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
   },
   {
     "tablename": "principals",
@@ -54,6 +62,14 @@
     "cmd": "ALL",
     "qual": "(id = ( SELECT (NULLIF(current_setting('app.principal'::text, true), ''::text))::uuid AS \"nullif\"))",
     "with_check": "(none)"
+  },
+  {
+    "tablename": "quarantine",
+    "policyname": "quarantine_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
   },
   {
     "tablename": "sessions",

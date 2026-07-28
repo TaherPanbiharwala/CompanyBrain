@@ -6,8 +6,11 @@ import { liveOrFail, hasDbEnv } from './helpers/live.ts';
 import { adminSql, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
-import { hybridSearch } from '../src/search/hybrid.ts';
-import { rrfFuse } from '../src/search/rrf.ts';
+import {
+  hybridSearch, keywordQueryText, MAX_PER_PAGE,
+  W_KW_AND, W_KW_OR, W_VEC, W_TITLE, BLEND_RRF, BLEND_COS,
+} from '../src/search/hybrid.ts';
+import { rrfFuseWeighted } from '../src/search/rrf.ts';
 import { toVectorLiteral } from '../src/ai/vector.ts';
 import { embed, withRouterScope } from '../src/ai/router.ts';
 import { withScopedTx } from '../src/db/client.ts';
@@ -30,7 +33,16 @@ describe.skipIf(!live)('hybridSearch — live', () => {
   const realKey = mutableConfig.OPENAI_API_KEY;
   const EXACT_SENTENCE = 'The zebra migration route crosses the northern salt flats every spring.';
   // Every page beforeAll ingests into ws1. Kept beside the fixture so an added page updates both.
-  const WS1_SLUGS = ['keyword-doc', 'filler-doc', 'exact-doc'];
+  const WS1_SLUGS = ['keyword-doc', 'filler-doc', 'exact-doc', 'long-doc', 'title-only-doc'];
+
+  // Long enough to chunk into more than MAX_PER_PAGE pieces (chunkText targets 300 words), with the
+  // distinctive term in EVERY chunk — so the per-page cap is what limits its share of the results,
+  // not a shortage of matching chunks. Without a fixture like this the cap ships unobserved.
+  const LONG_BODY = Array.from(
+    { length: 40 },
+    (_, i) => `Section ${i}: the catamaran hull survey records displacement, beam and draft for berth ${i}. ` +
+      'Each entry repeats the same measurement vocabulary so the section reads as continuous prose rather than a list.',
+  ).join(' ');
 
   beforeAll(async () => {
     mutableConfig.OPENAI_API_KEY = 'test-key';
@@ -47,7 +59,15 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     await importPage(ctx1, { slug: 'keyword-doc', title: 'Keyword doc', body: 'This document mentions zzzqqqmarker exactly once, nowhere else.' });
     await importPage(ctx1, { slug: 'filler-doc', title: 'Filler doc', body: 'Totally unrelated filler content about baking bread.' });
     await importPage(ctx1, { slug: 'exact-doc', title: 'Exact doc', body: EXACT_SENTENCE });
-  }, { timeout: 20000 }); // 3 importPage calls, each several round trips to the remote DB — past the 5s default
+    await importPage(ctx1, { slug: 'long-doc', title: 'Long doc', body: LONG_BODY });
+    // The title arm's fixture: "thermodynamics" appears in the TITLE and nowhere in any body, so a
+    // hit on it cannot have come from the keyword or vector arms.
+    await importPage(ctx1, {
+      slug: 'title-only-doc',
+      title: 'Thermodynamics reference',
+      body: 'This page discusses heat exchange in industrial settings without ever naming the field.',
+    });
+  }, { timeout: 40000 }); // 5 importPage calls, each several round trips to the remote DB
 
   afterAll(async () => {
     globalThis.fetch = realFetch;
@@ -60,19 +80,19 @@ describe.skipIf(!live)('hybridSearch — live', () => {
 
   it('keyword arm surfaces a document via a distinctive token', async () => {
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
-    const hits = await hybridSearch(ctx, 'zzzqqqmarker');
+    const { hits } = await hybridSearch(ctx, 'zzzqqqmarker');
     expect(hits.some((h) => h.slug === 'keyword-doc')).toBe(true);
   });
 
   it('vector arm ranks an exact-content match first (identical text -> identical fake embedding)', async () => {
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
-    const hits = await hybridSearch(ctx, EXACT_SENTENCE);
+    const { hits } = await hybridSearch(ctx, EXACT_SENTENCE);
     expect(hits[0]?.slug).toBe('exact-doc');
   });
 
   it('a query with no keyword match still returns hits (the vector arm ranks all rows)', async () => {
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
-    const hits = await hybridSearch(ctx, 'qwertyuiopasdfghjklzxcvbnm-no-such-token');
+    const { hits } = await hybridSearch(ctx, 'qwertyuiopasdfghjklzxcvbnm-no-such-token');
     // The title's claim is "the vector arm ranks ALL rows", so the observable consequence is that a
     // zero-keyword-match query is still ANSWERABLE. `Array.isArray(hits)` was the old assertion, and
     // it holds for `[]` — i.e. it passes in exactly the world where the claim is false.
@@ -85,41 +105,214 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     for (const h of hits) expect(WS1_SLUGS).toContain(h.slug);
   });
 
-  it('the SQL fusion agrees with rrfFuse, which stays the specification', async () => {
-    // hybridSearch moved RRF into the query to save a round trip (D65). That is only safe if the SQL
-    // arithmetic matches the reference implementation EXACTLY, and there are two traps in it:
-    // rrfFuse ranks from zero while row_number() starts at one, and RRF ties are common so both
-    // sides must break them the same way. Running the arms separately here and fusing in TypeScript
-    // reproduces the old code path, so this test fails the moment the two drift.
+  it('the SQL fusion agrees with rrfFuseWeighted, which stays the specification', async () => {
+    // hybridSearch fuses inside the query to save a round trip (D65). That is only safe if the SQL
+    // arithmetic matches the reference implementation EXACTLY, and there are three traps in it:
+    // rrfFuseWeighted ranks from zero while row_number() starts at one; RRF ties are common so both
+    // sides must break them on id; and the arm WEIGHTS must line up positionally with the union
+    // order in the SQL. This runs each arm as its own query, fuses in TypeScript, applies the same
+    // per-page cap, and fails the moment the two drift.
+    //
+    // The arms are reproduced from the SQL, not re-derived — the thing under test is the FUSION, not
+    // the arm definitions. The weights come from hybrid.ts itself so the two cannot diverge silently.
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
     const query = 'zebra salt flats zzzqqqmarker bread';
+    const orQuery = keywordQueryText(query);
 
-    const viaSql = await hybridSearch(ctx, query);
+    const { hits: viaSql } = await hybridSearch(ctx, query);
 
     const [qv] = await withRouterScope({ workspaceId: ws1, zdr: false }, () => embed([query]));
     const lit = toVectorLiteral(qv!);
-    const { kw, vec } = await withScopedTx(ctx, async (tx) => {
-      const kw = await tx<{ id: string }[]>`
-        select c.id from content_chunks c
-        where to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})
-        order by ts_rank_cd(to_tsvector('english', c.content), plainto_tsquery('english', ${query})) desc
-        limit 20`;
-      const vec = await tx<{ id: string }[]>`
-        select c.id from content_chunks c
-        where c.embedding is not null
-        order by c.embedding <=> ${lit}::vector
-        limit 20`;
-      return { kw, vec };
+    const { kwAnd, kwOr, vec, title } = await withScopedTx(ctx, async (tx) => {
+      const kwTiers = await tx<{ id: string; page_id: string; and_tier: boolean; tier_rk: number }[]>`
+        select id, page_id, and_tier, tier_rk from (
+          select c.id, c.page_id,
+                 (to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})) as and_tier,
+                 ts_rank_cd(to_tsvector('english', c.content), websearch_to_tsquery('english', ${orQuery})) as rank,
+                 row_number() over (
+                   partition by (to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query}))
+                   order by ts_rank_cd(to_tsvector('english', c.content), websearch_to_tsquery('english', ${orQuery})) desc, c.id
+                 ) as tier_rk
+          from content_chunks c
+          where to_tsvector('english', c.content) @@ websearch_to_tsquery('english', ${orQuery})
+        ) t
+        where and_tier or tier_rk <= 10
+        order by and_tier desc, tier_rk`;
+      // The two tiers leave as SEPARATE ranked lists, each dense from 1 — that separation is the
+      // thing under test, since it is what lets them carry different weights.
+      const kwAnd = kwTiers.filter((r) => r.and_tier);
+      const kwOr = kwTiers.filter((r) => !r.and_tier);
+      const vec = await tx<{ id: string; page_id: string }[]>`
+        select id, page_id from (
+          select c.id, c.page_id, c.embedding <=> ${lit}::vector as dist
+          from content_chunks c
+          where c.embedding is not null
+          order by c.embedding <=> ${lit}::vector
+          limit 20
+        ) v
+        order by dist, id`;
+      const title = await tx<{ id: string; page_id: string }[]>`
+        select id, page_id from (
+          select c.id, c.page_id,
+                 ts_rank_cd(to_tsvector('english', coalesce(p.title, '')), websearch_to_tsquery('english', ${orQuery})) as rank
+          from pages p
+          join content_chunks c on c.page_id = p.id and c.ord = 0
+          where to_tsvector('english', coalesce(p.title, '')) @@ websearch_to_tsquery('english', ${orQuery})
+          limit 10
+        ) t
+        order by rank desc, id`;
+      return { kwAnd, kwOr, vec, title };
     });
-    const viaTs = rrfFuse([kw.map((r) => r.id), vec.map((r) => r.id)]).slice(0, 8).map((r) => r.id);
+
+    // Positional against the union order in hybridSearch: kw_and, kw_or, vec, title. A transposed
+    // weight vector is invisible here — both sides would be equally wrong — so this line is read,
+    // not asserted.
+    const fused = rrfFuseWeighted(
+      [kwAnd.map((r) => r.id), kwOr.map((r) => r.id), vec.map((r) => r.id), title.map((r) => r.id)],
+      [W_KW_AND, W_KW_OR, W_VEC, W_TITLE],
+    );
+
+    const pageOf = new Map<string, string>();
+    for (const r of [...kwAnd, ...kwOr, ...vec, ...title]) pageOf.set(r.id, r.page_id);
+    const perPage = new Map<string, number>();
+    const capped = fused.filter((r) => {
+      const pid = pageOf.get(r.id)!;
+      const n = perPage.get(pid) ?? 0;
+      if (n >= MAX_PER_PAGE) return false;
+      perPage.set(pid, n + 1);
+      return true;
+    });
+
+    // The final ordering is a BLEND, not the fused order — RRF decides the candidate set, cosine
+    // similarity refines how the shortlist is sorted. Reproducing it here is what keeps this a
+    // specification check rather than a check of two thirds of the pipeline.
+    // The SQL collapses byte-identical chunk text before scoring, keeping the best-scoring copy.
+    const bestByContent = new Map<string, { id: string; score: number }>();
+    const contentRows = await withScopedTx(ctx, (tx) => tx<{ id: string; h: string }[]>`
+      select c.id, md5(c.content) as h from content_chunks c
+      where c.id = any(${capped.map((r) => r.id)}::uuid[])`);
+    const hashOf = new Map(contentRows.map((r) => [r.id, r.h]));
+    for (const r of capped) {
+      const h = hashOf.get(r.id)!;
+      const cur = bestByContent.get(h);
+      if (!cur || r.score > cur.score || (r.score === cur.score && r.id < cur.id)) bestByContent.set(h, r);
+    }
+    const survivors = capped.filter((r) => bestByContent.get(hashOf.get(r.id)!)!.id === r.id);
+
+    const cos = new Map<string, number>();
+    const cosRows = await withScopedTx(ctx, (tx) => tx<{ id: string; cos_sim: number }[]>`
+      select c.id, coalesce(1 - (c.embedding <=> ${lit}::vector), 0)::float8 as cos_sim
+      from content_chunks c
+      where c.id = any(${survivors.map((r) => r.id)}::uuid[])`);
+    for (const r of cosRows) cos.set(r.id, r.cos_sim);
+
+    // Normalised by the best RRF score in the candidate set, exactly as the SQL's
+    // `max(rrf) over ()` does — an unnormalised RRF sum of ~1/60 terms would be swamped by a
+    // cosine of ~0.8 and the blend would quietly become a pure vector sort.
+    // Normalised over the SURVIVORS, not the pre-dedup set: Postgres evaluates WHERE before window
+    // functions, so the SQL's `max(rrf) over ()` already sees only the deduped rows.
+    const maxRrf = Math.max(...survivors.map((r) => r.score));
+    const viaTs = survivors
+      .map((r) => ({ id: r.id, blended: BLEND_RRF * (r.score / maxRrf) + BLEND_COS * (cos.get(r.id) ?? 0) }))
+      .sort((a, b) => b.blended - a.blended || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, 8)
+      .map((r) => r.id);
 
     expect(viaSql.length).toBeGreaterThan(0); // a vacuous [] === [] would prove nothing
     expect(viaSql.map((h) => h.chunkId)).toEqual(viaTs);
   }, 30_000);
 
+  it('the keyword arm returns rows for a query whose terms are spread across chunks', async () => {
+    // The measured defect this whole arm rewrite exists for: plainto_tsquery ANDs every lexeme, so a
+    // question whose words are spread over several documents matched NOTHING — zero rows for 7 of 10
+    // A17 eval questions. The hybrid was a vector search wearing a hybrid's name.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const orQuery = keywordQueryText('zzzqqqmarker bread zebra');
+
+    const [and_, or_] = await withScopedTx(ctx, async (tx) => {
+      const a = await tx<{ n: number }[]>`
+        select count(*)::int as n from content_chunks c
+        where to_tsvector('english', c.content) @@ plainto_tsquery('english', ${'zzzqqqmarker bread zebra'})`;
+      const o = await tx<{ n: number }[]>`
+        select count(*)::int as n from content_chunks c
+        where to_tsvector('english', c.content) @@ websearch_to_tsquery('english', ${orQuery})`;
+      return [a[0]!.n, o[0]!.n];
+    });
+
+    // No document contains all three words, so the AND form finds nothing…
+    expect(and_, 'the AND premise no longer holds — this fixture stopped demonstrating the defect').toBe(0);
+    // …while the OR form finds the three documents that each contain one.
+    expect(or_).toBeGreaterThanOrEqual(3);
+  }, 30_000);
+
+  it('caps how many chunks one page may take, so a long document cannot own the results', async () => {
+    // Without a fixture whose page has more chunks than MAX_PER_PAGE this control ships unobserved.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const { hits } = await hybridSearch(ctx, 'catamaran');
+    const fromLong = hits.filter((h) => h.slug === 'long-doc');
+    expect(fromLong.length, 'the long document took more than its share of the result set').toBeLessThanOrEqual(MAX_PER_PAGE);
+    // Positive control: it must be present at all, or the cap is not what limited it.
+    expect(fromLong.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('a title match surfaces a page whose BODY never mentions the term', async () => {
+    // The title arm's whole reason to exist, and the shape of its trap: it must emit CHUNK ids. A
+    // pages-based arm emits page ids, which never satisfy `join content_chunks on c.id = f.id` — so
+    // every title hit would consume a slot and return nothing, on every ask, silently.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const { hits } = await hybridSearch(ctx, 'thermodynamics');
+    expect(hits.some((h) => h.slug === 'title-only-doc'), 'the title arm returned nothing usable').toBe(true);
+  }, 30_000);
+
+  it('every hit carries a score and a locator field', async () => {
+    // The `search` op's contract depends on both, and `score` was discarded entirely before M3.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const { hits } = await hybridSearch(ctx, EXACT_SENTENCE);
+    expect(hits.length).toBeGreaterThan(0);
+    for (const h of hits) {
+      expect(typeof h.score, 'score must be a number — ::float8, not numeric-as-string').toBe('number');
+      expect(h.score).toBeGreaterThan(0);
+      expect(h).toHaveProperty('locator'); // null for pasted text, but present
+    }
+    // Descending, and strictly ordered — the caller ranks on this.
+    for (let i = 1; i < hits.length; i++) expect(hits[i - 1]!.score).toBeGreaterThanOrEqual(hits[i]!.score);
+  }, 30_000);
+
+  it('falls back to keyword-only when the embedder is down, and SAYS so', async () => {
+    // The failure this guards is not an outage — it is an outage that looks like a normal result.
+    // Keyword-only retrieval is faster, returns a plausible list, and logs `ok`, so an embedding
+    // provider being down would show up only as answers quietly getting worse.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const working = installFakeAiFetch();
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('/embeddings')) return new Response('provider down', { status: 503 });
+      return working(input as never, init as never);
+    }) as unknown as typeof fetch;
+
+    try {
+      const { hits, degraded } = await hybridSearch(ctx, 'zzzqqqmarker');
+      expect(degraded, 'an embedding outage was not reported').toBe('keyword_only');
+      // …and it still answered. A degradation that returns nothing is just an outage with extra steps.
+      expect(hits.some((h) => h.slug === 'keyword-doc'), 'keyword-only retrieval found nothing').toBe(true);
+      // Every score must still be finite and ordered: with the vector arm gated off, cos_sim
+      // coalesces to 0 and the blend collapses to pure RRF. A NULL leaking through here would sort
+      // unpredictably rather than last.
+      for (const h of hits) expect(Number.isFinite(h.score)).toBe(true);
+      for (let i = 1; i < hits.length; i++) expect(hits[i - 1]!.score).toBeGreaterThanOrEqual(hits[i]!.score);
+    } finally {
+      globalThis.fetch = working;
+    }
+  }, 60_000);
+
+  it('reports no degradation on the happy path — the flag is not always-on', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const { degraded } = await hybridSearch(ctx, 'zzzqqqmarker');
+    expect(degraded).toBeUndefined();
+  }, 30_000);
+
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {
     const ctx2 = buildContext({ principal: p2, workspaceId: ws2, role: 'owner', grants: resolveGrants(p2, ws2), remote: false });
-    const hits = await hybridSearch(ctx2, 'zzzqqqmarker');
+    const { hits } = await hybridSearch(ctx2, 'zzzqqqmarker');
     expect(hits).toHaveLength(0);
   });
 });

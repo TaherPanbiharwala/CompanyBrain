@@ -43,6 +43,10 @@ async function main(): Promise<void> {
   const real = process.argv.includes('--real');
   const sql = adminSql();
 
+  // rls-exempt: corpus sizing on the owner pool, deliberately. This picks the BIGGEST tenant to
+  // benchmark against, which is a question the app role cannot answer by construction — a scoped
+  // read only ever sees one workspace. It reads counts, never content, and never runs in the
+  // request path.
   const rows = await sql<{ workspace_id: string; owner_principal: string; pages: number; chunks: number }[]>`
     select p.workspace_id,
            min(p.owner_principal)          as owner_principal,

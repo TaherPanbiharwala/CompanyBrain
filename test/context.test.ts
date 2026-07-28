@@ -5,6 +5,9 @@ import {
   visibleBy,
   resolveGrants,
   serializeGrants,
+  selfGrant,
+  wsGrant,
+  aclForScope,
   GRANT_SEPARATOR,
 } from '../src/core/context.ts';
 
@@ -99,5 +102,20 @@ describe('grant serialization', () => {
   });
   it('resolveGrants builds self + ws + extras', () => {
     expect(resolveGrants(P, W, ['team:t1'])).toEqual([`self:${P}`, `ws:${W}`, 'team:t1']);
+  });
+
+  // `acl && grants` is Postgres array overlap — byte equality, not a uuid comparison. UUID_RE
+  // carries /i and `bun run call` / the MCP bridge take the principal verbatim from the env, so an
+  // uppercase UUID would stamp `self:A1B2…` while the read path (resolve_session -> postgres.js)
+  // yields `self:a1b2…`. Those never overlap: the author's own private page would be permanently
+  // unreadable by everyone, with no error anywhere.
+  it('grant tags are lowercased, so an uppercase env UUID still matches the read path', () => {
+    const upper = P.toUpperCase();
+    expect(selfGrant(upper)).toBe(`self:${P}`);
+    expect(wsGrant(W.toUpperCase())).toBe(`ws:${W}`);
+    expect(resolveGrants(upper, W.toUpperCase())).toEqual([`self:${P}`, `ws:${W}`]);
+    // The tag a row carries and the tag a keyring holds must be built the same way.
+    expect(aclForScope('private', { principal: upper, workspaceId: W })).toEqual([`self:${P}`]);
+    expect(aclForScope('workspace', { principal: P, workspaceId: W.toUpperCase() })).toEqual([`ws:${W}`]);
   });
 });

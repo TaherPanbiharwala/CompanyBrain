@@ -4,11 +4,20 @@
 // persisted synthesis_evidence rows (M3/M7 concerns).
 import type { OperationContext } from '../core/context.ts';
 import { chat, withRouterScope } from '../ai/router.ts';
-import { hybridSearch, type ChunkHit } from '../search/hybrid.ts';
+import { hybridSearch, type ChunkHit, type SearchDegradation } from '../search/hybrid.ts';
 import { ANSWER_SYSTEM_PROMPT, buildAnswerUserMessage } from './prompt.ts';
 
 export interface AnswerResult {
   answer: string;
+  /**
+   * Present when the answer rests on less evidence than it should — today only `'keyword_only'`,
+   * meaning the embedding provider was unavailable and retrieval fell back to keyword matching.
+   *
+   * Deliberately part of the RESULT rather than only a log line. A thin answer and a thin answer
+   * built on half the search are indistinguishable to a reader, and the reader is the one deciding
+   * whether to act on it.
+   */
+  degraded?: SearchDegradation;
   /**
    * 1-BASED indices into `sources` — the chunk numbers the model was shown, so `[2]` in the answer
    * text is `sources[1]`. Validated: every entry is an integer within `1..sources.length`, and
@@ -92,13 +101,18 @@ function parseAnswerJson(raw: string, sourceCount: number): { answer: string; ci
 export async function answerQuestion(ctx: OperationContext, question: string): Promise<AnswerResult> {
   // Retrieval runs in its own withScopedTx (inside hybridSearch); the model call below runs
   // OUTSIDE any tx (D6) — chat() must never be called while a pooled connection is held open.
-  const sources = await hybridSearch(ctx, question);
+  const { hits: sources, degraded } = await hybridSearch(ctx, question);
 
   const raw = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
     chat({
       messages: [
         { role: 'system', content: ANSWER_SYSTEM_PROMPT },
-        { role: 'user', content: buildAnswerUserMessage(question, sources) },
+        // `degraded` is passed to the prompt builder, not concatenated here, because it has to be
+        // stated on a NONCE-MARKED line. An unmarked "note: search was degraded" would be a line the
+        // system prompt explicitly tells the model to disregard — it instructs that only
+        // nonce-carrying lines are real structural boundaries and everything else is document
+        // content. So the honest warning would be indistinguishable from a chunk pretending to be one.
+        { role: 'user', content: buildAnswerUserMessage(question, sources, { degraded }) },
       ],
     }),
   );
@@ -106,5 +120,5 @@ export async function answerQuestion(ctx: OperationContext, question: string): P
   const { answer, citations } = parseAnswerJson(raw, sources.length);
   // Safe by construction: clamp() guarantees 1 <= n <= sources.length.
   const cited = citations.map((n) => sources[n - 1]!);
-  return { answer, citations, cited, sources };
+  return { answer, citations, cited, sources, degraded };
 }

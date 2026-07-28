@@ -2,6 +2,7 @@
 // /mcp handler (auth → dispatch) under MIT — see NOTICE — adapted to REST + company-brain ctx.
 // M1 auth was the dev-auth stub. M2 did NOT replace it — it DEMOTED it to a local-only fallback
 // reachable only when no session cookie was presented at all (D45). Line ~39 is where that holds.
+import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { ContextError } from '../core/context.ts';
 import { operations } from './operations.ts';
@@ -13,6 +14,14 @@ import { apiLimiter } from '../auth/ratelimit.ts';
 import { requestId } from './reqid.ts';
 import { resolveDevContext } from './dev-auth.ts';
 import { resolveSessionContext, hasSessionCookie } from '../auth/resolver.ts';
+
+/** The one route whose body is a file. Exported so index.ts's app-wide parser can skip exactly this
+ *  path and nothing else — a string literal in two files would drift the day the op is renamed. */
+export const UPLOAD_PATH = '/api/ingest_file';
+
+/** base64 of MAX_FILE_BYTES (5 MB) is ~6.7 MB, plus JSON framing. This is the transport bound; the
+ *  real limit is enforced on the DECODED bytes in importFile, which is the number that matters. */
+export const UPLOAD_BODY_LIMIT = '8mb';
 
 export function mountApi(app: Express): void {
   // Discovery: the same catalog MCP tools/list exposes, over REST (review AM8). Hidden ops excluded.
@@ -30,6 +39,13 @@ export function mountApi(app: Express): void {
     const reqId = requestId(req, res);
     res.json({ ok: true, reqId, data: buildToolDefs(operations.filter((o) => !o.hidden)) });
   });
+
+  // The upload route's body parser, mounted HERE rather than app-wide, and registered before the
+  // generic handler below so it runs first and then falls through to it. By this point preAuthGuard
+  // and csrfGuard have both already run (index.ts registers them before calling mountApi), so an
+  // 8 MB body has had to survive the flood shed and present a valid CSRF token before anything
+  // parses it. That ordering is the whole point of the exemption in index.ts.
+  app.post(UPLOAD_PATH, express.json({ limit: UPLOAD_BODY_LIMIT }));
 
   app.post('/api/:op', async (req: Request, res: Response) => {
     const reqId = requestId(req, res);
@@ -101,7 +117,11 @@ export function mountApi(app: Express): void {
       return;
     }
     if (type === 'entity.too.large') {
-      sendError(res, reqId, new OperationError('payload_too_large', 'request body exceeds the 100kb limit'));
+      // The limit differs by route, so the message has to as well — it used to hardcode "100kb",
+      // which became a lie for the upload route the moment that route got its own parser. An error
+      // naming the wrong number sends someone shrinking a file that was never too big.
+      const limit = req.path === UPLOAD_PATH ? UPLOAD_BODY_LIMIT : '100kb';
+      sendError(res, reqId, new OperationError('payload_too_large', `request body exceeds the ${limit} limit`));
       return;
     }
     console.error(`[api_error] reqId=${reqId} ${req.method} ${req.path}`, err);

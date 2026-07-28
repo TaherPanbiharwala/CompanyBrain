@@ -1,0 +1,94 @@
+name: CI
+
+# D16 makes the leak canary sacred — "runs in CI forever, never skipped to move faster." Until this
+# file existed that was a claim about infrastructure that did not exist: the canary ran only when a
+# human remembered to type the command. This is the "forever" half.
+#
+# Two jobs on purpose. `offline` needs no secrets, so it runs on every push including from a fork,
+# and it carries the checks that need no database — typecheck, the unit suite, and the two
+# structural guards (live-gate, scoped-tx-guard) that catch a mistake the day it is made rather
+# than the day someone seeds two tenants. `live` needs the three connection strings and is where
+# the canary actually proves tenant isolation.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: typecheck + offline suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      # The live suites skip here (no DATABASE_* set) and that is correct — CB_REQUIRE_LIVE_TESTS is
+      # deliberately NOT set on this job, so skipping is permitted. The `live` job below is where
+      # skipping becomes a failure.
+      - name: Offline tests
+        run: bun run test
+
+  live:
+    name: live isolation suite (leak canary)
+    runs-on: ubuntu-latest
+    # Fork PRs cannot read secrets, so the live job would skip green and defeat the whole point.
+    # Gate it on the secret being present rather than letting it report a meaningless pass.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+
+      # Migrate BEFORE doctor. Neither job ran this, so the largest and most lock-hazardous SQL in
+      # the repo had no automated apply test at all — 0009 and 0011 could only be proven by a human
+      # typing the command. It also makes the failure legible: a drifted CI database otherwise fails
+      # as a raw 42P01 out of doctor's index assertions rather than as "you have not migrated".
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
+          DATABASE_AUTH_URL: ${{ secrets.DATABASE_AUTH_URL }}
+          CB_APP_DB_PASSWORD: ${{ secrets.CB_APP_DB_PASSWORD }}
+          CB_AUTH_DB_PASSWORD: ${{ secrets.CB_AUTH_DB_PASSWORD }}
+        run: bun run migrate
+
+      - name: Verify the security posture
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
+          DATABASE_AUTH_URL: ${{ secrets.DATABASE_AUTH_URL }}
+        run: bun run doctor
+
+      - name: Live suites — a skip here is a FAILURE
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
+          DATABASE_AUTH_URL: ${{ secrets.DATABASE_AUTH_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # THE flag. Without it a missing connection string makes the entire cross-tenant canary
+          # report green having asserted nothing (D43). test/live-gate.test.ts additionally scans
+          # the suite files so a suite added later cannot quietly opt out of it.
+          CB_REQUIRE_LIVE_TESTS: '1'
+          NODE_ENV: test
+          DEV_AUTH: '1'
+          DEV_LOGIN: '1'
+          APP_BASE_URL: http://localhost:3000
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          # test/mcp.test.ts gates on a REAL membership pair rather than seeding its own, so
+          # without these the suite would skip — and under CB_REQUIRE_LIVE_TESTS that is a hard
+          # failure, by design. `bun run seed:a17` prints a valid pair to use as these secrets.
+          CB_MCP_PRINCIPAL: ${{ secrets.CB_MCP_PRINCIPAL }}
+          CB_MCP_WORKSPACE: ${{ secrets.CB_MCP_WORKSPACE }}
+        run: bun run test

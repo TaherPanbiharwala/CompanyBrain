@@ -1,0 +1,106 @@
+# Retrieval snapshot — top-K per question, in rank order.
+#
+# This is a DIFF TARGET, not a score. Regenerate with `bun run dump:top8` and read the diff:
+# movement here means chunking, fusion, dedup or autocut changed what the answer step sees.
+# Chunk ids are omitted deliberately — they are uuids that churn on every re-ingest and would
+# make every diff unreadable. Slug + ordinal is stable across a re-ingest of the same corpus.
+
+## q1  Who is the engineering lead at Northstar Robotics?
+    1. priya-nair#0
+    2. northstar-robotics#0
+    3. warehouse-routing-engine#0
+    4. rohan-mehta#0
+    5. sara-kim#0
+    6. finch-logistics#0
+    7. northstar-robotics#1
+    8. project-falcon#0
+
+## q2  Who is the CEO and founder of Northstar Robotics?
+    1. northstar-robotics#0
+    2. rohan-mehta#0
+    3. priya-nair#0
+    4. sara-kim#0
+    5. finch-logistics#0
+    6. northstar-robotics#1
+    7. pricing-model#0
+    8. warehouse-routing-engine#1
+
+## q3  What discount did Finch Logistics ask for in their renewal negotiation?
+    1. finch-logistics-renewal#0
+    2. finch-logistics#0
+    3. 2026-06-10-customer-call-finch#0
+    4. pricing-model#0
+    5. onboarding-flow-v2#0
+    6. project-falcon#0
+    7. northstar-robotics#0
+    8. rohan-mehta#0
+
+## q4  What counter-offer did Rohan approve for the Finch Logistics renewal?
+    1. finch-logistics-renewal#0
+    2. 2026-06-10-customer-call-finch#0
+    3. finch-logistics#0
+    4. rohan-mehta#0
+    5. northstar-robotics#1
+    6. pricing-model#0
+    7. northstar-robotics#0
+    8. warehouse-routing-engine#1
+
+## q5  What algorithm approach does the warehouse routing engine use to avoid robot collisions?
+    1. warehouse-routing-engine#0
+    2. northstar-robotics#0
+    3. warehouse-routing-engine#1
+    4. onboarding-flow-v2#0
+    5. finch-logistics#0
+    6. project-falcon#0
+    7. pricing-model#0
+    8. rohan-mehta#0
+
+## q6  What is Project Falcon and what is its current status?
+    1. project-falcon#0
+    2. onboarding-flow-v2#0
+    3. northstar-robotics#1
+    4. rohan-mehta#0
+    5. finch-logistics#0
+    6. finch-logistics-renewal#0
+    7. warehouse-routing-engine#1
+    8. warehouse-routing-engine#0
+
+## q7  What was decided about the fleet API rate limiter in the June 3rd standup?
+    1. 2026-06-03-standup-notes#0
+    2. project-falcon#0
+    3. northstar-robotics#1
+    4. 2026-06-10-customer-call-finch#0
+    5. finch-logistics-renewal#0
+    6. onboarding-flow-v2#0
+    7. northstar-robotics#0
+    8. warehouse-routing-engine#0
+
+## q8  What pricing tiers does Northstar Robotics offer?
+    1. pricing-model#0
+    2. northstar-robotics#0
+    3. rohan-mehta#0
+    4. finch-logistics#0
+    5. sara-kim#0
+    6. priya-nair#0
+    7. finch-logistics-renewal#0
+    8. warehouse-routing-engine#1
+
+## q9  What problem is the onboarding flow v2 project trying to solve?
+    1. onboarding-flow-v2#0
+    2. project-falcon#0
+    3. warehouse-routing-engine#1
+    4. warehouse-routing-engine#0
+    5. northstar-robotics#0
+    6. northstar-robotics#1
+    7. rohan-mehta#0
+    8. priya-nair#0
+
+## q10  Who leads sales at Northstar Robotics and which customer deal have they closed?
+    1. northstar-robotics#0
+    2. finch-logistics#0
+    3. finch-logistics-renewal#0
+    4. sara-kim#0
+    5. rohan-mehta#0
+    6. priya-nair#0
+    7. 2026-06-10-customer-call-finch#0
+    8. pricing-model#0

@@ -3,6 +3,17 @@
 // word counting (English-only corpus for this milestone) and no takes/facts-fence stripping (no
 // equivalent data model in company-brain yet) — everything else (the 5-level delimiter hierarchy,
 // greedy merge, sentence-aware overlap, hard char cap) is faithful to the source algorithm.
+//
+// TWO ENTRY POINTS, deliberately not one:
+//   * chunkText(text)     — pasted text. Word-based, unchanged, still the gbrain algorithm.
+//   * chunkBlocks(blocks) — extracted files. Packs structure, so a spreadsheet row keeps its header
+//                           and a PDF chunk knows its page.
+//
+// An earlier design made chunkText a thin wrapper over chunkBlocks. That was wrong twice: a single
+// paragraph with no blank lines becomes ONE block, so "overlap at block boundaries" silently produced
+// no overlap at all, and a heading-path prefix breaks the losslessness property
+// (`text.indexOf(chunk.text) >= 0`) that test/chunk.test.ts asserts. Pasted prose and extracted
+// structure are different problems; sharing one code path made both worse.
 export interface ChunkOptions {
   chunkSize?: number; // target words per chunk (default 300)
   chunkOverlap?: number; // overlap words (default 50)
@@ -87,30 +98,47 @@ function recursiveSplit(text: string, level: number, target: number): string[] {
   return result;
 }
 
-/** Split at delimiter boundaries, keeping the delimiter with the preceding piece (lossless). */
+/** Split at delimiter boundaries, keeping the delimiter with the preceding piece (lossless).
+ *
+ *  LINEAR, not quadratic. This used to `indexOf` every delimiter over the whole REMAINING string on
+ *  every iteration, then re-slice `remaining` — so a delimiter that never occurs (`'! '` and `'? '`
+ *  in ordinary prose are the common case) cost a full scan per piece. That was tolerable when the
+ *  only input was a pasted note; the file path feeds it whole extracted documents, and a plain-text
+ *  upload with no blank lines arrives as ONE block, which chunkBlocks then routes straight here. On
+ *  a single-threaded runtime that blocks the entire API process, not just the request.
+ *
+ *  Now each delimiter's next occurrence is found once and re-scanned only after it is consumed, and
+ *  positions are absolute offsets so nothing is re-sliced while scanning. */
 function splitAtDelimiters(text: string, delimiters: string[]): string[] {
   const pieces: string[] = [];
-  let remaining = text;
+  // next[i] = absolute index of delimiters[i] at or after `cursor`, or -1 once exhausted.
+  const next = delimiters.map((d) => text.indexOf(d));
+  let cursor = 0;
 
-  while (remaining.length > 0) {
+  while (cursor < text.length) {
     let earliest = -1;
     let earliestDelim = '';
-    for (const delim of delimiters) {
-      const idx = remaining.indexOf(delim);
+    for (let i = 0; i < delimiters.length; i++) {
+      // Only re-scan a delimiter whose cached hit has been passed, so the total work per delimiter
+      // is one forward pass over the text rather than one pass per piece.
+      if (next[i]! !== -1 && next[i]! < cursor) next[i] = text.indexOf(delimiters[i]!, cursor);
+      const idx = next[i]!;
       if (idx !== -1 && (earliest === -1 || idx < earliest)) {
         earliest = idx;
-        earliestDelim = delim;
+        earliestDelim = delimiters[i]!;
       }
     }
     if (earliest === -1) {
-      pieces.push(remaining);
+      const tail = text.slice(cursor);
+      if (tail.trim().length > 0) pieces.push(tail);
       break;
     }
-    const piece = remaining.slice(0, earliest + earliestDelim.length);
+    const end = earliest + earliestDelim.length;
+    const piece = text.slice(cursor, end);
     if (piece.trim().length > 0) pieces.push(piece);
-    remaining = remaining.slice(earliest + earliestDelim.length);
+    cursor = end;
   }
-  return pieces.filter((p) => p.trim().length > 0);
+  return pieces;
 }
 
 /** Fallback: split on whitespace, or (no whitespace / one giant token) slice by char, so the
@@ -182,4 +210,151 @@ function extractTrailingContext(text: string, targetWords: number): string {
     if (afterSentence.trim().length > 0) return afterSentence;
   }
   return trailing;
+}
+
+// ── Block-based chunking (files) ──────────────────────────────────────────
+
+import type { Block, Locator } from './blocks.ts';
+import { mergeLocators } from './blocks.ts';
+
+export interface BlockChunk {
+  text: string;
+  index: number;
+  locator?: Locator;
+}
+
+export interface BlockChunkOptions {
+  /** Target tokens per chunk. The architecture asks for 400-800; 600 sits in the middle. */
+  targetTokens?: number;
+  /** Overlap as a fraction of the target. 10-15% per the architecture. */
+  overlapRatio?: number;
+  /** Absolute ceiling. Derived from the target rather than a magic 6000, so the two cannot drift. */
+  maxTokens?: number;
+}
+
+/** Token estimate over UTF-8 BYTES, not characters.
+ *
+ *  `Math.ceil(text.length / 4)` — the estimate used elsewhere in this repo for `token_count` — is
+ *  roughly right for ASCII and roughly 4x WRONG for Devanagari and Tamil, where one character is
+ *  three UTF-8 bytes. Since BPE tokenizers operate on bytes, bytes/4 self-corrects across scripts.
+ *  Getting this backwards in an India-first product means Hindi chunks come out ~4x the intended
+ *  size and blow past the embedding model's 8192-token input limit — a hard 400 at the very end of
+ *  the pipeline, on exactly the corpus the product is for. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
+}
+
+/** `## Pricing > Growth tier` — the heading path a chunk sits under, prefixed onto its text so a
+ *  retrieved fragment carries the context a human would need to make sense of it. */
+function headingPrefix(path: string[]): string {
+  return path.length > 0 ? `${path.join(' > ')}\n\n` : '';
+}
+
+/**
+ * Pack blocks into chunks.
+ *
+ * Rules, in priority order:
+ *   1. A `row` or `table` block is never split mid-row — a half-row is unretrievable — UNLESS it
+ *      exceeds the hard cap alone, in which case the cap wins and the row is split with its header
+ *      repeated. A 50-column row can exceed both the target and the embedding input limit, so
+ *      "never split" cannot be absolute or ingest hard-fails at the very last step.
+ *   2. A heading stays with what follows it.
+ *   3. Every chunk carries its heading path, and every chunk containing rows carries the header once.
+ *   4. Overlap applies between prose chunks only. Repeating rows would duplicate records into the
+ *      index, which is the flooding problem dedup exists to solve — introducing it here would be
+ *      self-defeating.
+ */
+export function chunkBlocks(blocks: Block[], opts?: BlockChunkOptions): BlockChunk[] {
+  const target = opts?.targetTokens ?? 600;
+  const overlapRatio = opts?.overlapRatio ?? 0.12;
+  const maxTokens = opts?.maxTokens ?? Math.ceil(target * 1.5);
+  const overlapTokens = Math.round(target * overlapRatio);
+
+  const out: BlockChunk[] = [];
+  const headingPath: { level: number; text: string }[] = [];
+
+  let buf: Block[] = [];
+  let bufTokens = 0;
+  let lastHeader: string | undefined;
+
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    const prefix = headingPrefix(headingPath.map((h) => h.text));
+    const header = buf.find((b) => b.header)?.header;
+    // The header rides ONCE per chunk, not once per row — a 50-column header inlined per row would
+    // be most of the payload and would make every row's embedding near-identical.
+    const body = buf.map((b) => b.text).join('\n');
+    const text = `${prefix}${header ? `${header}\n` : ''}${body}`.trim();
+    if (text) {
+      out.push({ text, index: out.length, locator: mergeLocators(buf.map((b) => b.locator)) });
+    }
+    buf = [];
+    bufTokens = 0;
+  };
+
+  for (const block of blocks) {
+    if (block.kind === 'heading') {
+      // A heading starts a new chunk rather than trailing the previous one, so it is never orphaned
+      // from the content it introduces.
+      flush();
+      const level = block.level ?? 1;
+      while (headingPath.length > 0 && headingPath[headingPath.length - 1]!.level >= level) headingPath.pop();
+      headingPath.push({ level, text: block.text });
+      continue;
+    }
+
+    const blockTokens = estimateTokens(block.text);
+
+    // Rule 1's escape hatch: one block that alone exceeds the hard cap. Split it with the recursive
+    // splitter and let each piece keep the header and locator.
+    if (blockTokens > maxTokens) {
+      flush();
+      const approxWords = Math.max(50, Math.round(target * 0.75));
+      for (const piece of chunkText(block.text, { chunkSize: approxWords, chunkOverlap: 0 })) {
+        const prefix = headingPrefix(headingPath.map((h) => h.text));
+        const header = block.header ? `${block.header}\n` : '';
+        out.push({
+          text: `${prefix}${header}${piece.text}`.trim(),
+          index: out.length,
+          locator: block.locator,
+        });
+      }
+      lastHeader = block.header;
+      continue;
+    }
+
+    // A change of header means a different sheet or table: never mix two headers in one chunk, or
+    // the rows under the second one are labelled with the first one's columns.
+    if (block.header && lastHeader && block.header !== lastHeader) flush();
+    if (block.header) lastHeader = block.header;
+
+    if (bufTokens + blockTokens > target && buf.length > 0) {
+      const carry = overlapTokens > 0 && block.kind !== 'row' ? tailForOverlap(buf, overlapTokens) : [];
+      flush();
+      buf = [...carry];
+      bufTokens = carry.reduce((n, b) => n + estimateTokens(b.text), 0);
+    }
+
+    buf.push(block);
+    bufTokens += blockTokens;
+  }
+
+  flush();
+  return out.map((c, i) => ({ ...c, index: i }));
+}
+
+/** The trailing blocks worth repeating into the next chunk, newest first, up to a token budget.
+ *  Whole blocks only — a half-sentence of overlap helps nothing, and splitting here would undo the
+ *  structure the extractor worked to produce. */
+function tailForOverlap(buf: Block[], budget: number): Block[] {
+  const carry: Block[] = [];
+  let used = 0;
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const b = buf[i]!;
+    const t = estimateTokens(b.text);
+    if (used + t > budget) break;
+    carry.unshift(b);
+    used += t;
+  }
+  return carry;
 }

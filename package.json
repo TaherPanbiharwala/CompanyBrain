@@ -13,18 +13,26 @@
     "call": "bun run src/api/call.ts",
     "mcp": "bun run src/api/mcp.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "seed:a17": "bun run scripts/seed-a17.ts",
     "load:a17": "bun run scripts/load-a17-corpus.ts",
     "eval:a17": "bun run scripts/run-a17-eval.ts",
-    "measure:a17": "bun run scripts/measure-a17.ts"
+    "measure:a17": "bun run scripts/measure-a17.ts",
+    "dump:top8": "bun run scripts/dump-top8.ts",
+    "gen:test-files": "bun run scripts/gen-test-files.ts",
+    "ingest-file": "bun run scripts/ingest-file.ts",
+    "eval:novabyte": "bun run scripts/novabyte-eval.ts",
+    "score:top8": "bun run scripts/novabyte-score.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "cookie-parser": "^1.4.7",
     "express": "^5.1.0",
+    "mammoth": "^1.12.0",
     "openid-client": "^6.8.4",
     "postgres": "^3.4.5",
+    "unpdf": "^1.8.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.25.28",
     "zod-to-json-schema": "^3.25.2"
   },

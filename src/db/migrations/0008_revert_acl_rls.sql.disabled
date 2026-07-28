@@ -1,0 +1,29 @@
+-- ROLLBACK for 0007. NOT APPLIED — note the `.disabled` suffix: collectFiles() in migrate.ts only
+-- picks up `*.sql`, so this file is inert until someone deliberately renames it.
+--
+-- It exists because 0007 becomes checksum-immutable the moment it applies, and the forward-only
+-- convention (D23) means the only reversal is a later migration. Discovering there is no down path
+-- during an incident is the expensive version of learning this.
+--
+-- TO USE: rename to `0008_revert_acl_rls.sql`, run `bun run migrate`, then regenerate
+-- test/fixtures/expected-policies.json (the four cells revert) and re-run `bun run doctor`.
+-- The leak canary WILL go red — that is correct and is the point of reverting.
+--
+-- WHAT THIS DOES NOT UNDO, deliberately:
+--   * the acl non-empty CHECKs and the acl_grants tag CHECK — those are correctness constraints
+--     independent of the policy, and dropping them would let bad data in during the window.
+--   * the slug index split — reverting it could fail on data that now legitimately violates the old
+--     single constraint (two private pages sharing a slug across authors). Reverting that safely
+--     needs a data audit, not a DDL statement, so it is deliberately not automated here.
+--   * current_grants() itself — harmless once unreferenced, and dropping it while any policy still
+--     mentions it would fail.
+
+SET LOCAL lock_timeout = '3s';
+
+ALTER POLICY pages_ws ON pages
+  USING (workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid))
+  WITH CHECK (workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid));
+
+ALTER POLICY content_chunks_ws ON content_chunks
+  USING (workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid))
+  WITH CHECK (workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid));

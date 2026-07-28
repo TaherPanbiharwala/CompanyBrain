@@ -101,3 +101,68 @@ describe('chat — no-content and network failures surface as RouterError', () =
       .rejects.toThrow(RouterError);
   });
 });
+
+// ── Retry policy ──────────────────────────────────────────────────────────
+// The router is the ONLY place that retries, and it retries a provider call — never an operation.
+// These pin the two decisions that cost real money if they invert: a rate limit must be retried, and
+// an exhausted quota must NOT be (it is a 429 that will never succeed, so retrying it converts a
+// declined card into minutes of user-visible latency before the same error).
+describe('fetchJson retry policy', () => {
+  const realFetch = globalThis.fetch;
+  const realKey = mutableConfig.OPENAI_API_KEY;
+  const vec = (fill: number) => new Array(config.EMBEDDING_DIM).fill(fill);
+  beforeAll(() => { mutableConfig.OPENAI_API_KEY = 'test-key'; });
+  afterAll(() => { globalThis.fetch = realFetch; mutableConfig.OPENAI_API_KEY = realKey; });
+
+  it('retries a 429 and succeeds on a later attempt', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls < 3) {
+        // retry-after in seconds; 0 keeps the test fast while still exercising the header path.
+        return new Response(JSON.stringify({ error: { code: 'rate_limit_exceeded' } }), {
+          status: 429,
+          headers: { 'retry-after': '0' },
+        });
+      }
+      return okJson({ data: [{ index: 0, embedding: vec(1) }] });
+    }) as unknown as typeof fetch;
+
+    const out = await scoped(() => embed(['a']));
+    expect(out[0]?.[0]).toBe(1);
+    expect(calls).toBe(3);
+  }, 20_000);
+
+  it('does NOT retry insufficient_quota — a declined card is not a rate limit', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { code: 'insufficient_quota' } }), { status: 429 });
+    }) as unknown as typeof fetch;
+
+    await expect(scoped(() => embed(['a']))).rejects.toThrow(RouterError);
+    expect(calls, 'insufficient_quota must fail on the first attempt').toBe(1);
+  }, 20_000);
+
+  it('does NOT retry a 400 — a malformed request will be malformed again', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { code: 'invalid_request_error' } }), { status: 400 });
+    }) as unknown as typeof fetch;
+
+    await expect(scoped(() => embed(['a']))).rejects.toThrow(RouterError);
+    expect(calls).toBe(1);
+  }, 20_000);
+
+  it('carries status and providerCode on the error, not only in the message', async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { code: 'insufficient_quota' } }), { status: 429 })) as unknown as typeof fetch;
+
+    const err = await scoped(() => embed(['a'])).then(() => null, (e: RouterError) => e);
+    expect(err).toBeInstanceOf(RouterError);
+    expect(err!.status).toBe(429);
+    expect(err!.providerCode).toBe('insufficient_quota');
+    expect(err!.retryable, 'quota exhaustion is terminal').toBe(false);
+  }, 20_000);
+});

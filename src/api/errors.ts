@@ -23,6 +23,12 @@ export type OpErrorCode =
   // surface (REST, MCP, the auth routes) maps errors through the same statusFor().
   | 'account_conflict' // 409 — this email already belongs to a different Google account
   | 'already_exists' // 409 — a row with this natural key is already here (e.g. an ingest slug)
+  // File ingest. Two codes, not one, because the remediations are opposite: `unsupported_format`
+  // means "convert it and try again" and is the caller's to fix; `extraction_failed` means "we could
+  // not read a format we do claim to support", which is closer to our problem than theirs. Collapsing
+  // them would send a user with a .doc looking for corruption.
+  | 'unsupported_format' // 415 — the bytes are a format we do not handle
+  | 'extraction_failed' // 422 — a supported format we could not read (corrupt, encrypted, scanned)
   | 'domain_not_verified' // 400 — claimed a workspace domain this login did not verify
   | 'invite_invalid' // 404 — wrong/expired/already-used/not-yours; deliberately indistinguishable
   | 'internal_error'; // 500 — unexpected failure
@@ -50,6 +56,12 @@ export function statusFor(code: OpErrorCode): number {
     case 'account_conflict':
     case 'already_exists':
       return 409;
+    case 'unsupported_format':
+      return 415;
+    case 'extraction_failed':
+      // 422, not 400: the request was well-formed and we understood it — the payload's CONTENT was
+      // unprocessable. A 400 would tell a client to fix its request shape, which is not the problem.
+      return 422;
     case 'payload_too_large':
       return 413;
     // 429, not 403: `retry-after` is only meaningful on a status clients treat as retryable, and
