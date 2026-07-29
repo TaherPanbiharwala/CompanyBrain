@@ -1,8 +1,14 @@
 # CONTEXT.md — session bootstrap
 
-Produced by a review that read both branches end to end, all 94 `DECISIONS.md` entries, and
-adversarially verified every claim below against the code (2026-07-29, ~2.2M tokens across two
-passes). Read this once instead of re-deriving it.
+Produced by two review passes that read both branches end to end, all 94 `DECISIONS.md` entries,
+adversarially verified every claim below against the code, and — in pass 2 — **actually ran the
+system**. Read this once instead of re-deriving it.
+
+**Pass 2 (2026-07-30) executed the live ladder for the first time in this project's history.** Every
+number in §1 and §3 that was previously arithmetic is now an observation; see **§10**. The headline:
+`HANDOVER.md`'s `523 pass / 1 skip` and `doctor 62/62` are both **exactly right**, migrations are
+genuinely idempotent — and three defects that only a live run could surface are now confirmed,
+including a silent retrieval regression that has already happened (§6.7).
 
 **How this relates to the other docs:** `DECISIONS.md` is the reasoning and survives refactors —
 trust it, with the corrections in §7. `HANDOVER.md` (M3 branch only) narrates the session that built
@@ -44,13 +50,20 @@ curl -s -b c.txt -XPOST localhost:3000/api/whoami -H 'content-type: application/
 unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under that flag is a
 failure, by design).
 
-**If you do only three things beyond that:**
-1. Reconcile the branches — start with `isDevEnv` (§6.1) and the D66/D67 ID collision in
-   `DECISIONS.md` (§1) before that file drifts further apart.
-2. Vendor `docs/enabling-team-scope.md` into the repo (§5.1) — the spec for the #1 open item
-   currently survives only on one Desktop.
-3. Move the rate limiter in front of `dispatchOp`, not in front of the Express route (§5.3) —
-   closes unbounded spend on the MCP and CLI surfaces at once.
+**If you do only three things beyond that** (re-ranked after pass 2 — the top item changed):
+
+1. ~~Fix the CSV/XLSX column shift~~ — **DONE** (§6.8), uncommitted on `claude/context-review-5957e4`.
+   Review and commit it: 4 files, +1 shared helper, 4 new tests, red-then-green verified.
+2. **Reconcile the branches** — start with `isDevEnv` (§6.1) and the D66/D67 ID collision in
+   `DECISIONS.md` (§1) before that file drifts further apart. The database is *already* in M3's
+   state (§10), so the source divergence is the only thing still holding this apart.
+3. **Regenerate the A17 baseline and re-grade (§6.7).** The committed report claims 1.00/1.00/1.00;
+   the committed baseline actually scores hit@1 0.90 / MRR 0.95 against the committed qrels. The
+   regression guard fired into a file and nobody looked.
+
+Then: vendor `docs/enabling-team-scope.md` into the repo (§5.1 — the spec for the #1 open item
+survives only on one Desktop), and move the rate limiter in front of `dispatchOp` rather than the
+Express route (§5.3).
 
 ---
 
@@ -76,7 +89,7 @@ failure, by design).
 | ops in `operations.ts` | 7 | 12 (added `list_pages`, `delete_page`, `replace_page`, `ingest_file`, `search`) |
 | migrations | `0001`–`0006` | `0001`–`0011` (11 numbered files; `0008`/`0010` are `.disabled` reverts, 9 applied) |
 | `src/ingest/extract/`, `core/pack.ts` | absent | present |
-| `doctor` checks | **46** (32 `add()` calls, 5 in two loops → 42 boolean + 4 fixtures) — README's "46" is correct **here** | **62** (47 `add()` calls, 5 in three loops → 58 boolean + 4 fixtures) — README's "46" is stale **here** |
+| `doctor` checks | **46 — OBSERVED**, and currently **43/46 FAILING** (§10). README's "46" is correct here | **62 — OBSERVED, 62/62 green** (§10). README's "46" is stale here |
 | the `isDevEnv` guard fix (§6.1) | ✅ | ❌ |
 
 ### Ten files touched by both commits
@@ -329,13 +342,19 @@ Related: `DECISIONS.md` D29/D33 (§7) record that this same gate was *already* w
 a different way, and fixed — the allowlist-vs-blocklist confusion. Treat any change near this gate
 as high risk; it has now been broken and re-fixed on two independent occasions.
 
-### 6.2 [moderate] CI mutates a shared database on every push to every branch
+### 6.2 [moderate — RE-GRADED: latent, arms on first push] CI will migrate a shared DB from every branch
 
-`ci.yml` runs `on: push: branches: ['**']`, and the `live` job executes `bun run migrate` against a
-real Supabase project using repo secrets. A bad migration on any branch mutates the shared database;
-a checksum-drifted branch bricks CI for every other branch. Arguably higher operational risk than
-its position in this list suggests — it affects every contributor on every push, not one deployment
-shape.
+`ci.yml:14-15` runs `on: push: branches: ['**']` and `:64` executes `bun run migrate` with
+`secrets.DATABASE_ADMIN_URL` — owner credentials, no gate. `:19-21` scopes `concurrency` per-`ref`,
+so different branches do **not** serialize against each other. Combined with checksum immutability
+(`migrate.ts:607-612`), a WIP migration applied from one branch and then edited bricks every other
+branch's CI permanently.
+
+**Re-graded from pass 1.** `ci.yml` exists **only on M3** (absent from master's tree) and the repo
+has **0 git remotes**. Nothing can trigger it today. This is not "CI mutates a shared DB on every
+push" — it is a trap that arms itself, unreviewed, the moment someone runs `git remote add` and
+pushes. That is a narrower claim but a more urgent one: it fires on an action nobody will think of
+as risky.
 
 ### 6.3 [moderate] The upload route requires no CSRF token — because none exists, by design
 
@@ -389,6 +408,130 @@ prevent, and doctor asserts nothing about it.
   secrets themselves. Separately, 8 of its 40 allow rules are stale gbrain-era carryovers naming
   `dev/gbrain` or files that don't exist in this repo.
 
+### 6.7 [critical] The retrieval regression `dump-top8` exists to catch has already happened, unnoticed
+
+`eval/a17-report.md:4-6` reports `hit@1: 1.00 / hit@3: 1.00 / MRR: 1.00`. Re-scoring the **committed
+baseline** (`eval/top8-baseline.txt`) against the **committed qrels** (`eval/a17-qrels.json`) by hand
+gives **hit@1 0.90, hit@3 1.00, MRR 0.95**.
+
+q10 is the regression. `top8-baseline.txt:98-99` ranks `northstar-robotics#0` first for *"Who leads
+sales at Northstar Robotics and which customer deal have they closed?"*, but that question's
+`relevantSlugs` are `["sara-kim", "finch-logistics"]` — `northstar-robotics` is not relevant. The
+baseline was added by `aa8752a`, the same commit that rewrote hybrid search, so the report's numbers
+predate the current engine by one rewrite and now **overstate retrieval**.
+
+This is exactly the silent ranking regression `dump-top8.ts:5-7` was built to detect. It fired, into
+a committed file, and nobody looked. Two consequences: the "saturated 1.000 benchmark" framing in
+`HANDOVER.md:215` and in `hybrid.ts`'s own comments is **no longer true**, and the A17 go/no-go rests
+on a stale number.
+
+### 6.8 [critical — **FIXED** 2026-07-30, uncommitted on the M3 branch] CSV/XLSX column shift
+
+`text.ts:100,103` and `xlsx.ts:147,160` drop empty cells with `.filter(Boolean)` / `if (t)` *before*
+joining, while the header row is built the same way. Every value after a blank cell moves left one
+column relative to the header the model is shown. Executed against the real extractor and chunker in
+this worktree:
+
+```
+input CSV : Item,Qty,Rate,Date  /  Robot arm,,123456,2026-03-12
+header    : "Item | Qty | Rate | Date"
+row       : "Robot arm | 123456 | 2026-03-12"
+```
+The model is shown **Qty = 123456** and **Rate = 2026-03-12**, and `ask` answers "the quantity was
+123,456" with a correct-looking citation. No error, no `degraded` flag, no trace.
+
+This is the same class of defect `HANDOVER.md:74-82` congratulates the milestone for catching
+(merged cells, date serials, uncached formulas) — in the same two files, missed. A blank cell in a
+spreadsheet is not an edge case.
+
+**FIX (uncommitted, on `claude/context-review-5957e4`).** One shared rule, `joinRow()` in
+`src/ingest/blocks.ts`, replacing `.filter(Boolean)` in `text.ts` and `if (t) parts.push(t)` in
+`xlsx.ts`. Interior empties are kept (positional); only trailing empties are dropped (a short row is
+unambiguous). An uncached formula now pushes `''` to hold its column while `skipped` still records
+the loss, so the existing degradation accounting is unchanged. `xlsx.ts`'s header comment now says
+**six** silent-corruption classes, not five.
+
+Verified red-then-green per this repo's own §8 discipline: reverting `joinRow` to `filter(Boolean)`
+turns both regression tests red, and the blank-row control test passes under both. `typecheck` clean;
+offline **392 pass / 0 fail**; live **527 pass / 1 skip / 0 fail** — exactly +4 on the 523 baseline,
+the 4 new tests, zero regressions. The xlsx case is built in memory on purpose: `sample.xlsx` has no
+blank cell, so a fixture-driven test would pass against the shifted output too.
+
+### 6.9 [critical] `chunkBlocks`' token ceiling does not bound the chunks it emits
+
+`chunk.ts:331` compares `bufTokens + blockTokens > target`, but `bufTokens` counts **only block
+text**; the heading-path prefix and the repeated table/sheet header are prepended in `flush()` at
+`:287` and re-prepended per split piece at `:315` — *after* the size decision. Measured end-to-end
+(`extractCsv → assessExtraction → chunkBlocks → planBatches`):
+
+- 5,000 columns × 3 rows, 114 KB: sanity `ok=true`, 44 chunks, **every chunk 17,588–17,772 tokens —
+  2.3× the 7,500 cap** → `embedAll` throws (`embed.ts:92`) → 500.
+
+The guard is real, the accounting is incomplete, and the failure lands as an untyped 500 on a file
+that passed every upstream check. Note `xlsx.ts:144,154` also leaves the **column axis
+(`range.e.c`, attacker-declared via `!ref`) entirely unclamped** while rows, sheets and merge ranges
+are all clamped — that is the input that reaches this path.
+
+### 6.10 [moderate] The NovaByte harness — real defects, mostly latent, one live
+
+Verified against the actual dataset at `~/Desktop/novabyte-test-dataset`. Pass 1's stronger claims
+were **refuted**; what survives:
+
+- **LIVE.** `novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is missing on either
+  side, because `findIndex` returns `-1`. A question that fell from rank 3 to *nowhere* prints
+  ` UP`; one that went from nowhere to rank 1 prints `DOWN`. The aggregate MRR is correct (guarded
+  by `if (firstRel >= 0)`), so summary and detail contradict each other silently.
+- **LIVE.** `leak_canary`'s `forbidden_strings` — the actual canaries — frequently live *only* on
+  team-scoped pages that `:107` never ingests. **lc-021: 7 of 7 canaries unreachable**; lc-022: 6 of
+  7; lc-020: 5 of 8. The designed leak target was never loaded, leaving `forbidden_workspace` as the
+  case's sole surviving assertion.
+- **LIVE.** A parse failure or successful injection sets `citations: []` (`answer.ts:98`), which
+  silently disarms the four citation-driven checks. Narrower than pass 1 claimed —
+  `must_not_contain`/`forbidden_strings` grade the **answer text** and the injection suite
+  hard-fails on empty `cited` (16/16) — but the four checks are genuinely disarmed.
+- **LATENT.** Slug-keyed `must_cite`/`must_not_cite` (`:194-198`) and `scopeBySlug` (`:48`,
+  last-write-wins) are wrong for the five cross-tenant collision slugs, but every live collision case
+  is *also* covered by the pageId-keyed `must_cite_from_workspace` + `forbidden_workspace` checks. No
+  case mis-grades today.
+- **LATENT.** `byId` (`:316`) is dead code; `searchFn` dispatches by question **text** (`:320`). No
+  two rows currently share a question string.
+- **Dead fields.** `expectation`, `expected_answer` and `may_cite` are read by nothing. No spec is
+  assertion-free, so nothing passes vacuously — but the 167 `not_found` specs grade purely
+  negatively: a confident fabrication that cites nothing and dodges the listed strings passes.
+- `degraded` is discarded at every call site, so a run under a dead embedder reports keyword-only
+  numbers as real ones. Same defect in `dump-top8.ts:61`, where it can commit a **degraded baseline**.
+
+### 6.11 [moderate] Retrieval and router: five controls that do not constrain what they claim
+
+- `hybrid.ts:302` applies `ARM_LIMIT` (20) to the vector arm **before** `MAX_PER_PAGE` (3) is applied
+  at `:359`, so the per-page cap cannot prevent the one-document flooding its own comment (`:62-64`)
+  says it exists to prevent.
+- `hybrid.ts:453-458` checks the reranker's answer by **length, not membership**, so a provider
+  returning a duplicated index silently duplicates one chunk and drops another — the exact
+  "recall cut disguised as a reordering" the comment says it is guarding against.
+- `router.ts:356` (`rerank`) and `:266` (`embed`) call `requireScope()` and **discard the return
+  value**; only `chat()` reads it. The rerank docstring's ZDR guarantee is one the code cannot make.
+- `answer.ts:53-54`'s `scrubMarkers` regex cannot match comma-joined citations, and the model
+  **demonstrably emits that form** — `a17-report.md:12` ends `...and firmware [1, 3].` The test
+  titled "no dangling footnote, ever" cannot see it.
+- `lifecycle.ts:158` compares `page.owner_principal` (raw `text`) byte-for-byte against
+  `ctx.principal`, while `selfGrant` lowercases (`context.ts:69`). The same case-drift hazard the
+  grant path documents, on the sole authorization check for `delete_page`/`replace_page`.
+
+### 6.12 [moderate] `ingest-file` CLI writes values the API contract declares impossible
+
+`scripts/ingest-file.ts:19-22`'s `flag()` returns `argv[i+1]` unconditionally, so
+`--slug --title X` yields `slug === "--title"`. Nothing downstream re-validates: `importFile`
+checks only `bytes.byteLength` (`file.ts:47-57`), `pages.slug` has no CHECK constraint
+(`schema.sql:196`), and the zod regex lives only at the op boundary (`operations.ts:275`) which the
+CLI bypasses by importing `importFile` directly. Also: `--slug ""` defeats the `?? slugFromFilename`
+fallback (empty string is not nullish); `flagAll('tag')` enforces neither the 50-tag nor 64-char cap.
+
+And `slugFromFilename` itself is wrong: it strips leading hyphens only, so `.hidden.txt → ".hidden"`
+and `_private.md → "_private"` — both rejected by the op regex. Its comment claims it matches the
+op's charset "so the CLI and the API cannot disagree." They do. (`--scope`/`--kind` are genuinely
+safe — both are membership-checked against closed lists.)
+
 ---
 
 ## 7. `DECISIONS.md` — entries later overturned
@@ -409,6 +552,14 @@ later entry reversed, and most carry no forward pointer.
 | **D10** | roll-your-own OIDC chosen for the India data-residency pitch | **Rationale withdrawn as factually false** — the Supabase project is in Seoul (`aws-1-ap-northeast-2`). Undercuts D0's "India-first" framing and D21's Mumbai target, neither amended. Relocating is now a data migration, not a re-provision. |
 | **D23** | use `-- migrate:no-transaction` for `CREATE INDEX CONCURRENTLY` | Stood as guidance for three milestones while **never having worked** — D88 found it and **fixed it** (`splitStatements`, one statement per round trip). `0011` is the first and only file to use the pragma; it works now. |
 | **D34** | Design specified refresh-token rotation returning "the already-rotated pair" in a grace window | **Cut as unimplementable** — only SHA-256 hashes are stored, so the raw tokens don't exist to return. `sessions.refresh_hash` / `refresh_expires_at` remain NULL. Don't assume rotation exists because the columns do; it returns at M5. |
+
+**Pass 2 additions.** D70's "three exemptions" is confirmed wrong — there are **seven**
+`// rls-exempt:` markers (`migrate.ts:315`; `doctor.ts:194,260,273,373`; `novabyte-eval.ts:136`;
+`measure-a17.ts:46`). And **D68's "Two consequences" enumeration is incomplete**: a third exists and
+the same session had to fix it — `0007`'s partial slug indexes are unusable for a scope-less slug
+lookup, which is why `0011` had to add `idx_pages_ws_slug` back (`doctor.ts:249-251`: "Both are read
+paths whose index went missing silently"). Also minor drift: D70's "one of ten live suites" is now
+twelve.
 
 ---
 
@@ -445,24 +596,117 @@ fail for the reason it was written.** And the `cwd: CHILD_CWD` fix is still asse
 regex; redefining `CHILD_CWD` to `process.cwd()` keeps the test green and restores the leak. The
 *pattern* is right and worth carrying forward. The claim of universal application is not.
 
+### Pass 2: D66–D90 reconciled against the narrative (the cross-check pass 1 skipped)
+
+One outright **contradiction**, and six decisions the narrative drops:
+
+- **Wrong.** §4 says "A relevance floor and autocut were both **measured and rejected**"
+  (`HANDOVER.md:151-152`). D78 says the floor was rejected but **autocut was built and shipped OFF**
+  — written, tested, logging its dropped count, so enabling it is a constant change. "Rejected"
+  would send someone to rebuild what already exists.
+- **D76's second half is missing entirely**: `replace_page` **refuses** any page carrying a
+  `page_sources` row. A user-visible API refusal, documented nowhere in §3 or §4.
+- **D70 is unrepresented anywhere** — neither `test/scoped-tx-guard.test.ts` nor
+  `.github/workflows/ci.yml` appears in the whole file. Compounds §6.2: the next session does not
+  know CI exists.
+- **D67 is unrepresented**, including its forward obligation: until a transfer path ships, an
+  offboarded author's private pages are **orphaned**. That belongs in "Where to pick up".
+- **D86** gets no sentence despite the header claiming D83–D86 (`kind` validated by a zod enum at
+  the op boundary).
+- **D82's own caveat is dropped**: the Cohere wire format in `rerank()` has **never been verified
+  against a live provider**. §6's "Known limits of what is green" should carry that.
+- **D79's primary finding is missing** — §3 records only the `LIMIT` move, not that a `pages`-based
+  title arm emits page ids no chunk join can satisfy, so every title hit silently returns nothing.
+
+Two §3 rows are also inaccurate: the `doctor.ts` row claims "four index assertions — on the
+**expression**"; there are **five** index checks and only **two** read `indexdef` (§6.6). And the
+`0007`/`0009` rows omit the partial index pairs (slug, sha), making D68's and D73's work unlocatable
+from the narrative.
+
 ---
 
-## 9. What this review did not cover
+## 9. What is still not covered (rewritten after pass 2 — most of pass 1's gaps are closed)
 
-- **`docs/plan.md` was read once, past the gate-resolution section (§5.4) — not deeply otherwise.**
-  It's the only definition of M4/M5 beyond the one-liners in §2.
-- **`DECISIONS.md` D66–D90 were not reconciled against `HANDOVER.md`'s narrative** of the same
-  milestone — the one cross-check that would catch the handover drifting from the log.
-- **`eval/a17-report.md` was not read in full.** All ten `Grade: [ ] pass [ ] fail` boxes ship
-  **blank** — the human half of the A17 gate was never performed, while the automated half sits at
-  a 1.000 ceiling. "523 pass / 0 fail" is not answer-quality evidence.
-- **No live run of anything.** `typecheck` was executed; the test suite, `doctor`, and the
-  migrations were not — all need a database. Every "live" number in this doc is reconciled
-  statically against declared counts, not observed by running them.
-- **No cross-model review.** Codex was logged out for the M3 session and was not used here either.
-- **Unread as code:** `src/auth/{google,session,membership,blocklist,normalize,log,routes}.ts`,
-  `src/api/{envelope,reqid,roles,tool-defs,errors,call}.ts`, `src/search/eval-score.ts`,
-  `src/ai/vector.ts`, and all six `scripts/*a17*` files.
-- **Extraction fixtures are generated**, so a generated PDF is the easiest PDF in existence.
-  Two-column layouts, page-spanning tables and Devanagari are where real extraction fails and are
-  untested.
+**Closed by pass 2**, so do not spend budget re-covering: the live run (§10); the D66–D90 vs
+`HANDOVER.md` reconciliation (§8); `eval/a17-report.md`; and ~1,000 lines of previously unread
+in-diff code (`novabyte-eval.ts`, `ingest-file.ts`, `dump-top8.ts`, `errors.ts`, `session.ts`).
+
+**A17 answer quality is now graded, and it is good.** All ten answers were checked line by line
+against `test/fixtures/a17-corpus/`: **zero hallucinations, zero mis-citations**, every `[n]`
+resolves to a document that supports the claim. Two sub-threshold imprecisions only (q7 says a rate
+limit "was bumped" where the source records a decision; q4 omits that 8% was the *opening*
+position). **The human half of the A17 gate can be closed from the repo today** — no database, no
+API key, no re-run — because the corpus is checked in and the docs are tiny. It cannot be closed
+from the report alone: `run-a17-eval.ts:82-83` writes slug names, never the evidence text. Note the
+grade verifies each answer against the *document*, not against the chunk actually retrieved, and the
+retrieval numbers above it are stale (§6.7).
+
+**Still genuinely uncovered:**
+
+- **Extraction on real documents.** All eight fixtures are generated. Two-column PDFs, page-spanning
+  tables, scanned pages and Devanagari/Tamil remain untested — and §6.8 and §6.9 both landed in
+  exactly this blind spot (a blank CSV cell; a wide sheet). The next defect of that shape will too.
+- **Concurrency and scale.** `test/perf-recall.test.ts` still does not exist. GUC bleed between
+  interleaved requests on one pooled connection is invisible to a serial ladder, and it is precisely
+  what `current_grants()` being `STABLE` exists to prevent. `extract/index.ts`'s semaphore can also
+  over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
+  waking) — reachable only if an `await` is ever introduced between them.
+- **Cross-model dissent.** Codex's token is revoked (`codex login status` reports "Logged in"; a real
+  call 401s). Three passes now, single-model. Pass 2 substituted a fresh-context adversarial agent —
+  independence of *context*, not of *model*.
+- **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4/M5.
+- **Out-of-diff code**, deliberately declined as re-derivation: `src/auth/{google,membership,
+  normalize,blocklist,log,routes}.ts` and `src/api/{envelope,reqid,roles,tool-defs,call}.ts`
+  (~740 lines, 0 changed in M3, all with test files). `session.ts` *was* read — refresh columns
+  confirmed **inert**, backing D34.
+- **Whether the shared Supabase project is safe to keep sharing.** Pass 2 established that it drifts
+  (§10). It did not establish a policy, a second project, or a reset procedure — and `migrate:reset`
+  is gated on a bare `DEV_ENVS.has(NODE_ENV)` on **both** branches, one absent `NODE_ENV` from
+  dropping the schema on the one database everything shares.
+
+---
+
+## 10. Observed, not derived (2026-07-30)
+
+Timestamped observations, not durable properties. **This section decays; the rest of the file does
+not.** Re-run before trusting it if the SHAs in the header have moved.
+
+| # | Command | Result |
+|---|---|---|
+| R1 | offline suite (DB + provider env blanked) | **388 pass / 159 skip / 0 fail**, 3.7s |
+| R2 | `bun run doctor` on **master**, read-only | **43/46 — FAILING**, and has been |
+| R2 | `_migrations` ledger | `0007`, `0009`, `0011` **already applied** |
+| R2 | `select count(*) from pg_index where not indisvalid` | **0** — no invalid indexes today |
+| R2 | `select (array_length('{}'::text[],1) >= 1) is null` | **true** — §6.5 proven on PG **17.6** |
+| R3 | `bun run migrate` ×2 on M3 | both clean, nothing re-applied — **idempotent** |
+| R4 | `bun run doctor` on M3 | **62/62 green** |
+| R5 | `CB_REQUIRE_LIVE_TESTS=1 bun run test` on M3 | **523 pass / 1 skip / 0 fail**, 506s |
+
+**`HANDOVER.md` line 6 is exactly right on every count** — 523/1/0, doctor 62/62, migrations
+idempotent. Three passes of arithmetic finally matched an observation.
+
+**The shared database is in M3's state, and master's `doctor` has been red the whole time.** Someone
+ran M3's migrate before this session; R3 was therefore a free re-run, not the one-way door it looked
+like. The three master failures are `expected-grants` (sees `page_sources`), `expected-column-grants`
+(sees `locator`), and `expected-policies` (sees `AND (acl && (SELECT current_grants()))`).
+`expected-definers` passes because `current_grants()` is `STABLE` with no `SECURITY DEFINER`, so
+master's `prosecdef` filter never sees it. **Do not "fix" this with `doctor --update` on master** —
+that would bless M3's ACL policies into master's security fixture.
+
+Green M3 doctor *after* migrate is itself the real idempotency test: `grantExisting` re-broadens
+every table on every run, and `narrowGrants` correctly re-narrows it.
+
+**Two documentation defects proven by running them:**
+
+1. **`docs/auth-setup.md:327` documents a command that fails.** It says `CB_REQUIRE_LIVE_TESTS=1 bun
+   test`, which bypasses the npm script's `--timeout 30000` and falls back to Bun's 5s default; the
+   RLS `WITH CHECK` test then times out. `HANDOVER.md:228`'s `bun run test` is the correct form.
+2. **The "offline" verify loop was never offline.** `.env` is a real file at the repo root and a
+   symlink into the M3 worktree; Bun auto-loads it from cwd, so `hasDbEnv()` sees a populated
+   `DATABASE_URL` and every live suite runs against the shared project with real provider calls.
+   Anyone who ran the "safe" command has been spending money and seeding rows. The genuinely offline
+   form is in §0.
+
+**One non-defect, recorded so nobody chases it:** the offline run reports 547 total tests and the
+live run 524. Bun counts `beforeAll`/`afterAll` as skipped entries when their `describe` is skipped.
+Not a coverage difference.
