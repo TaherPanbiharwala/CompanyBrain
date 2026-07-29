@@ -5,10 +5,16 @@
 // no column names, no row boundaries, unretrievable. A row that keeps its header is a sentence a
 // model can read: "Item: Robot arm | Qty: 3 | Rate: ₹1,23,456.00 | Date: 2026-03-12".
 //
-// Five things below are each a silent-corruption class, meaning: the file ingests, reports success,
+// Six things below are each a silent-corruption class, meaning: the file ingests, reports success,
 // and the data is simply never findable afterwards.
+//
+// The sixth was found after this file shipped, and is worse than the other five: a dropped EMPTY
+// cell does not make data unfindable, it makes the WRONG data findable under the right column name.
+// See joinRow in ../blocks.ts. The lesson worth carrying: the other five were all about cells whose
+// value was missing, and the class nobody looked for was the cell whose value was legitimately blank.
 import * as XLSX from 'xlsx';
 import type { Block, Extracted } from '../blocks.ts';
+import { joinRow } from '../blocks.ts';
 
 /** Enforced DURING extraction, not after. A 100k-row export builds >1GB of SheetJS cell objects
  *  before any downstream chunk cap could look at it, so the cap has to bound the read itself. */
@@ -144,7 +150,7 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
       for (let c = range.s.c; c <= range.e.c; c++) {
         names.push(cellText(ws[XLSX.utils.encode_cell({ r: hdrIdx, c })] as Cell | undefined) ?? '');
       }
-      header = names.filter(Boolean).join(' | ');
+      header = joinRow(names);
     }
 
     const firstDataRow = hdrIdx === undefined ? range.s.r : hdrIdx + 1;
@@ -154,12 +160,17 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
       for (let c = range.s.c; c <= range.e.c; c++) {
         const t = cellText(ws[XLSX.utils.encode_cell({ r, c })] as Cell | undefined);
         if (t === undefined) {
+          // An uncached formula HOLDS ITS COLUMN, so the cells after it stay under their own
+          // header names. `skipped` below is what records that its value was lost; dropping the
+          // slot as well would lose the value AND move every later value.
           missing = true;
+          parts.push('');
           continue;
         }
-        if (t) parts.push(t);
+        parts.push(t);
       }
-      if (parts.length === 0) {
+      const text = joinRow(parts);
+      if (text === '') {
         if (missing) skipped++; // a row that was ALL uncached formulas — genuinely lost
         continue;
       }
@@ -169,7 +180,7 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
       const from = XLSX.utils.encode_cell({ r, c: range.s.c });
       const to = XLSX.utils.encode_cell({ r, c: range.e.c });
       blocks.push({
-        text: parts.join(' | '),
+        text,
         kind: 'row',
         // Carried separately so the chunker repeats it ONCE per chunk rather than once per row —
         // a 50-column header inlined into every row would be most of the payload.

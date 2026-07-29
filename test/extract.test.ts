@@ -10,10 +10,12 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync, existsSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as XLSX from 'xlsx';
 import { extractFile, extractorFor, EXTRACTOR_VERSIONS } from '../src/ingest/extract/index.ts';
+import { extractXlsx } from '../src/ingest/extract/xlsx.ts';
 import { detect } from '../src/ingest/extract/detect.ts';
 import { htmlToBlocks } from '../src/ingest/extract/html.ts';
-import { isDegraded, mergeLocators, formatLocator } from '../src/ingest/blocks.ts';
+import { isDegraded, mergeLocators, formatLocator, joinRow } from '../src/ingest/blocks.ts';
 import { OperationError } from '../src/api/errors.ts';
 
 const DIR = join(new URL('.', import.meta.url).pathname, 'fixtures', 'formats');
@@ -288,5 +290,73 @@ describe('block helpers', () => {
   it('htmlToBlocks does not double-count a wrapper div', () => {
     const b = htmlToBlocks('<div><p>one</p><p>two</p></div>');
     expect(b.map((x) => x.text)).toEqual(['one', 'two']);
+  });
+});
+
+// The sixth silent-corruption class, and the only one that produces a WRONG answer rather than a
+// missing one. No fixture and no subprocess: the bug lives in cell-joining, so it is asserted at
+// exactly that level, where a failure names the cause instead of pointing at an extraction run.
+describe('an empty cell holds its column (the sixth corruption class)', () => {
+  it('joinRow keeps interior blanks and drops only trailing ones', () => {
+    // Interior: positional, kept — this is the whole fix.
+    expect(joinRow(['Robot arm', '', '123456', '2026-03-12'])).toBe('Robot arm |  | 123456 | 2026-03-12');
+    // Trailing: a short row is unambiguous, so they go rather than ending every row in ' |  | '.
+    expect(joinRow(['Robot arm', '', ''])).toBe('Robot arm');
+    // All blank: the row carries nothing, and callers use '' as that signal.
+    expect(joinRow(['', '', ''])).toBe('');
+    expect(joinRow([])).toBe('');
+  });
+
+  it('THE REGRESSION: a blank CSV cell does not shift later values under the wrong header', async () => {
+    // Before the fix both sides used .filter(Boolean), so this row extracted as
+    // "Robot arm | 123456 | 2026-03-12" under "Item | Qty | Rate | Date" — the model was shown
+    // Qty=123456 and answered "the quantity was 123,456" with a citation to the right cell range.
+    // No error, no `degraded` flag. Asserting the JOINED text is the point: a cell-count check
+    // would pass on the shifted output too.
+    const csv = 'Item,Qty,Rate,Date\nRobot arm,,123456,2026-03-12\n';
+    const out = await extractFile(new TextEncoder().encode(csv), 'items.csv');
+
+    expect(out.blocks).toHaveLength(1);
+    const row = out.blocks[0]!;
+    expect(row.header).toBe('Item | Qty | Rate | Date');
+    expect(row.text).toBe('Robot arm |  | 123456 | 2026-03-12');
+
+    // The property that actually matters, stated positionally rather than as a string compare:
+    // value N of the row is value N of the header, so Rate is the number and Date is the date.
+    const cols = row.header!.split(' | ');
+    const vals = row.text.split(' | ');
+    expect(vals[cols.indexOf('Rate')]).toBe('123456');
+    expect(vals[cols.indexOf('Date')]).toBe('2026-03-12');
+    expect(vals[cols.indexOf('Qty')]).toBe('');
+  });
+
+  it('a fully blank CSV row is still dropped, not emitted as separators', async () => {
+    const csv = 'A,B\n1,2\n,,\n3,4\n';
+    const out = await extractFile(new TextEncoder().encode(csv), 't.csv');
+    expect(out.blocks.map((b) => b.text)).toEqual(['1 | 2', '3 | 4']);
+  });
+
+  it('XLSX has its own cell loop, so it gets its own assertion', () => {
+    // Built in memory rather than from sample.xlsx: the fixture has no blank cell, so a
+    // fixture-driven test would pass against the shifted output too.
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Item', 'Qty', 'Rate', 'Date'],
+      ['Robot arm', null, 123456, '2026-03-12'], // interior blank — the bug
+      ['Gripper', 2, 500, null], // trailing blank — dropped
+      [null, null, null, null], // wholly blank — no block at all
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'S1');
+    const out = extractXlsx(new Uint8Array(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })));
+
+    expect(out.blocks.map((b) => b.text)).toEqual([
+      'Robot arm |  | 123456 | 2026-03-12',
+      'Gripper | 2 | 500',
+    ]);
+    expect(out.blocks[0]!.header).toBe('Item | Qty | Rate | Date');
+    // A blank cell is not a skipped unit — nothing was lost, so `degraded` must stay quiet.
+    expect(out.unitsExtracted).toBe(2);
+    expect(out.unitsSkipped).toBe(0);
+    expect(isDegraded(out)).toBe(false);
   });
 });

@@ -6,6 +6,7 @@
 // would silently re-chunk an existing fixture and move the retrieval baseline before anything had
 // been measured. Conversation structure comes from formats that declare it, not from guessing.
 import type { Block, Extracted } from '../blocks.ts';
+import { joinRow } from '../blocks.ts';
 import { htmlToBlocks, htmlTitle } from './html.ts';
 
 const decode = (b: Uint8Array): string => new TextDecoder('utf-8', { fatal: false }).decode(b);
@@ -97,12 +98,14 @@ export function extractCsv(bytes: Uint8Array): Extracted {
     return { format: 'csv', blocks: [], meta: {}, unitsExtracted: 0, unitsSkipped: 1 };
   }
 
-  const header = splitLine(lines[0]!).filter(Boolean).join(' | ');
+  // joinRow, not `.filter(Boolean).join(' | ')`: an interior empty cell holds its column, or every
+  // value after it reads under the wrong header name. See the note on joinRow in blocks.ts.
+  const header = joinRow(splitLine(lines[0]!));
   const blocks: Block[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const cells = splitLine(lines[i]!).filter(Boolean);
-    if (cells.length === 0) continue;
-    blocks.push({ text: cells.join(' | '), kind: 'row', header: header || undefined });
+    const text = joinRow(splitLine(lines[i]!));
+    if (text === '') continue; // every cell blank — the row carries nothing
+    blocks.push({ text, kind: 'row', header: header || undefined });
   }
 
   return {

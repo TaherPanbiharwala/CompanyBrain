@@ -85,6 +85,30 @@ export function isDegraded(e: Extracted): boolean {
   return e.unitsSkipped / total > SKIP_THRESHOLD[e.format];
 }
 
+/** Join one spreadsheet-shaped row (CSV, TSV, XLSX) into the text its Block carries. ONE definition,
+ *  shared by both extractors, because the rule below is the whole reason a cell can be trusted.
+ *
+ *  AN EMPTY CELL IS POSITIONAL AND IS KEPT. Both extractors used to drop empties — `.filter(Boolean)`
+ *  in csv, `if (t) parts.push(t)` in xlsx — while building the header the same way. That shifts every
+ *  later value one column LEFT relative to the header:
+ *
+ *      Item,Qty,Rate,Date  /  Robot arm,,123456,2026-03-12
+ *      header -> "Item | Qty | Rate | Date"
+ *      row    -> "Robot arm | 123456 | 2026-03-12"     <- 123456 now reads as the Qty
+ *
+ *  The model is then shown wrong data and cites it correctly. That is worse than a failed ingest:
+ *  a failure is visible, and this produces a confident wrong answer with no error, no `degraded`
+ *  flag, and a citation that resolves to the right cell range. A blank cell is not an edge case.
+ *
+ *  TRAILING empties are dropped: a row shorter than its header is unambiguous (the missing values
+ *  are at the end), while an interior gap is exactly what carries the misalignment. Dropping them
+ *  also keeps a padded export from ending every row in ` |  | `. */
+export function joinRow(cells: readonly string[]): string {
+  let end = cells.length;
+  while (end > 0 && cells[end - 1] === '') end--;
+  return cells.slice(0, end).join(' | ');
+}
+
 /** Merge a set of block locators into the one span a chunk should carry. Returns undefined when the
  *  blocks disagree about kind or sheet — a chunk spanning two sheets has no honest single locator,
  *  and inventing one would put a wrong reference under a citation. */
