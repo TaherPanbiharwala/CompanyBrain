@@ -1,39 +1,43 @@
 # CONTEXT.md — session bootstrap
 
-Produced by two review passes that read both branches end to end, all 94 `DECISIONS.md` entries,
-adversarially verified every claim below against the code, and — in pass 2 — **actually ran the
-system**. Read this once instead of re-deriving it.
+Produced by two review passes that read the whole codebase, all 96 `DECISIONS.md` entries,
+adversarially verified every claim below against the code, and **actually ran the system**. Read this
+once instead of re-deriving it.
 
-**Pass 2 (2026-07-30) executed the live ladder for the first time in this project's history.** Every
-number in §1 and §3 that was previously arithmetic is now an observation; see **§10**. The headline:
-`HANDOVER.md`'s `523 pass / 1 skip` and `doctor 62/62` are both **exactly right**, migrations are
-genuinely idempotent — and three defects that only a live run could surface are now confirmed,
-including a silent retrieval regression that has already happened (§6.7).
+**`master` is the single trunk. Branch from it, merge back into it.** As of 2026-07-30 every branch
+in the repo is an ancestor of master — the M3 line, the CONTEXT.md line and five stale copies were
+all reconciled. There is no second tree to check any more; §1 records what that cost, because the
+same shape will recur the moment work forks again.
+
+**Four criticals and one minor were fixed in the same session that found them** — §6.1, §6.7, §6.8,
+§6.9 and §6.5.
+What remains open is listed in §5 and marked inline through §6 — nothing below claims to be fixed
+unless it says so and names the commit.
 
 **How this relates to the other docs:** `DECISIONS.md` is the reasoning and survives refactors —
-trust it, with the corrections in §7. `HANDOVER.md` (M3 branch only) narrates the session that built
-M3 — trust it, with the corrections in §8. `README.md` is stale in ways §5.4 lists. This file is
-where the repo actually *is*, and where those three get out of sync with the code or each other.
+trust it, with the corrections in §7. `HANDOVER.md` narrates the session that built M3 — trust it,
+with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
+actually *is*, and where those three get out of sync with the code or each other.
 
-Written against `master` = `fe9b4eb` and `claude/context-review-5957e4` = `e9e9b89`. **If either SHA
-has moved, re-derive §1 and §6 before trusting them; the rest ages more slowly.**
+Written against `master` = **`2ac308a`**. **If that SHA has moved, re-derive §6 and §10 before
+trusting them; the rest ages more slowly.** §10 is timestamped observation and decays fastest.
 
 ---
 
 ## 0. Start here
 
-**Confirm which tree you're in** — `git branch --show-current` — before acting on anything below.
-This doc was written from `master`; M3's features (`src/ingest/extract/`, ops 8–12, migrations
-`0007`–`0011`) exist only on `claude/context-review-5957e4`. Neither branch is canonical until they
-are reconciled — that reconciliation is the top of the punch list, not a detail.
+**`master` is the trunk. Branch from it; merge back into it.** Everything below describes master at
+`2ac308a` — there is no second tree to check. Before starting work, confirm your branch point is
+master's HEAD and not an ancestor of it: `git merge-base master HEAD` should equal
+`git rev-parse master`. That single check is what the whole of §1 exists to prevent a repeat of.
 
 **Working first-run** (Supabase already provisioned per `README.md` "Local dev"):
 ```bash
 ls -l .env                            # if it's a symlink, do NOT `cp` onto it — see §4
 cp .env.example .env                  # only if it's not a symlink
-bun install
+bun install                           # M3 added mammoth/unpdf/xlsx — a stale node_modules fails typecheck
 bun run migrate && bun run migrate    # TWICE — doctor.ts:9's idempotency check needs a second run
-bun run doctor                        # must be green: 62 checks on M3, 46 on master
+bun run doctor                        # must be green: 65 checks
 bun run dev                           # GET /health -> {"status":"ok"}
 ```
 Dev sign-in needs `DEV_AUTH=1 DEV_LOGIN=1` uncommented in `.env` (both ship commented out).
@@ -50,71 +54,66 @@ curl -s -b c.txt -XPOST localhost:3000/api/whoami -H 'content-type: application/
 unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under that flag is a
 failure, by design).
 
-**If you do only three things beyond that** (re-ranked after pass 2 — the top item changed):
+**If you do only three things** (the previous top three are all done — see §6):
 
-1. ~~Fix the CSV/XLSX column shift~~ — **DONE** (§6.8), uncommitted on `claude/context-review-5957e4`.
-   Review and commit it: 4 files, +1 shared helper, 4 new tests, red-then-green verified.
-2. **Reconcile the branches** — start with `isDevEnv` (§6.1) and the D66/D67 ID collision in
-   `DECISIONS.md` (§1) before that file drifts further apart. The database is *already* in M3's
-   state (§10), so the source divergence is the only thing still holding this apart.
-3. **Regenerate the A17 baseline and re-grade (§6.7).** The committed report claims 1.00/1.00/1.00;
-   the committed baseline actually scores hit@1 0.90 / MRR 0.95 against the committed qrels. The
-   regression guard fired into a file and nobody looked.
+1. **Vendor `docs/enabling-team-scope.md` into the repo** (§5.1). The spec for the largest open item
+   still exists only at `~/Desktop/novabyte-test-dataset/docs/`, reachable through a `$HOME`-relative
+   default. A fresh clone has the #1 open item and no spec for it. Five minutes against a total loss.
+2. **Move the rate limiter in front of `dispatchOp`**, not the Express route (§5.3). It still has
+   exactly one enforcement site, so MCP and the CLI reach `ask`/`search`/`ingest_file` — all paid
+   provider calls — with no meter at all. That is the surface an agent drives in a loop.
+3. **Fix the CI workflow before adding a git remote** (§6.2). It is inert today only because no
+   remote exists; on the first `git push` it starts migrating the shared database from every branch.
 
-Then: vendor `docs/enabling-team-scope.md` into the repo (§5.1 — the spec for the #1 open item
-survives only on one Desktop), and move the rate limiter in front of `dispatchOp` rather than the
-Express route (§5.3).
+Then: the README is stale in nine ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
+design decision waiting on you, not an implementation task.
 
 ---
 
-## 1. Repo topology
+## 1. Repo state — one trunk, and what the fork cost
 
-**Two divergent trees. Most facts below are branch-dependent — check §1 before trusting a number.**
+**`master` at `2ac308a` contains everything.** All seven branches are ancestors of it
+(`git branch --no-merged master` is empty), every worktree is clean, and there are no stashes. The
+milestones built: M0, M1, A17, M2, M3.
 
-```
-… ea414bc ─┬─ fe9b4eb   master                        M0+M1+A17+M2 + a guard-fix pass
-           └─ aa8752a ─ 634003a ─ e9e9b89             + M3, + eval harness, + HANDOVER.md
-                        claude/context-review-5957e4
-```
-
-- `merge-base(master, M3) = ea414bc` — one commit *behind* master's HEAD.
-- **`fe9b4eb` is NOT an ancestor of the M3 branch** (`git merge-base --is-ancestor` confirms). M3 is
-  not "master plus M3".
-- M3 range `ea414bc..e9e9b89`: 74 files changed, 43 added, 31 modified, 0 deleted, 0 renamed.
-- `fe9b4eb` alone: 26 files changed.
-
-| | `master` (fe9b4eb) | M3 branch (e9e9b89) |
-|---|---|---|
-| `src/*.ts` | 5,176 lines | 8,688 lines |
-| ops in `operations.ts` | 7 | 12 (added `list_pages`, `delete_page`, `replace_page`, `ingest_file`, `search`) |
-| migrations | `0001`–`0006` | `0001`–`0011` (11 numbered files; `0008`/`0010` are `.disabled` reverts, 9 applied) |
-| `src/ingest/extract/`, `core/pack.ts` | absent | present |
-| `doctor` checks | **46 — OBSERVED**, and currently **43/46 FAILING** (§10). README's "46" is correct here | **62 — OBSERVED, 62/62 green** (§10). README's "46" is stale here |
-| the `isDevEnv` guard fix (§6.1) | ✅ | ❌ |
-
-### Ten files touched by both commits
-
-`DECISIONS.md` · `src/ai/router.ts` · `src/answer/answer.ts` · `src/config.ts` ·
-`src/core/context.ts` · `src/db/doctor.ts` · `src/db/migrate.ts` · `test/answer.test.ts` ·
-`test/fixtures/expected-policies.json` · `test/live-gate.test.ts`
-
-**Four genuinely conflict:**
-
-| File | Conflict |
+| | |
 |---|---|
-| `DECISIONS.md` | **Hard ID collision.** Both branches allocated **D66 and D67** from base D65 for unrelated decisions (master: "the guards were the thing that needed guarding" / SASLprep; M3: RLS-enforces-acl / knowledge succession). M3 continues to D90. Resolve before the file grows further. |
-| `test/fixtures/expected-policies.json` | master: 17 entries, all carrying `permissive`. M3: 19 entries, none carrying `permissive`, rewritten quals for `acl && current_grants()`. |
-| `src/ai/router.ts` | Both fixed the same `embed()` duplicate-index bug independently, differently. |
-| `test/live-gate.test.ts` | Both rewrote the same broken meta-test from scratch, different detectors. |
+| ops in `operations.ts` | **12** |
+| migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
+| `DECISIONS.md` | **96 entries, D0–D92**, no duplicate IDs |
+| `doctor` | **65 checks** |
 
-**One merges clean and becomes wrong:** `src/core/context.ts`'s `visibleBy` docstring (master)
-asserts no migration references `acl`; M3's `0007` makes that false.
+### Why this section still exists
 
-### Other worktrees
+M3 was developed on a branch cut from **one commit behind** master's HEAD, so it never contained
+master's guard-fix commit and the two lines diverged for days. Reconciling on 2026-07-30 cost a
+five-conflict merge. Three of the five were the *same defect fixed twice, differently* — which is
+the expensive kind, because a merge tool cannot tell you that both sides are right:
 
-Five total; four sit on `fe9b4eb`. The only **uncommitted work in the whole repo** is in
-`rc-phone-connection-54833b` — a fourth variant of `live-gate.test.ts`. That directory's name does
-not match its checked-out branch (`claude/strange-shaw-8faa4b`).
+| File | Why it collided | Resolution |
+|---|---|---|
+| `test/live-gate.test.ts` | Both branches rewrote it from scratch after finding **different** ways it had failed | Kept the **union** — master's three-signal detector + floor, M3's paren-balanced weakened-gate scanner |
+| `src/ai/router.ts` | Both fixed the same `embed()` index bug | Took M3's slot assignment: sorting catches a *missing* index, but a *duplicated* one still passes because the count comes out right |
+| `DECISIONS.md` | Both allocated **D66/D67** from base D65 — one monotonic counter, two branches, no shared ref | M3 keeps 66–90 (referenced by number across code and docs); master's two became **D91/D92** |
+| `test/fixtures/expected-policies.json` | master had the `permissive` column but 17 policies; M3 had 19 without it | Neither was right. Regenerated from the live DB and reviewed as a security change: exactly 19 `permissive` insertions, no policy added or removed |
+| `src/config.ts` | `isDevEnv` was ported to M3 while master already had it | One word, resolved on fact |
+
+### The two lessons, because both will recur
+
+**A monotonic counter in an append-only file collides by construction the moment work forks.**
+`DECISIONS.md` uses `D<n>`; the checked-in doctor fixtures have the same shape. Neither branch did
+anything wrong.
+
+**A clean textual merge is not a correct merge.** The last branch merged with **zero conflicts** and
+produced a file that would not compile — two `REQUIRED_LIVE_SUITES` declarations in non-overlapping
+regions. Git cannot see that; `bun run typecheck` did. Always typecheck and run the suites after a
+merge, not just resolve the conflicts git shows you.
+
+**And a branch-tip comparison can miss work entirely.** `claude/strange-shaw-8faa4b` reported "0
+commits ahead" while holding real work as an **uncommitted file** in a worktree whose directory name
+did not match its branch. Check `git status` in every worktree, not just the refs.
+
+Backup refs from the reconciliation are at `refs/backup/20260730-121206/`.
 
 ---
 
@@ -234,8 +233,8 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
   verifiable. `src/config.ts` supports `DB_SSL=disable` but no doc mentions it. `docs/plan.md` lists
   a `docker-compose.yml` that does not exist.
 - **`.env` is a symlink in some worktrees, not others.** Confirmed a real symlink to the main
-  worktree in `context-review-5957e4/.env`; confirmed **absent entirely** in this worktree
-  (`repo-handover-review-4971b4`). `ls -l .env` before running `cp` — in a worktree where it's a
+  worktree. It is a real file at the repo root and a symlink in some worktrees, so this varies by
+  where you are standing. `ls -l .env` before running `cp` — in a worktree where it's a
   symlink, `cp` writes through it and overwrites the live file. **Never print `.env`.**
 - **PG 15+ and pgvector 0.8+ are enforced in code** (`migrate.ts` throws below PG15; `doctor.ts`
   asserts pgvector ≥0.8) and documented nowhere a newcomer reads.
@@ -306,7 +305,7 @@ without bound. **Fix by moving the limiter in front of `dispatchOp` itself**, no
 ### 5.4 Documentation
 
 `README.md` is stale in nine ways, not the three `HANDOVER.md` lists: doctor is 62 not 46 **on the
-M3 branch** (§1 — accurate on master); Status omits M3 entirely; `hybrid.ts` is described as
+**65**, not 46; Status omits M3 entirely; `hybrid.ts` is described as
 "keyword + vector" when it's four arms; Layout omits `pack.ts`, `vector.ts` and five ingest modules;
 the test enumeration misses ~20 files; `README:92` still says "no remote machine credential until
 M3" — M3 shipped and there still is none.
@@ -320,27 +319,33 @@ already chosen). They are not open. What's actually unreconciled is that resolut
 
 ## 6. Findings recorded nowhere else
 
-### 6.1 [critical] The M3 branch is missing master's auth guard fix
+### 6.1 [critical — **FIXED** `6410c8d`, merged to master] Dev-env gates defeated by an unset NODE_ENV
 
 `NODE_ENV` is `z.string().default('development')`, so an **absent** variable arrives as the exact
-value the dev allowlist exists to permit. `master`'s `fe9b4eb` fixed the *auth* gates by adding
-`nodeEnvExplicit` and routing them through `isDevEnv(cfg) = nodeEnvExplicit &&
-DEV_ENVS.has(NODE_ENV)`.
+value the dev allowlist exists to permit. Every dev-only gate tested `DEV_ENVS.has(cfg.NODE_ENV)`
+directly, which meant a deployment with `DEV_AUTH=1` and no `NODE_ENV` booted with the
+header-trusting identity stub live **and** the missing-secrets gate skipped — forged `x-cb-*` headers
+then authenticating as any principal in any workspace. Reachable only with `DEV_AUTH=1`, so a
+defense-in-depth failure rather than an open door, but the guard whose entire job was "stop
+`DEV_AUTH` in prod" did not fire.
 
-On the M3 branch, `src/api/dev-auth.ts:16,24,48,65` and `src/boot.ts:66` still call
-`DEV_ENVS.has(cfg.NODE_ENV)` bare. (`src/db/migrate.ts`'s `migrate:reset` gate is bare on **both**
-branches — master never fixed it either — so it is not part of this divergence; don't spend time
-reconciling a file master never touched.)
+**Now:** `nodeEnvExplicit` + `isDevEnv(cfg)` in `config.ts` is the one answer, and all four
+`dev-auth.ts` gates, `boot.ts`'s secrets block and `migrate:reset` route through it. `migrate:reset`
+was the third of the three drifted copies `config.ts` names — it was bare on *both* branches, and is
+lower severity only because `--yes-destroy` and `CB_CONFIRM_RESET` stand behind it. Also fixed:
+`test/api.test.ts` gated on `NODE_ENV !== 'production'`, a negative match that would have disagreed
+with the new gate and 401'd every request in a local run.
 
-Consequence: a deployment with `DEV_AUTH=1` and no `NODE_ENV` boots with the header-trusting
-identity stub live **and** the missing-secrets gate skipped — forged `x-cb-*` headers then
-authenticate as any principal in any workspace. Reachable only with `DEV_AUTH=1`, so it's a
-defense-in-depth failure, not an open door — but the guard whose entire job is "stop `DEV_AUTH` in
-prod" does not fire. **Fix this first when reconciling branches.**
+**The tests were a guard that did not guard, which is why this survived.** The old suite represented
+"unset" as `NODE_ENV: ''` — not what an absent variable produces — so a test titled *"fails CLOSED
+for unset NODE_ENV"* was green while the gate was open for exactly that input. The replacement uses
+`nodeEnvExplicit: false`. And `assertDeploymentSafe` had **zero tests on either branch** despite
+owning the more severe half; `test/boot.test.ts` is new. Verified red-then-green: reverting
+`isDevEnv` to the bare form fails 5 tests across all three gates.
 
-Related: `DECISIONS.md` D29/D33 (§7) record that this same gate was *already* wrong once before, in
-a different way, and fixed — the allowlist-vs-blocklist confusion. Treat any change near this gate
-as high risk; it has now been broken and re-fixed on two independent occasions.
+Related: `DECISIONS.md` D29/D33 (§7) record that this same gate was *already* wrong once before, in a
+different way — the allowlist-vs-blocklist confusion. Treat any change near it as high risk; it has
+now been broken and re-fixed on **three** independent occasions.
 
 ### 6.2 [moderate — RE-GRADED: latent, arms on first push] CI will migrate a shared DB from every branch
 
@@ -376,7 +381,7 @@ surfaces as a 500 instead of a typed error. **The obvious fix is wrong**: `decla
 declared)` truncates by code unit, corrupting every multibyte (Devanagari/Tamil) payload. Slice the
 raw buffer to `declared` bytes, then decode.
 
-### 6.5 [minor] The empty-ACL CHECK does not reject empty ACLs
+### 6.5 [minor — **FIXED** `7ae4d3e` via migration `0012`] The empty-ACL CHECK rejected nothing
 
 `CHECK (array_length(acl, 1) >= 1)` (`0007:110-111`, `0009:103,162`) does **not** reject `acl =
 '{}'`: `array_length('{}', 1)` is NULL, `NULL >= 1` is NULL, and a CHECK passes when NULL. The row
@@ -391,12 +396,17 @@ prevent, and doctor asserts nothing about it.
   file and returns `ok: true` unconditionally, so grant/policy/column-grant/definer drift is
   rubber-stamped. The ~55 boolean assertions still run and can still fail, and `main` still exits
   non-zero on any failure. Don't read "green after --update" as "the run passed" — check which half.
-- **`doctor.ts` crashes on a partially-migrated DB**, at the unconditional `page_sources` query
-  (`doctor.ts:275`). Nothing is printed at all when this happens — results are accumulated and only
-  rendered at the end — so the ~38 checks already evaluated are lost along with the rest.
-- **Every index assertion in doctor reads `pg_indexes`**, which has no validity column. An INVALID
-  index (left by a cancelled `CREATE INDEX CONCURRENTLY`) still reports a normal `indexdef` and
-  passes every check.
+- ~~`doctor.ts` crashes on a partially-migrated DB~~ — **FIXED** `7ae4d3e`. The `page_sources` query
+  is guarded on `to_regclass`, and checks now STREAM as each verdict is reached, so a throw costs the
+  checks *after* it rather than every result already proven. The `current_grants() exists` probe was
+  split out of the same SELECT too: it shared one with `has_function_privilege()`, which *raises*
+  when the function is absent, so the check whose whole purpose was reporting "0007 not applied"
+  threw before it could report.
+- ~~Every index assertion reads `pg_indexes`, which has no validity column~~ — **FIXED** `7ae4d3e`.
+  An `indisvalid` assertion now catches an INVALID index (remedy: `REINDEX INDEX CONCURRENTLY`).
+  Added alongside it: a `pg_constraint` assertion on the acl CHECKs by DEFINITION, since nothing
+  queried `pg_constraint` — which is exactly how four constraints enforcing nothing survived a
+  62-check verifier.
 - **`test/perf-recall.test.ts` does not exist.** `leak-canary.test.ts:5-7` says filtered-HNSW recall
   at scale, GUC-bleed concurrency, and pool headroom "are gated separately" in that file. They are
   covered nowhere.
@@ -408,7 +418,7 @@ prevent, and doctor asserts nothing about it.
   secrets themselves. Separately, 8 of its 40 allow rules are stale gbrain-era carryovers naming
   `dev/gbrain` or files that don't exist in this repo.
 
-### 6.7 [critical] The retrieval regression `dump-top8` exists to catch has already happened, unnoticed
+### 6.7 [critical — **FIXED** `ec43ff8`] The A17 report's numbers described a superseded engine
 
 `eval/a17-report.md:4-6` reports `hit@1: 1.00 / hit@3: 1.00 / MRR: 1.00`. Re-scoring the **committed
 baseline** (`eval/top8-baseline.txt`) against the **committed qrels** (`eval/a17-qrels.json`) by hand
@@ -425,7 +435,7 @@ a committed file, and nobody looked. Two consequences: the "saturated 1.000 benc
 `HANDOVER.md:215` and in `hybrid.ts`'s own comments is **no longer true**, and the A17 go/no-go rests
 on a stale number.
 
-### 6.8 [critical — **FIXED** 2026-07-30, uncommitted on the M3 branch] CSV/XLSX column shift
+### 6.8 [critical — **FIXED** `bdcc9d3`] CSV/XLSX shifted every column after a blank cell
 
 `text.ts:100,103` and `xlsx.ts:147,160` drop empty cells with `.filter(Boolean)` / `if (t)` *before*
 joining, while the header row is built the same way. Every value after a blank cell moves left one
@@ -444,7 +454,7 @@ This is the same class of defect `HANDOVER.md:74-82` congratulates the milestone
 (merged cells, date serials, uncached formulas) — in the same two files, missed. A blank cell in a
 spreadsheet is not an edge case.
 
-**FIX (uncommitted, on `claude/context-review-5957e4`).** One shared rule, `joinRow()` in
+**FIX (`bdcc9d3`, on master).** One shared rule, `joinRow()` in
 `src/ingest/blocks.ts`, replacing `.filter(Boolean)` in `text.ts` and `if (t) parts.push(t)` in
 `xlsx.ts`. Interior empties are kept (positional); only trailing empties are dropped (a short row is
 unambiguous). An uncached formula now pushes `''` to hold its column while `skipped` still records
@@ -457,7 +467,7 @@ offline **392 pass / 0 fail**; live **527 pass / 1 skip / 0 fail** — exactly +
 the 4 new tests, zero regressions. The xlsx case is built in memory on purpose: `sample.xlsx` has no
 blank cell, so a fixture-driven test would pass against the shifted output too.
 
-### 6.9 [critical] `chunkBlocks`' token ceiling does not bound the chunks it emits
+### 6.9 [critical — **FIXED** `ee4461c`] `chunkBlocks`' token ceiling bounded nothing it emitted
 
 `chunk.ts:331` compares `bufTokens + blockTokens > target`, but `bufTokens` counts **only block
 text**; the heading-path prefix and the repeated table/sheet header are prepended in `flush()` at
@@ -544,8 +554,8 @@ later entry reversed, and most carry no forward pointer.
 | **D5** (and **D27**, identical claim) | `acl && grants` in engine queries at M3, RLS refinement at M4 | **Both halves overturned by D66.** Landed in RLS a milestone early (migration `0007`); engine-side enforcement *explicitly refused* — no `acl` appears anywhere in `src/search/`. Reading either leads you to add an ACL predicate to `hybridSearch`, which D66 argues is actively harmful. Neither has a forward pointer. |
 | **D0.1** | "at M2 nothing reads the `acl`"; private is aspirational until "M4" | Closed by D66 (`0007_acl_rls.sql`) at **M3**, 546 lines later. D0.1's only forward pointer says "enforced at M4" — the wrong milestone, and names no entry. A reader following it looks under M4 and finds nothing. |
 | **D29** | dev-auth is gated on `NODE_ENV != production AND DEV_AUTH=1` (a **blocklist**) | **Reversed by D33**: the gate is an *allowlist* — `NODE_ENV ∈ {development, test}` (`dev-auth.ts:16`, `config.ts:102`). D33 calls this "the sole barrier to cross-tenant reads in M1." Neither entry points at the other. See §6.1 for how this same gate was broken and re-fixed again, differently, on master. |
-| **D24** | doctor is "46 checks" | 62, on the M3 branch (46 on master — see §1). D24 has already been corrected once in place. Treat any doctor count in `DECISIONS.md` as a timestamp, never a target. |
-| **D70** | "three `// rls-exempt:` exemptions exist" | **Seven** now (4 in `doctor.ts`, 1 `migrate.ts`, 2 in `scripts/`). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
+| **D24** | doctor is "46 checks" | **65** today, and it has been 46, 62 and 65 within a fortnight. D24 was already corrected once in place and went stale again immediately. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
+| **D70** | "three `// rls-exempt:` exemptions exist" | **Nine** now, and climbing (it was three when D70 was written, seven at the pass-2 review, nine after the doctor work in `7ae4d3e`). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
 | **D51(c)** | three A17 perf items deferred: no GIN index, `hnsw.iterative_scan` never set, chunk inserts one-per-round-trip | **All three shipped, and one was misclassified.** `0006_fts_index.sql` adds the GIN index; `client.ts:215` sets `hnsw.iterative_scan` — **D58 reclassifies it as a tenancy control, not a latency knob** (§2); D65 batched the chunk inserts. D51 points forward to nothing. |
 | **D25** | column-grant protects `google_sub` **and** `email` | `migrate.ts` grants `cb_auth` `update(name, email, email_normalized, updated_at)`. **Email is rewritable by the login lane** — only `google_sub` is protected, via `adopt_principal`'s `IS NULL` guard. |
 | **D14** | pgvector ≥0.8 "gates the M0 docker image" | D22 replaced Docker with Supabase entirely. The floor is real; the docker clause is residue. |
@@ -563,7 +573,7 @@ twelve.
 
 ---
 
-## 8. `HANDOVER.md` — corrections (M3 branch only; this file doesn't exist on master)
+## 8. `HANDOVER.md` — corrections (now on master, merged with the M3 line)
 
 The file inventory, all extraction descriptions, the migration descriptions, "five new ops",
 "nothing was deleted", and the arm weights **all verified true**. Corrections:
@@ -671,42 +681,49 @@ retrieval numbers above it are stale (§6.7).
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
 
-| # | Command | Result |
-|---|---|---|
-| R1 | offline suite (DB + provider env blanked) | **388 pass / 159 skip / 0 fail**, 3.7s |
-| R2 | `bun run doctor` on **master**, read-only | **43/46 — FAILING**, and has been |
-| R2 | `_migrations` ledger | `0007`, `0009`, `0011` **already applied** |
-| R2 | `select count(*) from pg_index where not indisvalid` | **0** — no invalid indexes today |
-| R2 | `select (array_length('{}'::text[],1) >= 1) is null` | **true** — §6.5 proven on PG **17.6** |
-| R3 | `bun run migrate` ×2 on M3 | both clean, nothing re-applied — **idempotent** |
-| R4 | `bun run doctor` on M3 | **62/62 green** |
-| R5 | `CB_REQUIRE_LIVE_TESTS=1 bun run test` on M3 | **523 pass / 1 skip / 0 fail**, 506s |
+### Current — master at `2ac308a`, measured 2026-07-30 after the merge
 
-**`HANDOVER.md` line 6 is exactly right on every count** — 523/1/0, doctor 62/62, migrations
-idempotent. Three passes of arithmetic finally matched an observation.
+| Command | Result |
+|---|---|
+| `bun run typecheck` | **clean** |
+| offline suite (DB + provider env blanked) | **420 pass / 160 skip / 0 fail**, 6.4s |
+| `bun run doctor` | **65/65** |
+| `bun run migrate` (re-run) | nothing re-applied — **idempotent** |
+| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **556 pass / 1 skip / 0 fail**, 273s |
+| empty-acl insert as owner, post-`0012` | **23514 check_violation** — §6.5 genuinely enforced now |
+| `select count(*) from pg_index where not indisvalid` | **0** |
+| PostgreSQL | **17.6** |
 
-**The shared database is in M3's state, and master's `doctor` has been red the whole time.** Someone
-ran M3's migrate before this session; R3 was therefore a free re-run, not the one-way door it looked
-like. The three master failures are `expected-grants` (sees `page_sources`), `expected-column-grants`
-(sees `locator`), and `expected-policies` (sees `AND (acl && (SELECT current_grants()))`).
-`expected-definers` passes because `current_grants()` is `STABLE` with no `SECURITY DEFINER`, so
-master's `prosecdef` filter never sees it. **Do not "fix" this with `doctor --update` on master** —
-that would bless M3's ACL policies into master's security fixture.
+The single skip is `test/router.test.ts`'s `describe.skipIf(!!config.CHAT_MODEL)` — gated on model
+config, not on database liveness, so it is not a live-gate violation.
 
-Green M3 doctor *after* migrate is itself the real idempotency test: `grantExisting` re-broadens
-every table on every run, and `narrowGrants` correctly re-narrows it.
+### Historical — the pre-merge ladder, kept because it explains how things got here
+
+The first live run in this project's history (2026-07-30, before reconciliation) found: master's
+`doctor` at **43/46 and failing**, because the shared database was already in M3's state — someone
+had run M3's migrate earlier, so the "one-way door" of applying it was already open. The three
+failures were `expected-grants`, `expected-column-grants` and `expected-policies`;
+`expected-definers` passed because `current_grants()` is `STABLE` with no `SECURITY DEFINER`, so
+master's `prosecdef` filter never saw it. All resolved by the merge, which regenerated
+`expected-policies` from the live database.
+
+`HANDOVER.md` line 6's `523 pass / 1 skip` and `doctor 62/62` were confirmed **exactly right** on the
+M3 branch before the merge — three passes of arithmetic finally matching an observation.
+
+Green doctor *after* migrate is itself the real idempotency test: `grantExisting` re-broadens every
+table on every run, and `narrowGrants` correctly re-narrows it.
 
 **Two documentation defects proven by running them:**
 
 1. **`docs/auth-setup.md:327` documents a command that fails.** It says `CB_REQUIRE_LIVE_TESTS=1 bun
    test`, which bypasses the npm script's `--timeout 30000` and falls back to Bun's 5s default; the
    RLS `WITH CHECK` test then times out. `HANDOVER.md:228`'s `bun run test` is the correct form.
-2. **The "offline" verify loop was never offline.** `.env` is a real file at the repo root and a
-   symlink into the M3 worktree; Bun auto-loads it from cwd, so `hasDbEnv()` sees a populated
+2. **The "offline" verify loop was never offline.** `.env` is a real file at the repo root and is
+   symlinked into some worktrees; Bun auto-loads it from cwd, so `hasDbEnv()` sees a populated
    `DATABASE_URL` and every live suite runs against the shared project with real provider calls.
-   Anyone who ran the "safe" command has been spending money and seeding rows. The genuinely offline
-   form is in §0.
+   Anyone who ran the "safe" command has been spending money and seeding rows. **This is still true**
+   — the genuinely offline form (env vars blanked on the command line) is in §0.
 
-**One non-defect, recorded so nobody chases it:** the offline run reports 547 total tests and the
-live run 524. Bun counts `beforeAll`/`afterAll` as skipped entries when their `describe` is skipped.
-Not a coverage difference.
+**One non-defect, recorded so nobody chases it:** the offline run reports a higher TOTAL test count
+than the live run (580 vs 557 today). Bun counts `beforeAll`/`afterAll` as skipped entries when their
+`describe` is skipped, and the offline run skips far more describes. Not a coverage difference.
