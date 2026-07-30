@@ -1,8 +1,9 @@
 # CONTEXT.md — session bootstrap
 
-Produced by two review passes that read the whole codebase, all 96 `DECISIONS.md` entries,
-adversarially verified every claim below against the code, and **actually ran the system**. Read this
-once instead of re-deriving it.
+Produced by an initial pass that read the whole codebase and all 96 `DECISIONS.md` entries then in
+existence, adversarially verified every claim against the code, and **actually ran the system** —
+followed by the M4 build and its own seven-pass review, which took the log to 101 entries (D0–D97).
+Read this once instead of re-deriving it.
 
 **`master` is the single trunk. Branch from it, merge back into it.** As of 2026-07-30 every branch
 in the repo is an ancestor of master — the M3 line, the CONTEXT.md line and five stale copies were
@@ -19,18 +20,22 @@ trust it, with the corrections in §7. `HANDOVER.md` narrates the session that b
 with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
 actually *is*, and where those three get out of sync with the code or each other.
 
-Written against `master` = **`2ac308a`**, then updated for **M4** (see §0). **If the SHA has moved
-again, re-derive §6 and §10 before trusting them; the rest ages more slowly.** §10 is timestamped
-observation and decays fastest.
+Written against `master` = **`2ac308a`**, then updated for **M4** and its review pass (see §0).
+`master` is now **`0b614ef`** — the M4 branch merged in as a **fast-forward**, so this is the same
+history the branch had, not a reconciliation; §10 was re-measured against it directly. **If the SHA
+moves again, re-derive §6 and §10 before trusting them; the rest ages more slowly.** §10 is
+timestamped observation and decays fastest.
 
 ---
 
 ## 0. Start here
 
 **`master` is the trunk. Branch from it; merge back into it.** Everything below describes master at
-`2ac308a` — there is no second tree to check. Before starting work, confirm your branch point is
-master's HEAD and not an ancestor of it: `git merge-base master HEAD` should equal
-`git rev-parse master`. That single check is what the whole of §1 exists to prevent a repeat of.
+`0b614ef` (the M4 branch, `claude/context-md-review-73f2ab`, merged 2026-07-30 as a clean
+fast-forward — 0 commits behind, so nothing to reconcile) — there is no second tree to check. Before
+starting work, confirm your branch point is master's HEAD and not an ancestor of it:
+`git merge-base master HEAD` should equal `git rev-parse master`. That single check is what the whole
+of §1 exists to prevent a repeat of.
 
 **Working first-run** (Supabase already provisioned per `README.md` "Local dev"):
 ```bash
@@ -55,12 +60,18 @@ curl -s -b c.txt -XPOST localhost:3000/api/whoami -H 'content-type: application/
 unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under that flag is a
 failure, by design).
 
-**M4 landed 2026-07-30** (D93–D96): `test/perf-recall.test.ts` now exists and carries the three
-properties a serial ladder cannot see; the per-principal budget moved to `dispatchOp` rung 0, so REST and MCP
-are metered by one instance (the CLI is reached but not effectively metered — see §5.3); doctor gained the two checks `docs/plan.md:189` named and never got
-(**73 checks**). A seven-pass review then found that 7 of M4's own guards could pass with their
-subject deleted, plus one real regression in doctor; all are fixed and recorded in **D97**. M4's own gate — "an unfiltered query leaks nothing and doctor is green" — is met on
-evidence rather than assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
+**M4 landed 2026-07-30, then was reviewed and fixed, then merged to `master`** (D93–D97):
+`test/perf-recall.test.ts` now exists and carries the three properties a serial ladder cannot see;
+the per-principal budget moved to `dispatchOp` rung 0, so REST and MCP are metered by one instance
+(the CLI is reached but not effectively metered — see §5.3); doctor gained the two checks
+`docs/plan.md:189` named and never got (**73 checks**). A seven-pass pre-landing review then found
+that 7 of M4's own guards could pass with their subject *deleted* (not just broken — see D97, the
+one-line lesson is "break the subject **and delete it**"), plus one real regression: doctor's new ACL
+census had no `to_regclass` guard and aborted every check below it on a pre-`0009` database — the
+exact defect class `7ae4d3e` already fixed once, back in the same file. All eight findings are fixed,
+verified by deleting each guard's subject, and merged. M4's own gate — "an unfiltered query leaks
+nothing and doctor is green" — is now met on evidence that survived adversarial review, not just
+assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
 
 **If you do only three things:**
 
@@ -81,9 +92,10 @@ design decision waiting on you, not an implementation task.
 
 ## 1. Repo state — one trunk, and what the fork cost
 
-**`master` at `2ac308a` contains everything.** All seven branches are ancestors of it
-(`git branch --no-merged master` is empty), every worktree is clean, and there are no stashes. The
-milestones built: M0, M1, A17, M2, M3.
+**`master` at `0b614ef` contains everything.** All branches — the original seven plus the M4 line
+(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit) — are
+ancestors of it (`git branch --no-merged master` is empty), every worktree is clean, and there are no
+stashes. The milestones built: M0, M1, A17, M2, M3, **M4**.
 
 | | |
 |---|---|
@@ -186,7 +198,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 | A17 | Answer-quality spike (between M1 and M2) — ingest, hybrid search, citations |
 | M2 | Identity — Google OIDC, sessions, workspaces, invites |
 | M3 | The brain loop — multi-format ingest, page lifecycle, four-arm hybrid search |
-| M4 | Enforcement + doctor — nominally, though RLS actually landed early, at M3 (D66) |
+| M4 | Enforcement + doctor — **done**. RLS itself landed early at M3 (D66); M4 closed the remaining gate (the perf/scale suite, the cross-transport rate meter, doctor's migrations-current + acl-coverage checks) and survived a seven-pass review (D93–D97) |
 | M5 | The demo web app — not started |
 | M8 | Spend/usage accounting — not started; see §5.3 |
 
@@ -412,8 +424,10 @@ prevent, and doctor asserts nothing about it.
 
 - **`doctor --update` silences only the fixture checks, not everything.** `diffFixture` writes the
   file and returns `ok: true` unconditionally, so grant/policy/column-grant/definer drift is
-  rubber-stamped. The ~55 boolean assertions still run and can still fail, and `main` still exits
-  non-zero on any failure. Don't read "green after --update" as "the run passed" — check which half.
+  rubber-stamped. The ~69 boolean assertions (up from ~55 pre-M4 — the migrations-current and
+  acl-tag-coverage checks added at M4 all live on this side) still run and can still fail, and `main`
+  still exits non-zero on any failure. Don't read "green after --update" as "the run passed" — check
+  which half.
 - ~~`doctor.ts` crashes on a partially-migrated DB~~ — **FIXED** `7ae4d3e`. The `page_sources` query
   is guarded on `to_regclass`, and checks now STREAM as each verdict is reached, so a throw costs the
   checks *after* it rather than every result already proven. The `current_grants() exists` probe was
@@ -685,9 +699,11 @@ retrieval numbers above it are stale (§6.7).
   tenant **0 rows** under `iterative_scan=off` and all 16 under `relaxed_order`. `extract/index.ts`'s semaphore can also
   over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
   waking) — reachable only if an `await` is ever introduced between them.
-- **Cross-model dissent.** Codex's token is revoked (`codex login status` reports "Logged in"; a real
-  call 401s). Three passes now, single-model. Pass 2 substituted a fresh-context adversarial agent —
-  independence of *context*, not of *model*.
+- **Cross-model dissent.** Codex's token is revoked (`codex login status` / `codex exec` both report
+  authenticated; a real call still 401s). **Four** passes now, single-model — the M4 review tried
+  again and hit the same wall. Every pass since Pass 2 has substituted a fresh-context adversarial
+  agent plus a red-team gap hunt — independence of *context*, not of *model*, and it has been enough
+  to catch real defects each time, but it is not the same guarantee.
 - **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4/M5.
 - **Out-of-diff code**, deliberately declined as re-derivation: `src/auth/{google,membership,
   normalize,blocklist,log,routes}.ts` and `src/api/{envelope,reqid,roles,tool-defs,call}.ts`
@@ -705,15 +721,18 @@ retrieval numbers above it are stale (§6.7).
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
 
-### Current — measured 2026-07-30 after M4
+### Current — measured 2026-07-30 on `master` at `0b614ef`, after the M4 merge
+
+Re-run directly on `master` after the fast-forward, not just trusted from the branch — a clean merge
+still isn't a correct one until the ladder confirms it (§1's own lesson).
 
 | Command | Result |
 |---|---|
 | `bun run typecheck` | **clean** |
-| offline suite (DB + provider env blanked) | **440 pass / 176 skip / 0 fail**, 7.1s |
-| `bun run doctor` | **73/73** |
+| offline suite (DB + provider env blanked) | **440 pass / 176 skip / 0 fail**, 6.6–7.1s |
 | `bun run migrate` (re-run) | nothing re-applied — **idempotent** |
-| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **576 pass / 17 skip / 0 fail**, 286s |
+| `bun run doctor` | **73/73** |
+| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **576 pass / 17 skip / 0 fail**, 299s — measured on `master` directly, matches the branch exactly |
 | `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **586 pass / 1 skip / 0 fail**, 323s |
 | empty-acl insert as owner, post-`0012` | **23514 check_violation** — §6.5 genuinely enforced now |
 | `select count(*) from pg_index where not indisvalid` | **0** |
