@@ -21,19 +21,29 @@ with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This 
 actually *is*, and where those three get out of sync with the code or each other.
 
 Written against `master` = **`2ac308a`**, then updated for **M4** and its review pass (see §0).
-`master` is now **`0b614ef`** — the M4 branch merged in as a **fast-forward**, so this is the same
-history the branch had, not a reconciliation; §10 was re-measured against it directly. **If the SHA
-moves again, re-derive §6 and §10 before trusting them; the rest ages more slowly.** §10 is
-timestamped observation and decays fastest.
+`master` moved to **`0b614ef`** — the M4 branch merged in as a **fast-forward** — then to
+**`72a06b6`**, a CONTEXT.md-only commit (`git show --stat` on it touches nothing else). A docs-only
+move doesn't require re-deriving §6 or §10 — the code is byte-identical to `0b614ef`, which §10 was
+already measured against — **but it's exactly the situation this file's own numbers drift in
+silently**, and a same-day pass found six: a stale master SHA (here, §0, §1 and §10), a migrations
+count in §3 that disagreed with §1's own table, a corrupted sentence in §5.4, a self-contradicting
+exemption count in §7 (D70 said both eleven and seven), a stale doctor count in §7's D24 row, and a
+§6.2 claim that `ci.yml` lives only on a branch that no longer exists separately from master. All six
+are fixed below. **If the SHA moves again *with a code diff*, re-derive §6 and §10 before trusting
+them** — that promise still stands; a docs-only move doesn't trigger it, but still warrants a pass
+like this one. §10 is timestamped observation and decays fastest regardless. (This very edit lands as
+one more commit on top of `72a06b6` — `master`'s tip will read one commit newer than that the moment
+it's saved; expected, and, like the move above, docs-only.)
 
 ---
 
 ## 0. Start here
 
 **`master` is the trunk. Branch from it; merge back into it.** Everything below describes master at
-`0b614ef` (the M4 branch, `claude/context-md-review-73f2ab`, merged 2026-07-30 as a clean
-fast-forward — 0 commits behind, so nothing to reconcile) — there is no second tree to check. Before
-starting work, confirm your branch point is master's HEAD and not an ancestor of it:
+`72a06b6` (the M4 branch, `claude/context-md-review-73f2ab`, merged 2026-07-30 as a clean
+fast-forward — 0 commits behind, so nothing to reconcile — then one further CONTEXT.md-only commit
+on top) — there is no second tree to check. Before starting work, confirm your branch point is
+master's HEAD and not an ancestor of it:
 `git merge-base master HEAD` should equal `git rev-parse master`. That single check is what the whole
 of §1 exists to prevent a repeat of.
 
@@ -85,17 +95,18 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
    M8. Those disagree, and the decision is yours.
 
-Then: the README is stale in nine ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
+Then: the README is stale in six ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
 design decision waiting on you, not an implementation task.
 
 ---
 
 ## 1. Repo state — one trunk, and what the fork cost
 
-**`master` at `0b614ef` contains everything.** All branches — the original seven plus the M4 line
-(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit) — are
-ancestors of it (`git branch --no-merged master` is empty), every worktree is clean, and there are no
-stashes. The milestones built: M0, M1, A17, M2, M3, **M4**.
+**`master` at `72a06b6` contains everything.** All branches — the original seven plus the M4 line
+(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit), plus
+one further CONTEXT.md-only commit on top — are ancestors of it (`git branch --no-merged master` is
+empty), every worktree is clean, and there are no stashes. The milestones built: M0, M1, A17, M2, M3,
+**M4**.
 
 | | |
 |---|---|
@@ -220,7 +231,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 ```
 src/             index.ts (Express app: /health + mounts) · boot.ts (deployment-shape gates)
                  config.ts (zod env schema)
-src/db/          schema.sql (immutable baseline) · migrations/0001-0011 — 9 applied; 0008 and
+src/db/          schema.sql (immutable baseline) · migrations/0001-0012 — 10 applied; 0008 and
                  0010 are checked-in reverts, suffixed .sql.disabled so the runner skips them
                  migrate.ts (runner + roles + grant matrix + definers) · doctor.ts · client.ts
 src/core/        context.ts (fail-closed OperationContext + keyring) · pack.ts
@@ -334,11 +345,22 @@ accounting exists anywhere in `src/` — D18 puts caps at M5, which is the entry
 
 ### 5.4 Documentation
 
-`README.md` is stale in nine ways, not the three `HANDOVER.md` lists: doctor is 62 not 46 **on the
-**65**, not 46; Status omits M3 entirely; `hybrid.ts` is described as
-"keyword + vector" when it's four arms; Layout omits `pack.ts`, `vector.ts` and five ingest modules;
-the test enumeration misses ~20 files; `README:92` still says "no remote machine credential until
-M3" — M3 shipped and there still is none.
+`README.md` is stale in six ways, not the three `HANDOVER.md` lists — down from a claimed nine at
+the last pass. One of those nine was a doctor-count complaint, and that count (**73**, `README.md:46`
+and `:144`) now happens to **match** current reality (§1, §10); it's re-verified here, not carried
+forward on trust — check it again next time rather than assuming it stays lucky. What's still wrong:
+
+- **Status omits M3 and M4 entirely** (`README.md:9`) — it lists only M0, M1, A17, M2.
+- **`hybrid.ts` is described as "keyword + vector"** (`README.md:135`) when it's **four** arms — the
+  file's own comment says so (`hybrid.ts:71`: "FOUR arms, not three").
+- **Layout omits `pack.ts`** (`src/core/`, `README.md:125`) **and `vector.ts`** (`src/ai/`,
+  `README.md:132`) — both listed in this file's own §3.
+- **Layout omits six ingest modules** (`README.md:133`, which names only `chunk.ts` and `import.ts`):
+  `blocks.ts`, `embed.ts`, `extract/`, `file.ts`, `lifecycle.ts`, `sanity.ts`.
+- **The test enumeration misses 24 of 47 test files** (`README.md:148-151`), including
+  `perf-recall`, `boot`, `migrate`, `lifecycle`, `invites`, and every M4-era addition.
+- **`README:92`** still says "no remote machine credential until M3" — M3 **and now M4** have
+  shipped and there still is none.
 
 `docs/plan.md` poses eleven gate decisions (UC1–UC6, T1–T5) — **but its own "Post-review resolution
 (2026-07-23)" section already answers all of them except T4** (whose text notes the ZDR default was
@@ -385,11 +407,12 @@ so different branches do **not** serialize against each other. Combined with che
 (`migrate.ts:607-612`), a WIP migration applied from one branch and then edited bricks every other
 branch's CI permanently.
 
-**Re-graded from pass 1.** `ci.yml` exists **only on M3** (absent from master's tree) and the repo
-has **0 git remotes**. Nothing can trigger it today. This is not "CI mutates a shared DB on every
-push" — it is a trap that arms itself, unreviewed, the moment someone runs `git remote add` and
-pushes. That is a narrower claim but a more urgent one: it fires on an action nobody will think of
-as risky.
+**Re-graded from pass 1.** `ci.yml` was M3-only when this was first written; **master now contains
+M3** (§1), so `ci.yml` **exists on `master`** — there is no second tree left for it to be absent
+from. What still holds: the repo has **0 git remotes**, so nothing can trigger the workflow today.
+This is not "CI mutates a shared DB on every push" — it is a trap that arms itself, unreviewed, the
+moment someone runs `git remote add` and pushes. That is a narrower claim but a more urgent one: it
+fires on an action nobody will think of as risky.
 
 ### 6.3 [moderate] The upload route requires no CSRF token — because none exists, by design
 
@@ -586,8 +609,8 @@ later entry reversed, and most carry no forward pointer.
 | **D5** (and **D27**, identical claim) | `acl && grants` in engine queries at M3, RLS refinement at M4 | **Both halves overturned by D66.** Landed in RLS a milestone early (migration `0007`); engine-side enforcement *explicitly refused* — no `acl` appears anywhere in `src/search/`. Reading either leads you to add an ACL predicate to `hybridSearch`, which D66 argues is actively harmful. Neither has a forward pointer. |
 | **D0.1** | "at M2 nothing reads the `acl`"; private is aspirational until "M4" | Closed by D66 (`0007_acl_rls.sql`) at **M3**, 546 lines later. D0.1's only forward pointer says "enforced at M4" — the wrong milestone, and names no entry. A reader following it looks under M4 and finds nothing. |
 | **D29** | dev-auth is gated on `NODE_ENV != production AND DEV_AUTH=1` (a **blocklist**) | **Reversed by D33**: the gate is an *allowlist* — `NODE_ENV ∈ {development, test}` (`dev-auth.ts:16`, `config.ts:102`). D33 calls this "the sole barrier to cross-tenant reads in M1." Neither entry points at the other. See §6.1 for how this same gate was broken and re-fixed again, differently, on master. |
-| **D24** | doctor is "46 checks" | **72** today, and it has been 46, 62, 65 and 72 within a fortnight. D24 was already corrected once in place and went stale again immediately. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
-| **D70** | "three `// rls-exempt:` exemptions exist" | **Eleven** now, and climbing (three when D70 was written, seven at the pass-2 review, nine after `7ae4d3e`, eleven after M4 added the acl census and the scope/acl count). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
+| **D24** | doctor is "46 checks" | **73** today, and it has been 46, 62, 65, 72 and 73 within a fortnight. D24 was already corrected once in place and went stale again immediately — as did this very row, which still said 72 after the count moved to 73. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
+| **D70** | "three `// rls-exempt:` exemptions exist" | **Thirteen** now, and still climbing (three when D70 was written, seven at the pass-2 review, nine after `7ae4d3e`, eleven after M4's first review pass `0b614ef` added the acl census and the scope/acl count, **thirteen** after `cc1ea50` added the two checks §0 already names — verified by blaming each of the 13 current markers to its introducing commit). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it has more than quadrupled since D70 was written. |
 | **D51(c)** | three A17 perf items deferred: no GIN index, `hnsw.iterative_scan` never set, chunk inserts one-per-round-trip | **All three shipped, and one was misclassified.** `0006_fts_index.sql` adds the GIN index; `client.ts:215` sets `hnsw.iterative_scan` — **D58 reclassifies it as a tenancy control, not a latency knob** (§2); D65 batched the chunk inserts. D51 points forward to nothing. |
 | **D25** | column-grant protects `google_sub` **and** `email` | `migrate.ts` grants `cb_auth` `update(name, email, email_normalized, updated_at)`. **Email is rewritable by the login lane** — only `google_sub` is protected, via `adopt_principal`'s `IS NULL` guard. |
 | **D14** | pgvector ≥0.8 "gates the M0 docker image" | D22 replaced Docker with Supabase entirely. The floor is real; the docker clause is residue. |
@@ -595,9 +618,11 @@ later entry reversed, and most carry no forward pointer.
 | **D23** | use `-- migrate:no-transaction` for `CREATE INDEX CONCURRENTLY` | Stood as guidance for three milestones while **never having worked** — D88 found it and **fixed it** (`splitStatements`, one statement per round trip). `0011` is the first and only file to use the pragma; it works now. |
 | **D34** | Design specified refresh-token rotation returning "the already-rotated pair" in a grace window | **Cut as unimplementable** — only SHA-256 hashes are stored, so the raw tokens don't exist to return. `sessions.refresh_hash` / `refresh_expires_at` remain NULL. Don't assume rotation exists because the columns do; it returns at M5. |
 
-**Pass 2 additions.** D70's "three exemptions" is confirmed wrong — there are **seven**
-`// rls-exempt:` markers (`migrate.ts:315`; `doctor.ts:194,260,273,373`; `novabyte-eval.ts:136`;
-`measure-a17.ts:46`). And **D68's "Two consequences" enumeration is incomplete**: a third exists and
+**Pass 2 additions.** D70's "three exemptions" is confirmed wrong — **seven** markers existed at
+that review pass (now **thirteen**; see the D70 row above for the current count, the commits that
+added each batch, and why this paragraph no longer repeats specific line numbers — they drifted as
+the files changed, and a second stale count sitting next to the first one is exactly the failure
+mode being fixed here). And **D68's "Two consequences" enumeration is incomplete**: a third exists and
 the same session had to fix it — `0007`'s partial slug indexes are unusable for a scope-less slug
 lookup, which is why `0011` had to add `idx_pages_ws_slug` back (`doctor.ts:249-251`: "Both are read
 paths whose index went missing silently"). Also minor drift: D70's "one of ten live suites" is now
@@ -721,7 +746,9 @@ retrieval numbers above it are stale (§6.7).
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
 
-### Current — measured 2026-07-30 on `master` at `0b614ef`, after the M4 merge
+### Current — measured 2026-07-30 on `master` at `0b614ef`, after the M4 merge (code-identical to
+the current tip `72a06b6` — the one commit between them touched only `CONTEXT.md`, so nothing below
+needs re-running on its account)
 
 Re-run directly on `master` after the fast-forward, not just trusted from the branch — a clean merge
 still isn't a correct one until the ladder confirms it (§1's own lesson).

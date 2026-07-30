@@ -18,7 +18,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # NEVER cancel a master run. The `live` job applies migrations, and 0011 uses
+  # `-- migrate:no-transaction` for CREATE INDEX CONCURRENTLY — cancelling that mid-build leaves an
+  # INVALID index that `IF NOT EXISTS` then skips forever (HANDOVER correction 3). Feature branches
+  # only run `offline`, which is pure compute, so cancelling those is free.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   offline:
@@ -40,9 +44,32 @@ jobs:
   live:
     name: live isolation suite (leak canary)
     runs-on: ubuntu-latest
-    # Fork PRs cannot read secrets, so the live job would skip green and defeat the whole point.
-    # Gate it on the secret being present rather than letting it report a meaningless pass.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # MASTER ONLY, and this gate is the whole reason this file was edited before a remote existed.
+    #
+    # The step below runs `bun run migrate` with DATABASE_ADMIN_URL — owner credentials — against the
+    # ONE Supabase project that development, the eval harness and CI all share. With
+    # `on: push: branches: ['**']` and a per-ref concurrency group, N branches migrate that database
+    # in parallel, unserialized. Combined with checksum immutability (migrate.ts), a WIP migration
+    # applied from one branch and then edited bricks every other branch's CI permanently.
+    #
+    # This was inert only because the repo had zero git remotes, which made `git remote add` — the
+    # correct response to "all my work is on one laptop" — the action that armed it.
+    #
+    # Cost of this gate, stated plainly rather than hidden: the leak canary no longer runs on
+    # branches or PRs, only on merge to master. D16 calls the canary sacred, so that is a real
+    # reduction, not a free win. The offline job still runs everywhere and still carries
+    # live-gate.test.ts and scoped-tx-guard.test.ts, which catch a suite opting out of the canary the
+    # day it is written. The actual fix is a SECOND database for CI, at which point restore
+    # `branches: ['**']` here; CONTEXT.md §9 already lists "is the shared project safe to keep
+    # sharing" as uncovered.
+    #
+    # workflow_dispatch stays so the canary can be run on demand against any ref.
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch' }}
+    # One shared database means one live run at a time, fleet-wide — NOT per-ref like the workflow
+    # default above, or a master push and a manual dispatch could migrate concurrently.
+    concurrency:
+      group: ${{ github.workflow }}-live-shared-db
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
