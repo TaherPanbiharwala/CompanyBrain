@@ -18,10 +18,14 @@ import { join } from 'node:path';
 
 const TEST_DIR = new URL('.', import.meta.url).pathname;
 
-/** Suites that MUST exist and MUST be live-gated. Deleting the file is a way to disable a test that
- *  a content scan cannot see, and the leak canary is the one file where that matters (D16 —
- *  sacred, runs in CI forever). Neutering it trips the scan below; deleting it trips this. */
-const REQUIRED_LIVE_SUITES = ['leak-canary.test.ts'];
+/** Suites that MUST exist as FILES. Deleting the file is a way to disable a test that a content scan
+ *  cannot see, and the leak canary is the one file where that matters (D16 — sacred, runs in CI
+ *  forever). Neutering it trips the scan below; deleting it trips this.
+ *
+ *  Distinct from REQUIRED_LIVE_SUITES further down, which pins gate NAMES. Both arrived in this file
+ *  from different branches and they catch different things: a filename survives a gate rename, a gate
+ *  name survives a file rename. Keeping only one leaves the other hole open. */
+const REQUIRED_LIVE_SUITE_FILES = ['leak-canary.test.ts'];
 
 /** Does this suite touch the database?
  *
@@ -112,12 +116,12 @@ test('every suite gated on a live database routes through liveOrFail', () => {
       `instead of FAIL under CB_REQUIRE_LIVE_TESTS=1: ${offenders.join(', ')}`,
   ).toEqual([]);
 
-  const missing = REQUIRED_LIVE_SUITES.filter((n) => !present.includes(n));
+  const missingFiles = REQUIRED_LIVE_SUITE_FILES.filter((n) => !present.includes(n));
   expect(
-    missing,
-    `these suites are required to exist and are gone: ${missing.join(', ')}. ` +
+    missingFiles,
+    `these suites are required to exist and are gone: ${missingFiles.join(', ')}. ` +
       `The leak canary is sacred (D16) — if it is genuinely being renamed, update ` +
-      `REQUIRED_LIVE_SUITES in this file as part of the same change.`,
+      `REQUIRED_LIVE_SUITE_FILES in this file as part of the same change.`,
   ).toEqual([]);
 });
 
@@ -142,7 +146,13 @@ const REQUIRED_LIVE_SUITES = [
   'api',
   'hybrid',
   'ingest',
+  // The three below are M3-era and were added when this list merged into master. The reverse check
+  // at the bottom of this test is what caught their absence — the list was written against a tree
+  // where they did not exist yet, and would otherwise have quietly pinned 9 of 12.
+  'ingest-file',
   'invites',
+  'leak-canary',
+  'lifecycle',
   'm2-auth',
   'mcp',
   'rls-smoke',
