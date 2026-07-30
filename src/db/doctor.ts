@@ -27,6 +27,17 @@ interface Check {
   detail?: string;
 }
 
+/** Print one verdict the moment it is reached.
+ *
+ *  Shared by the fixture diffs and by every boolean check, because buffering was the actual defect:
+ *  results were collected and rendered only after the last one, so one throw mid-run (an unguarded
+ *  query against a table a migration had not created yet) discarded everything already proven and
+ *  left the operator with a bare SQLSTATE. */
+function renderCheck(c: Check): void {
+  if (c.ok) console.log(`  ok   ${c.name}`);
+  else console.log(`  FAIL ${c.name}${c.detail ? `\n       ${c.detail}` : ''}`);
+}
+
 // ── Snapshots ─────────────────────────────────────────────────────────────
 // Each returns a stable, ordered, JSON-serializable shape.
 
@@ -98,7 +109,13 @@ async function snapshotPolicies(sql: postgres.Sql) {
 
 async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   const checks: Check[] = [];
-  const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
+  // Records AND prints. See renderCheck — a verdict that is only buffered is a verdict a later throw
+  // can erase.
+  const add = (name: string, ok: boolean, detail?: string): void => {
+    const c: Check = { name, ok, detail };
+    checks.push(c);
+    renderCheck(c);
+  };
 
   // The cells that carry the tenancy boundary. Each maps to a specific defect found in review.
   const p = (
@@ -158,35 +175,59 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // a total outage of ingest and ask — and doctor, which connects as the owner, would otherwise
   // report green straight through it. The negative check (no PUBLIC) without the positive check
   // (cb_app CAN) is exactly the one-sided assertion that lets that ship.
-  const cg = (
-    await sql<Record<string, boolean | string | null>[]>`select
-      to_regprocedure('public.current_grants()') is not null                     as exists,
-      has_function_privilege('public','public.current_grants()','EXECUTE')       as pub_exec,
-      has_function_privilege('cb_app','public.current_grants()','EXECUTE')       as app_exec,
-      has_function_privilege('cb_auth','public.current_grants()','EXECUTE')      as auth_exec,
-      (select p.provolatile from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname='public' and p.proname='current_grants')                 as volatility,
-      (select p.prosecdef from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname='public' and p.proname='current_grants')                 as secdef,
-      (select md5(p.prosrc) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname='public' and p.proname='current_grants')                 as body_md5`
-  )[0]!;
+  // The existence probe is its OWN query, deliberately. It used to sit in the same SELECT as the
+  // has_function_privilege() calls below — and those RAISE undefined_function when the function is
+  // absent, so the query threw before `exists` could be read. The check whose entire purpose is to
+  // report "0007 was not applied" could never report it: the operator got a raw postgres error
+  // instead. Same shape as the guards this file exists to catch.
+  const cgExists =
+    (await sql<{ exists: boolean }[]>`select to_regprocedure('public.current_grants()') is not null as exists`)[0]!
+      .exists === true;
+  add('current_grants() exists (migration 0007 applied)', cgExists,
+    cgExists ? '' : 'Migration 0007 has not been applied to this database. Run `bun run migrate`.');
 
-  add('current_grants() exists (migration 0007 applied)', cg.exists === true);
-  add('cb_app CAN EXECUTE current_grants() (every content query evaluates it)', cg.app_exec === true,
-    cg.app_exec === true ? '' : 'Without this, EVERY content read and write fails 42501. Re-run `bun run migrate`.');
-  add('PUBLIC cannot EXECUTE current_grants()', cg.pub_exec === false);
-  add('cb_auth cannot EXECUTE current_grants() (login lane stays off the content plane)', cg.auth_exec === false);
-  // 's' = STABLE. IMMUTABLE ('i') would let the planner constant-fold a zero-argument function at
-  // PLAN time; client.ts uses `prepare: !isPooler`, so on a direct connection a cached generic plan
-  // would carry one principal's grants into another principal's query.
-  add("current_grants() is STABLE, not IMMUTABLE (an immutable one would be constant-folded into a cached plan)",
-    cg.volatility === 's', `provolatile=${String(cg.volatility)}`);
-  add('current_grants() is NOT SECURITY DEFINER', cg.secdef === false);
-  // snapshotDefiners only covers prosecdef functions, so this non-definer function appears in NO
-  // fixture — pin its body here or a rewrite of the predicate is invisible to every check.
-  add('current_grants() body is unchanged', cg.body_md5 === '2ac149bb8dd7732a6a2af21165709efa',
-    `md5(prosrc)=${String(cg.body_md5)} — if you changed the function deliberately, update this hash and review the diff as a security change`);
+  // Each dependent check is still REPORTED when the function is missing, as a failure naming the
+  // cause — not skipped, and not allowed to throw. A partially-migrated database is exactly when an
+  // operator needs the most output, so the run continues past this block either way.
+  const CG_DEPENDENT = [
+    'cb_app CAN EXECUTE current_grants() (every content query evaluates it)',
+    'PUBLIC cannot EXECUTE current_grants()',
+    'cb_auth cannot EXECUTE current_grants() (login lane stays off the content plane)',
+    'current_grants() is STABLE, not IMMUTABLE (an immutable one would be constant-folded into a cached plan)',
+    'current_grants() is NOT SECURITY DEFINER',
+    'current_grants() body is unchanged',
+  ];
+
+  if (!cgExists) {
+    for (const name of CG_DEPENDENT) add(name, false, 'current_grants() does not exist — see the check above.');
+  } else {
+    const cg = (
+      await sql<Record<string, boolean | string | null>[]>`select
+        has_function_privilege('public','public.current_grants()','EXECUTE')       as pub_exec,
+        has_function_privilege('cb_app','public.current_grants()','EXECUTE')       as app_exec,
+        has_function_privilege('cb_auth','public.current_grants()','EXECUTE')      as auth_exec,
+        (select p.provolatile from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname='public' and p.proname='current_grants')                 as volatility,
+        (select p.prosecdef from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname='public' and p.proname='current_grants')                 as secdef,
+        (select md5(p.prosrc) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname='public' and p.proname='current_grants')                 as body_md5`
+    )[0]!;
+
+    add(CG_DEPENDENT[0]!, cg.app_exec === true,
+      cg.app_exec === true ? '' : 'Without this, EVERY content read and write fails 42501. Re-run `bun run migrate`.');
+    add(CG_DEPENDENT[1]!, cg.pub_exec === false);
+    add(CG_DEPENDENT[2]!, cg.auth_exec === false);
+    // 's' = STABLE. IMMUTABLE ('i') would let the planner constant-fold a zero-argument function at
+    // PLAN time; client.ts uses `prepare: !isPooler`, so on a direct connection a cached generic plan
+    // would carry one principal's grants into another principal's query.
+    add(CG_DEPENDENT[3]!, cg.volatility === 's', `provolatile=${String(cg.volatility)}`);
+    add(CG_DEPENDENT[4]!, cg.secdef === false);
+    // snapshotDefiners only covers prosecdef functions, so this non-definer function appears in NO
+    // fixture — pin its body here or a rewrite of the predicate is invisible to every check.
+    add(CG_DEPENDENT[5]!, cg.body_md5 === '2ac149bb8dd7732a6a2af21165709efa',
+      `md5(prosrc)=${String(cg.body_md5)} — if you changed the function deliberately, update this hash and review the diff as a security change`);
+  }
 
   // The policies actually carry the clause. The fixture diff would catch a change too, but this
   // names the specific fail-open shape so the failure message is actionable, and doctor runs as the
@@ -270,12 +311,63 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // becomes INVISIBLE (a missing search hit); a source row that drifts toward a wider acl stays
   // visible after its page was made private — so the file a user believed they had locked down is
   // still downloadable. Same query shape, and worth its own line because the consequence differs.
-  // rls-exempt: same reason as the chunk drift count above — cross-tenant, owner pool, counts only.
-  const srcDrift = await sql<{ n: number }[]>`
-    select count(*)::int as n from page_sources s join pages p on p.id = s.page_id
-    where s.acl is distinct from p.acl`;
-  add('no page_sources acl has drifted from its page acl', (srcDrift[0]?.n ?? -1) === 0,
-    `${srcDrift[0]?.n ?? '?'} drifted source row(s) — a widened one keeps the original file readable after its page was made private`);
+  //
+  // Guarded on the table's existence. Unguarded, this threw a raw 42P01 on any database below 0009
+  // and — because results were accumulated and only rendered at the end — the operator saw NOTHING,
+  // not even the checks that had already passed. The current_grants() checks above were already
+  // written defensively; this one was not, which is the whole difference between "you have not
+  // migrated" and an unexplained postgres error code.
+  // rls-exempt: catalog probe on the owner pool — asks whether a table exists, reads no rows.
+  const hasPageSources =
+    (await sql<{ present: boolean }[]>`select to_regclass('public.page_sources') is not null as present`)[0]!.present;
+  if (!hasPageSources) {
+    add('no page_sources acl has drifted from its page acl', false,
+      'page_sources does not exist — migration 0009 has not been applied. Run `bun run migrate`.');
+  } else {
+    // rls-exempt: same reason as the chunk drift count above — cross-tenant, owner pool, counts only.
+    const srcDrift = await sql<{ n: number }[]>`
+      select count(*)::int as n from page_sources s join pages p on p.id = s.page_id
+      where s.acl is distinct from p.acl`;
+    add('no page_sources acl has drifted from its page acl', (srcDrift[0]?.n ?? -1) === 0,
+      `${srcDrift[0]?.n ?? '?'} drifted source row(s) — a widened one keeps the original file readable after its page was made private`);
+  }
+
+  // Index VALIDITY, which no other check here can see. All five index assertions below read
+  // pg_indexes, whose columns are schemaname/tablename/indexname/tablespace/indexdef — there is no
+  // validity column, so an INVALID index left by a cancelled CREATE INDEX CONCURRENTLY renders
+  // there identically to a healthy one and passes both the name and the indexdef checks. It is
+  // never used by the planner and still maintained on every write: strictly worse than the dead
+  // index 0011 was written to remove. Remedy is one command, so detect and say so rather than
+  // repair from a migration:  REINDEX INDEX CONCURRENTLY <name>;
+  // rls-exempt: catalog read on the owner pool, no tenant rows.
+  const invalid = await sql<{ names: string | null }[]>`
+    select string_agg(c.relname, ', ' order by c.relname) as names
+    from pg_index i
+    join pg_class c on c.oid = i.indexrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and not i.indisvalid`;
+  const invalidNames = invalid[0]?.names ?? null;
+  add('no INVALID indexes (a cancelled CREATE INDEX CONCURRENTLY leaves one)', invalidNames === null,
+    invalidNames === null ? '' : `INVALID: ${invalidNames} — the planner ignores these but every write still maintains them. Fix with: REINDEX INDEX CONCURRENTLY <name>;`);
+
+  // The acl non-empty CHECKs, by DEFINITION and not just by name. Nothing in this file queried
+  // pg_constraint, which is exactly how four constraints that enforced nothing survived a 62-check
+  // posture verifier: `array_length('{}',1)` is NULL and a CHECK passes on NULL, so `acl = '{}'` —
+  // a row permanently invisible to every principal including its author — was accepted for the
+  // whole life of 0007. Asserting the definition, not the name, is the same lesson the index checks
+  // above learned when a same-named btree shipped where a GIN index was needed.
+  const aclChecks = await sql<{ conname: string; def: string }[]>`
+    select conname, pg_get_constraintdef(oid) as def
+    from pg_constraint where conname like '%\_acl\_nonempty' order by conname`;
+  const EXPECTED_ACL_CHECKS = ['chunks_acl_nonempty', 'page_sources_acl_nonempty', 'pages_acl_nonempty', 'quarantine_acl_nonempty'];
+  const foundNames = aclChecks.map((r) => r.conname);
+  add('all four acl non-empty CHECK constraints are present',
+    EXPECTED_ACL_CHECKS.every((n) => foundNames.includes(n)),
+    `found: ${foundNames.join(', ') || 'none'} — expected ${EXPECTED_ACL_CHECKS.join(', ')}`);
+  const stillArrayLength = aclChecks.filter((r) => !r.def.includes('cardinality')).map((r) => r.conname);
+  add('acl non-empty CHECKs use cardinality(), not array_length() (migration 0012)',
+    aclChecks.length > 0 && stillArrayLength.length === 0,
+    stillArrayLength.length ? `${stillArrayLength.join(', ')} still use array_length, which returns NULL for '{}' — a CHECK is SATISFIED when NULL, so these enforce nothing` : '');
 
   // Roles: NOBYPASSRLS, and no membership edge (RLS applicability follows role membership, so an
   // edge in either direction would hand cb_app the cb_auth USING(true) policies).
@@ -419,17 +511,23 @@ async function main(): Promise<void> {
   const sql = adminSql();
   const checks: Check[] = [];
 
-  checks.push(diffFixture('expected-definers', await snapshotDefiners(sql), update));
-  checks.push(diffFixture('expected-grants', await snapshotTableGrants(sql), update));
-  checks.push(diffFixture('expected-column-grants', await snapshotColumnGrants(sql), update));
-  checks.push(diffFixture('expected-policies', await snapshotPolicies(sql), update));
+  // STREAMED, not accumulated. Every check used to be buffered and rendered only after the last one,
+  // so a single throw mid-run discarded every result that had already succeeded — the operator got
+  // one raw postgres error and no idea which of the 60-odd checks had passed before it. Printing as
+  // each verdict is reached means a crash costs you the checks AFTER it, not the ones before.
+  const record = (c: Check): void => {
+    checks.push(c);
+    renderCheck(c);
+  };
+
+  record(diffFixture('expected-definers', await snapshotDefiners(sql), update));
+  record(diffFixture('expected-grants', await snapshotTableGrants(sql), update));
+  record(diffFixture('expected-column-grants', await snapshotColumnGrants(sql), update));
+  record(diffFixture('expected-policies', await snapshotPolicies(sql), update));
+  // booleanChecks prints its own as it goes (see `add`), so collect without re-printing.
   checks.push(...(await booleanChecks(sql)));
 
   const failed = checks.filter((c) => !c.ok);
-  for (const c of checks) {
-    if (c.ok) console.log(`  ok   ${c.name}`);
-    else console.log(`  FAIL ${c.name}${c.detail ? `\n       ${c.detail}` : ''}`);
-  }
   console.log(`\n${checks.length - failed.length}/${checks.length} checks passed`);
 
   if (update) {
