@@ -54,6 +54,15 @@ const EnvSchema = z.object({
   TRUST_PROXY: z.string().default(''),
   // CI sets 1 so the live-DB security tests FAIL instead of silently skipping.
   CB_REQUIRE_LIVE_TESTS: z.coerce.number().default(0),
+  // Opt-in for test/perf-recall.test.ts: filtered-HNSW recall at corpus scale, GUC bleed on a max=1
+  // pool, and pool headroom under concurrent generations. SEPARATE from CB_REQUIRE_LIVE_TESTS on
+  // purpose (D93): those three seed a few hundred chunks, mutate DB_POOL_MAX, and are the only
+  // timing-dependent tests in the repo. test/leak-canary.test.ts:7 states the reason the split
+  // exists — welding the flakiest tests to the flag CI sets, and that the sacred canary depends on,
+  // is how the sacred flag gets turned off. 0/unset = skip, and that skip is honest because nobody
+  // asked for the suite. Once it IS asked for, perfOrFail applies liveOrFail's no-silent-skip rule
+  // in full.
+  CB_RUN_PERF_TESTS: z.coerce.number().default(0),
 
   OPENROUTER_API_KEY: z.string().default(''),
   OPENAI_API_KEY: z.string().default(''),

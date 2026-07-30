@@ -27,6 +27,14 @@ const TEST_DIR = new URL('.', import.meta.url).pathname;
  *  name survives a file rename. Keeping only one leaves the other hole open. */
 const REQUIRED_LIVE_SUITE_FILES = ['leak-canary.test.ts'];
 
+/** The ONLY suites permitted to gate on `perfOrFail` instead of `liveOrFail` (D93).
+ *
+ *  An ALLOWLIST, and checked in BOTH directions below. `perfOrFail` is a second escape hatch by
+ *  construction — it returns false whenever CB_RUN_PERF_TESTS is unset — so it is exactly the kind of
+ *  helper that, left ungoverned, becomes the way a suite skips green under CB_REQUIRE_LIVE_TESTS=1.
+ *  Widening this list must be a deliberate act, never a side effect of someone adding a slow test. */
+const PERF_SUITE_FILES = ['perf-recall.test.ts'];
+
 /** Does this suite touch the database?
  *
  *  THREE signals, not one. The first version looked only for a literal `process.env.DATABASE_*` in
@@ -48,6 +56,7 @@ function touchesDb(src: string): boolean {
 
 test('every suite gated on a live database routes through liveOrFail', () => {
   const offenders: string[] = [];
+  const perfMisuse: string[] = [];
   const inspected: string[] = [];
   const present = readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.ts'));
 
@@ -57,7 +66,18 @@ test('every suite gated on a live database routes through liveOrFail', () => {
     inspected.push(name);
 
     // …and it must derive its gate from the shared helper, not from a hand-rolled boolean.
-    if (!src.includes('liveOrFail')) offenders.push(name);
+    // perfOrFail counts as gated (D93), but only for the suite entitled to use it — see next.
+    if (!src.includes('liveOrFail') && !src.includes('perfOrFail')) offenders.push(name);
+
+    // perfOrFail outside PERF_SUITE_FILES is the offender list's blind spot. It satisfies the check
+    // above (a shared helper IS being used) while returning false whenever CB_RUN_PERF_TESTS is
+    // unset — so a suite that adopted it would skip green under CB_REQUIRE_LIVE_TESTS=1, which is
+    // the same hole as the `&& HAVE` shape below wearing a helper's name. The live-gate exclusion
+    // matches the precedent at the name collector further down: this file's own perfOrFail
+    // references are fixtures and prose, not a suite gate.
+    if (name !== 'live-gate.test.ts' && src.includes('perfOrFail') && !PERF_SUITE_FILES.includes(name)) {
+      perfMisuse.push(name);
+    }
   }
 
   // The floor is the anti-vacuity clause, and it is the whole reason the old version passed while
@@ -88,18 +108,25 @@ test('every suite gated on a live database routes through liveOrFail', () => {
     const src = readFileSync(join(TEST_DIR, name), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^[ \t]*\/\/.*$/gm, '');
-    for (let at = src.indexOf('liveOrFail('); at !== -1; at = src.indexOf('liveOrFail(', at + 1)) {
-      let depth = 0;
-      let i = at + 'liveOrFail'.length;
-      for (; i < src.length; i++) {
-        if (src[i] === '(') depth++;
-        else if (src[i] === ')') {
-          depth--;
-          if (depth === 0) break;
+    // BOTH gate helpers (D93). perfOrFail carries the identical hazard — `perfOrFail(n, x) && HAVE`
+    // keeps the call, weakens its result, and restores the silent skip — and it is worse there,
+    // because that suite's whole justification is that it may skip when unrequested, so a weakened
+    // gate reads as intentional. `fn.length - 1` lands i on the '(' already inside the search string,
+    // exactly where the single-name version put it, so `depth` still starts from that paren.
+    for (const fn of ['liveOrFail(', 'perfOrFail(']) {
+      for (let at = src.indexOf(fn); at !== -1; at = src.indexOf(fn, at + 1)) {
+        let depth = 0;
+        let i = at + fn.length - 1;
+        for (; i < src.length; i++) {
+          if (src[i] === '(') depth++;
+          else if (src[i] === ')') {
+            depth--;
+            if (depth === 0) break;
+          }
         }
+        // What follows the CALL, not what is inside it.
+        if (/^\s*(?:&&|\|\|)/.test(src.slice(i + 1))) return true;
       }
-      // What follows the CALL, not what is inside it.
-      if (/^\s*(?:&&|\|\|)/.test(src.slice(i + 1))) return true;
     }
     return false;
   });
@@ -116,12 +143,34 @@ test('every suite gated on a live database routes through liveOrFail', () => {
       `instead of FAIL under CB_REQUIRE_LIVE_TESTS=1: ${offenders.join(', ')}`,
   ).toEqual([]);
 
+  expect(
+    perfMisuse,
+    `these suites gate on perfOrFail() but are not in PERF_SUITE_FILES: ${perfMisuse.join(', ')}. ` +
+      `perfOrFail returns false whenever CB_RUN_PERF_TESTS is unset, so adopting it outside the perf ` +
+      `suite is a way to skip GREEN under CB_REQUIRE_LIVE_TESTS=1. Use liveOrFail, or add the file to ` +
+      `PERF_SUITE_FILES deliberately.`,
+  ).toEqual([]);
+
   const missingFiles = REQUIRED_LIVE_SUITE_FILES.filter((n) => !present.includes(n));
   expect(
     missingFiles,
     `these suites are required to exist and are gone: ${missingFiles.join(', ')}. ` +
       `The leak canary is sacred (D16) — if it is genuinely being renamed, update ` +
       `REQUIRED_LIVE_SUITE_FILES in this file as part of the same change.`,
+  ).toEqual([]);
+
+  // The other direction on PERF_SUITE_FILES. Without it the allowlist only ever RESTRICTS, and
+  // deleting test/perf-recall.test.ts would silently drop three properties nothing else covers —
+  // the same asymmetry the reverse check on REQUIRED_LIVE_SUITES exists to close.
+  const perfGone = PERF_SUITE_FILES.filter(
+    (n) => !present.includes(n) || !readFileSync(join(TEST_DIR, n), 'utf8').includes('perfOrFail'),
+  );
+  expect(
+    perfGone,
+    `these perf suites are required to exist AND to gate on perfOrFail, and do not: ${perfGone.join(', ')}. ` +
+      `They hold the only coverage of filtered-HNSW recall at scale, GUC bleed across a pooled ` +
+      `connection, and pool headroom (test/leak-canary.test.ts:5-7). If one is genuinely being ` +
+      `renamed or retired, change PERF_SUITE_FILES in the same commit.`,
   ).toEqual([]);
 });
 
@@ -159,6 +208,14 @@ const REQUIRED_LIVE_SUITES = [
   'scope-acl',
 ] as const;
 
+/** The perf suites that must EXIST, keyed by the name each one passes to perfOrFail() (D93).
+ *
+ *  A SEPARATE list from REQUIRED_LIVE_SUITES for a mechanical reason, not a stylistic one: that
+ *  list's collector is /liveOrFail\(\s*'([^']+)'/g, which cannot match perfOrFail('perf-recall'.
+ *  Putting 'perf-recall' there would make its forward check fail permanently — the list would be
+ *  demanding a liveOrFail gate that, by design, will never exist. Same guarantee, own collector. */
+const REQUIRED_PERF_SUITES = ['perf-recall'] as const;
+
 test('every required live suite still declares a liveOrFail gate', () => {
   const found = new Set<string>();
   for (const name of readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.ts'))) {
@@ -186,6 +243,61 @@ test('every required live suite still declares a liveOrFail gate', () => {
     `these suites call liveOrFail() but are not in REQUIRED_LIVE_SUITES: ${unregistered.join(', ')}. ` +
       `Add them, so that deleting one later fails this test instead of silently reducing coverage.`,
   ).toEqual([]);
+});
+
+test('every required perf suite still declares a perfOrFail gate', () => {
+  const found = new Set<string>();
+  for (const name of readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.ts'))) {
+    if (name === 'live-gate.test.ts') continue; // this file's own perfOrFail('probe') calls are fixtures
+    const src = readFileSync(join(TEST_DIR, name), 'utf8');
+    for (const m of src.matchAll(/perfOrFail\(\s*'([^']+)'/g)) found.add(m[1]!);
+  }
+
+  const missing = REQUIRED_PERF_SUITES.filter((s) => !found.has(s));
+  expect(
+    missing,
+    `these perf suites no longer declare a perfOrFail() gate anywhere in test/: ${missing.join(', ')}. ` +
+      `Either the suite was deleted — restore it, or remove it from REQUIRED_PERF_SUITES deliberately ` +
+      `— or its gate name changed and this list needs updating.`,
+  ).toEqual([]);
+
+  const unregistered = [...found].filter((s) => !(REQUIRED_PERF_SUITES as readonly string[]).includes(s));
+  expect(
+    unregistered,
+    `these suites call perfOrFail() but are not in REQUIRED_PERF_SUITES: ${unregistered.join(', ')}. ` +
+      `Add them, so deleting one later fails this test instead of silently reducing coverage.`,
+  ).toEqual([]);
+});
+
+test('perfOrFail is independent of CB_REQUIRE_LIVE_TESTS — the whole point of the split', async () => {
+  const { perfOrFail } = await import('./helpers/live.ts');
+  const { config } = await import('../src/config.ts');
+  const c = config as { CB_REQUIRE_LIVE_TESTS: number; CB_RUN_PERF_TESTS: number };
+  const [origLive, origPerf] = [c.CB_REQUIRE_LIVE_TESTS, c.CB_RUN_PERF_TESTS];
+
+  try {
+    // THE assertion this test exists for. CI sets CB_REQUIRE_LIVE_TESTS=1; the perf suite must still
+    // skip, silently, both when the environment is missing AND when it is fully ready. Nobody asked
+    // for it, so running it would be the surprise and throwing would be worse. Reverse the two `if`s
+    // inside perfOrFail and this is the line that goes red.
+    c.CB_REQUIRE_LIVE_TESTS = 1;
+    c.CB_RUN_PERF_TESTS = 0;
+    expect(perfOrFail('probe', false)).toBe(false);
+    expect(perfOrFail('probe', true)).toBe(false);
+
+    // …and once it IS asked for, liveOrFail's no-silent-skip rule applies in full.
+    c.CB_RUN_PERF_TESTS = 1;
+    expect(perfOrFail('probe', true)).toBe(true);
+    expect(() => perfOrFail('probe', false)).toThrow(/CB_RUN_PERF_TESTS=1/);
+
+    // Independent in the other direction too: the perf flag alone decides, with the live flag off.
+    c.CB_REQUIRE_LIVE_TESTS = 0;
+    expect(perfOrFail('probe', true)).toBe(true);
+    expect(() => perfOrFail('probe', false)).toThrow(/CB_RUN_PERF_TESTS=1/);
+  } finally {
+    c.CB_REQUIRE_LIVE_TESTS = origLive;
+    c.CB_RUN_PERF_TESTS = origPerf;
+  }
 });
 
 test('liveOrFail throws rather than skipping when the flag demands a live run', async () => {
