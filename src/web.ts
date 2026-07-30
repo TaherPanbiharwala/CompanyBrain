@@ -7,6 +7,7 @@
 import express from 'express';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import type { Server as HttpServer } from 'node:http';
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { config, isDevEnv } from './config.ts';
 
@@ -220,7 +221,7 @@ export interface ViteDev {
  *
  * Returns null when vite is not installed, so the API still boots for an API-only checkout.
  */
-export async function createViteDev(): Promise<ViteDev | null> {
+export async function createViteDev(httpServer: HttpServer): Promise<ViteDev | null> {
   let createServer: typeof import('vite').createServer;
   try {
     ({ createServer } = await import('vite'));
@@ -231,7 +232,17 @@ export async function createViteDev(): Promise<ViteDev | null> {
   const webRoot = resolve(import.meta.dir, '../web');
   const vite = await createServer({
     root: webRoot,
-    server: { middlewareMode: true },
+    server: {
+      middlewareMode: true,
+      // Ride the EXISTING http server for the HMR websocket. Without this, middleware mode opens a
+      // second ws server on its own port — which is a different origin, so `connect-src 'self'`
+      // blocks it and HMR silently never connects. Symptom: repeated "[vite] connecting..." in the
+      // console, edits never applying, and a full manual reload needed for every change. That is
+      // the one capability Vite was chosen FOR, so losing it silently would have made the whole
+      // middleware-mode decision pointless. Caught by editing a component and watching the page not
+      // change, not by reading the config.
+      hmr: { server: httpServer },
+    },
     // 'custom' because Express owns routing; Vite must not install its own SPA fallback, which
     // would answer /api/* before our routes ever ran.
     appType: 'custom',

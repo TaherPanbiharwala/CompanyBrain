@@ -15,18 +15,18 @@ export function Home({
 }) {
   return (
     <div className="min-h-full">
-      <header className="border-b border-[--color-line] bg-[--color-surface]">
+      <header className="border-b border-line bg-surface">
         <div className="mx-auto flex max-w-3xl items-center gap-4 px-6 py-3">
           <span className="font-semibold tracking-tight">company-brain</span>
-          <span className="text-[--color-ink-faint]">/</span>
-          <span className="text-[--color-ink-muted]">{workspace.name}</span>
+          <span className="text-ink-faint">/</span>
+          <span className="text-ink-muted">{workspace.name}</span>
           <button
             type="button"
             onClick={async () => {
               await callAuth('/auth/logout').catch(() => undefined);
               onSignedOut();
             }}
-            className="ml-auto text-[--text-sm] text-[--color-ink-muted] underline hover:text-[--color-ink]"
+            className="ml-auto text-sm text-ink-muted underline hover:text-ink"
           >
             Sign out
           </button>
@@ -34,17 +34,17 @@ export function Home({
       </header>
 
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <h1 className="text-[--text-xl] font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight">
           Ask {workspace.name} a question
         </h1>
 
         <ScopeLine workspace={workspace} grants={who.grants} />
 
-        <div className="mt-8 rounded-[--radius-lg] border border-dashed border-[--color-line] bg-[--color-surface] p-10 text-center">
-          <p className="text-[--color-ink-muted]">
+        <div className="mt-8 rounded-lg border border-dashed border-line bg-surface p-10 text-center">
+          <p className="text-ink-muted">
             The ask and upload surfaces land in the next phase.
           </p>
-          <p className="mt-2 text-[--text-sm] text-[--color-ink-faint]">
+          <p className="mt-2 text-sm text-ink-faint">
             Signed in as <span className="font-mono">{who.principal.slice(0, 8)}</span> &middot;{' '}
             {who.role}
           </p>
@@ -74,7 +74,7 @@ export function Home({
 function ScopeLine({ workspace, grants }: { workspace: Workspace; grants: string[] }) {
   const teams = grants.filter((g) => g.startsWith('team:'));
   return (
-    <p className="mt-2 text-[--text-sm] text-[--color-ink-muted]">
+    <p className="mt-2 text-sm text-ink-muted">
       Searching everything you can see: your private pages + everyone at {workspace.name}
       {teams.length > 0 && <> + {teams.length} team{teams.length === 1 ? '' : 's'}</>}.
     </p>

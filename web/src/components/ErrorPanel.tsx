@@ -31,25 +31,25 @@ export function ErrorPanel({
   return (
     <div
       role="alert"
-      className="rounded-[--radius-md] border border-[--color-danger]/30 bg-[--color-danger-faint] p-4 text-[--text-sm]"
+      className="rounded-md border border-danger/30 bg-danger-faint p-4 text-sm"
     >
-      <p className="font-medium text-[--color-ink]">{message}</p>
-      {suggestion && <p className="mt-1 text-[--color-ink-muted]">{suggestion}</p>}
+      <p className="font-medium text-ink">{message}</p>
+      {suggestion && <p className="mt-1 text-ink-muted">{suggestion}</p>}
       {isTransport && (
-        <p className="mt-1 text-[--color-ink-muted]">
+        <p className="mt-1 text-ink-muted">
           The server did not respond. If you are running locally, check that <code>bun run dev</code>{' '}
           is still up.
         </p>
       )}
       {isApi && error.retryAfter !== undefined && (
-        <p className="mt-1 text-[--color-ink-muted]">Try again in {error.retryAfter}s.</p>
+        <p className="mt-1 text-ink-muted">Try again in {error.retryAfter}s.</p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         {onSignIn && code === 'unauthenticated' && (
           <a
             href="/auth/google"
-            className="rounded-[--radius-sm] bg-[--color-brand] px-3 py-1.5 text-[--color-paper] hover:bg-[--color-brand-hover]"
+            className="rounded-sm bg-brand px-3 py-1.5 text-paper hover:bg-brand-hover"
           >
             Sign in again
           </a>
@@ -58,18 +58,18 @@ export function ErrorPanel({
           <button
             type="button"
             onClick={onRetry}
-            className="rounded-[--radius-sm] border border-[--color-line] px-3 py-1.5 hover:bg-[--color-surface]"
+            className="rounded-sm border border-line px-3 py-1.5 hover:bg-surface"
           >
             Try again
           </button>
         )}
         {docs && (
-          <a href={docs} className="text-[--color-brand] underline">
+          <a href={docs} className="text-brand underline">
             Learn more
           </a>
         )}
         {reqId && (
-          <span className="ml-auto font-mono text-[--text-xs] text-[--color-ink-faint]">
+          <span className="ml-auto font-mono text-xs text-ink-faint">
             <span className="select-none">ref </span>
             <span className="select-all">{reqId}</span>
           </span>

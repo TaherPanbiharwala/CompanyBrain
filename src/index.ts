@@ -1,5 +1,6 @@
 // Boot: Express 5 app with /health + the M1 dispatch spine (/api/:op, /api/_ops).
 import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
 import cookieParser from 'cookie-parser';
 import { config } from './config.ts';
 import { appSql } from './db/client.ts';
@@ -94,7 +95,14 @@ app.get('/api', (_req, res) => {
 // Vite runs in-process in dev (see createViteDev for why not a proxy on :5173). Gated on
 // import.meta.main so that importing `app` — which every server test does — never starts a dev
 // server; only a real `bun run dev` does.
-const viteDev = import.meta.main && shouldUseViteDevServer() ? await createViteDev() : null;
+//
+// The http.Server is constructed HERE rather than by app.listen() because Vite needs it to attach
+// the HMR websocket to, and that has to happen before the first request. Express's `app` is just a
+// request handler, so building the server early and adding middleware after is fine — the handler
+// is looked up per request, not captured at construction.
+const httpServer = import.meta.main ? createHttpServer(app) : null;
+const viteDev =
+  httpServer && shouldUseViteDevServer() ? await createViteDev(httpServer) : null;
 
 // Static assets ahead of the routers: a content-hashed chunk is public and should not walk the auth
 // stack. express.static is mounted with index:false, so it answers only for files that exist and
@@ -115,7 +123,9 @@ if (import.meta.main) {
   console.log(`[auth] register this redirect URI in Google Cloud Console: ${config.OIDC_REDIRECT_URI}`);
   // The TRUST_PROXY / https / secrets warnings that used to live here are now hard boot gates in
   // assertDeploymentSafe() above — a warning printed only when running as main is not a control.
-  app.listen(config.PORT, () => {
+  // httpServer, not app.listen(): Vite's HMR websocket is already attached to this exact server,
+  // so a second one would leave HMR pointing at a socket nothing listens on.
+  httpServer!.listen(config.PORT, () => {
     console.log(`company-brain listening on ${config.APP_BASE_URL} (port ${config.PORT})`);
   });
 }

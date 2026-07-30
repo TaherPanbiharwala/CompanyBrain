@@ -80,7 +80,7 @@ export function App() {
     case 'loading':
       return (
         <main className="flex min-h-full items-center justify-center">
-          <p className="text-[--color-ink-faint]">Loading…</p>
+          <p className="text-ink-faint">Loading…</p>
         </main>
       );
 
@@ -98,7 +98,7 @@ export function App() {
     case 'error':
       return (
         <main className="mx-auto max-w-md px-6 py-16">
-          <h1 className="text-[--text-xl] font-semibold">Something went wrong</h1>
+          <h1 className="text-xl font-semibold">Something went wrong</h1>
           <div className="mt-6">
             <ErrorPanel
               error={session.error}
@@ -107,7 +107,7 @@ export function App() {
             />
           </div>
           {session.error instanceof TransportError && (
-            <p className="mt-4 text-[--text-sm] text-[--color-ink-muted]">
+            <p className="mt-4 text-sm text-ink-muted">
               If you are running this locally, the API may not be up.
             </p>
           )}

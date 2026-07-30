@@ -39,14 +39,14 @@ export function CreateWorkspace({ onReady }: { onReady: () => void }) {
 
   return (
     <main className="mx-auto flex min-h-full max-w-md flex-col justify-center px-6 py-16">
-      <h1 className="text-[--text-xl] font-semibold tracking-tight">Name your workspace</h1>
-      <p className="mt-2 text-[--color-ink-muted]">
+      <h1 className="text-xl font-semibold tracking-tight">Name your workspace</h1>
+      <p className="mt-2 text-ink-muted">
         A workspace holds your documents and the people who can read them. You can invite colleagues
         once it exists.
       </p>
 
       <form onSubmit={create} className="mt-8">
-        <label htmlFor="ws-name" className="block text-[--text-sm] font-medium">
+        <label htmlFor="ws-name" className="block text-sm font-medium">
           Workspace name
         </label>
         <input
@@ -56,18 +56,18 @@ export function CreateWorkspace({ onReady }: { onReady: () => void }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Acme"
-          className="mt-2 w-full rounded-[--radius-sm] border border-[--color-line] bg-[--color-paper] px-3 py-2"
+          className="mt-2 w-full rounded-sm border border-line bg-paper px-3 py-2"
         />
         <button
           type="submit"
           disabled={busy || name.trim().length === 0}
-          className="mt-4 w-full rounded-[--radius-md] bg-[--color-brand] px-4 py-3 font-medium text-[--color-paper] hover:bg-[--color-brand-hover] disabled:opacity-50"
+          className="mt-4 w-full rounded-md bg-brand px-4 py-3 font-medium text-paper hover:bg-brand-hover disabled:opacity-50"
         >
           {busy ? 'Creating…' : 'Create workspace'}
         </button>
       </form>
 
-      <p className="mt-6 text-[--text-sm] text-[--color-ink-muted]">
+      <p className="mt-6 text-sm text-ink-muted">
         Been invited to one instead? Open the invite link you were sent — it will add you to that
         workspace.
       </p>

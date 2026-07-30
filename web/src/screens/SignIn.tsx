@@ -36,25 +36,25 @@ export function SignIn({ devLoginAvailable, onSignedIn }: { devLoginAvailable: b
 
   return (
     <main className="mx-auto flex min-h-full max-w-md flex-col justify-center px-6 py-16">
-      <h1 className="text-[--text-2xl] font-semibold tracking-tight">company-brain</h1>
-      <p className="mt-2 text-[--color-ink-muted]">
+      <h1 className="text-2xl font-semibold tracking-tight">company-brain</h1>
+      <p className="mt-2 text-ink-muted">
         Ask your company&rsquo;s documents a question. Every answer cites its sources, and you only
         ever see what you are allowed to see.
       </p>
 
       <a
         href={googleHref}
-        className="mt-8 flex items-center justify-center rounded-[--radius-md] bg-[--color-brand] px-4 py-3 font-medium text-[--color-paper] hover:bg-[--color-brand-hover]"
+        className="mt-8 flex items-center justify-center rounded-md bg-brand px-4 py-3 font-medium text-paper hover:bg-brand-hover"
       >
         Continue with Google
       </a>
 
       {devLoginAvailable && (
-        <form onSubmit={devLogin} className="mt-8 border-t border-[--color-line] pt-6">
-          <label htmlFor="dev-email" className="block text-[--text-sm] font-medium">
+        <form onSubmit={devLogin} className="mt-8 border-t border-line pt-6">
+          <label htmlFor="dev-email" className="block text-sm font-medium">
             Local development sign-in
           </label>
-          <p className="mt-1 text-[--text-xs] text-[--color-ink-faint]">
+          <p className="mt-1 text-xs text-ink-faint">
             Loopback only. This form is not reachable on a deployed instance.
           </p>
           <div className="mt-3 flex gap-2">
@@ -65,12 +65,12 @@ export function SignIn({ devLoginAvailable, onSignedIn }: { devLoginAvailable: b
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="flex-1 rounded-[--radius-sm] border border-[--color-line] bg-[--color-paper] px-3 py-2"
+              className="flex-1 rounded-sm border border-line bg-paper px-3 py-2"
             />
             <button
               type="submit"
               disabled={busy}
-              className="rounded-[--radius-sm] border border-[--color-line] px-3 py-2 hover:bg-[--color-surface] disabled:opacity-50"
+              className="rounded-sm border border-line px-3 py-2 hover:bg-surface disabled:opacity-50"
             >
               {busy ? '…' : 'Sign in'}
             </button>

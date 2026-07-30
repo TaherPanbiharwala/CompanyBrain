@@ -84,13 +84,13 @@ export function AcceptInvite({
   if (status === 'need-signin') {
     return (
       <main className="mx-auto flex min-h-full max-w-md flex-col justify-center px-6 py-16">
-        <h1 className="text-[--text-xl] font-semibold tracking-tight">You&rsquo;ve been invited</h1>
-        <p className="mt-2 text-[--color-ink-muted]">
+        <h1 className="text-xl font-semibold tracking-tight">You&rsquo;ve been invited</h1>
+        <p className="mt-2 text-ink-muted">
           Sign in to accept. We&rsquo;ll hold onto the invite while you do.
         </p>
         <a
           href={`/auth/google?return_to=${encodeURIComponent('/invites/accept')}`}
-          className="mt-8 flex items-center justify-center rounded-[--radius-md] bg-[--color-brand] px-4 py-3 font-medium text-[--color-paper] hover:bg-[--color-brand-hover]"
+          className="mt-8 flex items-center justify-center rounded-md bg-brand px-4 py-3 font-medium text-paper hover:bg-brand-hover"
         >
           Continue with Google
         </a>
@@ -100,15 +100,15 @@ export function AcceptInvite({
 
   return (
     <main className="mx-auto flex min-h-full max-w-md flex-col justify-center px-6 py-16">
-      <h1 className="text-[--text-xl] font-semibold tracking-tight">Accepting your invite…</h1>
+      <h1 className="text-xl font-semibold tracking-tight">Accepting your invite…</h1>
       {error != null && (
         <div className="mt-6">
           <ErrorPanel error={error} />
-          <p className="mt-4 text-[--text-sm] text-[--color-ink-muted]">
+          <p className="mt-4 text-sm text-ink-muted">
             Invite links are single-use and expire. If this one has been used or has run out, ask
             whoever invited you to send a new one.
           </p>
-          <a href="/" className="mt-4 inline-block text-[--color-brand] underline">
+          <a href="/" className="mt-4 inline-block text-brand underline">
             Go to the app
           </a>
         </div>
