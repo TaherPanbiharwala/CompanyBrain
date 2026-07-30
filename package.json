@@ -12,7 +12,8 @@
     "doctor": "bun run src/db/doctor.ts",
     "call": "bun run src/api/call.ts",
     "mcp": "bun run src/api/mcp.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
+    "build:web": "vite build --config web/vite.config.ts",
     "test": "bun test --timeout 30000",
     "seed:a17": "bun run scripts/seed-a17.ts",
     "load:a17": "bun run scripts/load-a17-corpus.ts",
@@ -31,15 +32,23 @@
     "mammoth": "^1.12.0",
     "openid-client": "^6.8.4",
     "postgres": "^3.4.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "unpdf": "^1.8.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.25.28",
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "latest",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.0",
-    "typescript": "^5.7.2"
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.0"
   }
 }

@@ -13,7 +13,6 @@ import { adminSql, closePools, withScopedTx } from '../src/db/client.ts';
 import { buildContext, resolveGrants, type OperationContext } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
-import { ANSWER_SYSTEM_PROMPT } from '../src/answer/prompt.ts';
 import { hybridSearch } from '../src/search/hybrid.ts';
 import { scoreRetrieval, type QrelQuestion } from '../src/search/eval-score.ts';
 import { normalizeEmail } from '../src/auth/normalize.ts';
@@ -312,12 +311,29 @@ async function runQrels(): Promise<{ summary: ReturnType<typeof scoreRetrieval> 
   if (SMOKE) rows = rows.slice(0, 3);
   console.log(`  qrels: ${rows.length} runnable rows (${skipped} blocked on team scope)${SMOKE ? ' [SMOKE]' : ''}`);
 
-  // Group by asker so scoreRetrieval's single searchFn can dispatch per-question through the right ctx.
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  // scoreRetrieval's searchFn receives only the question TEXT, so dispatch has to key on that — it
+  // cannot key on row id. That is safe ONLY while question strings are unique, so assert it instead
+  // of assuming it: a duplicate would run one row through the WRONG asker's context and then grade
+  // the result as if it were that row's, in a harness whose entire job is proving per-principal
+  // visibility. CONTEXT.md §6.10 recorded this as latent ("no two rows currently share a question
+  // string") — an invariant nothing enforced. The old `byId` map here was built for this and then
+  // never read, which is why tsc flagged it the moment scripts/ entered the project.
+  const byQuestion = new Map<string, any>();
+  for (const r of rows) {
+    const clash = byQuestion.get(r.question);
+    if (clash) {
+      throw new Error(
+        `qrels rows ${clash.id} and ${r.id} share a question string. searchFn dispatches by question ` +
+          `text, so one would be answered as the other's principal and graded as itself. Make the ` +
+          `questions distinct.`,
+      );
+    }
+    byQuestion.set(r.question, r);
+  }
   const qq: QrelQuestion[] = rows.map((r) => ({ id: r.id, question: r.question, relevantSlugs: r.relevantSlugs }));
 
   const searchFn = async (question: string): Promise<string[]> => {
-    const row = rows.find((r) => r.question === question)!;
+    const row = byQuestion.get(question)!;
     const { hits } = await hybridSearch(ctxFor(row.askerPrincipal), question);
     return [...new Set(hits.map((h) => h.slug))];
   };

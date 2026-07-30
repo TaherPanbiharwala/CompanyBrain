@@ -1,0 +1,28 @@
+{
+  // SEPARATE from the root tsconfig on purpose. The root is a Bun server project with
+  // `"lib": ["ESNext"]` and `"types": ["bun"]` — no DOM. Adding DOM there to make the UI compile
+  // would put `document`, `window` and `localStorage` in scope for every file in src/, so a server
+  // module could reference a browser global and still typecheck. Two projects, two libs.
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    // NOT ["bun"] — this code runs in a browser. Bun's types would make server-only globals
+    // available here, which is the same leak as above in the other direction.
+    "types": []
+  },
+  "include": ["src", "vite.config.ts"]
+}

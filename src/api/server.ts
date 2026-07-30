@@ -3,7 +3,7 @@
 // M1 auth was the dev-auth stub. M2 did NOT replace it — it DEMOTED it to a local-only fallback
 // reachable only when no session cookie was presented at all (D45). Line ~39 is where that holds.
 import express from 'express';
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { ContextError } from '../core/context.ts';
 import { operations } from './operations.ts';
 import { buildToolDefs } from './tool-defs.ts';
@@ -22,7 +22,23 @@ export const UPLOAD_PATH = '/api/ingest_file';
  *  real limit is enforced on the DECODED bytes in importFile, which is the number that matters. */
 export const UPLOAD_BODY_LIMIT = '8mb';
 
-export function mountApi(app: Express): void {
+export interface MountApiOptions {
+  /**
+   * Registered AFTER every /api route and BEFORE the catch-all 404 below. That window is the ONLY
+   * legal place for a web-UI fallback, and it did not exist until M5 Phase 0 — both ends of it are
+   * inside this function, so a caller had nowhere to put one.
+   *
+   * Do NOT mount a fallback in index.ts instead. `mountAuth` is registered at index.ts:76 and
+   * `mountApi` at :77, so anything registered "before mountApi" is also before mountAuth and a GET
+   * catch-all there swallows /auth/google and /auth/google/callback — returning index.html with a
+   * 200 and breaking sign-in, which is step 1 of the M5 gate. Registered after mountApi is equally
+   * wrong: the 404 below has already answered. Passing it here is what keeps the invariant in the
+   * module that owns both ends.
+   */
+  webFallback?: RequestHandler;
+}
+
+export function mountApi(app: Express, opts: MountApiOptions = {}): void {
   // Discovery: the same catalog MCP tools/list exposes, over REST (review AM8). Hidden ops excluded.
   //
   // DELIBERATELY UNAUTHENTICATED (D53). It publishes operation NAMES and JSON-Schemas — the API's own
@@ -94,6 +110,10 @@ export function mountApi(app: Express): void {
       res.status(result.status).json({ ok: false, reqId: result.reqId, error: result.error });
     }
   });
+
+  // The web UI's fallback, if there is one. This exact position — after every /api route, before
+  // the catch-all — is the whole reason MountApiOptions exists; see its doc comment.
+  if (opts.webFallback) app.use(opts.webFallback);
 
   // Catch-all 404, registered after every route but BEFORE the error middleware. Without it an
   // unmatched path falls through to Express's default handler, which returns `Cannot POST /x` as

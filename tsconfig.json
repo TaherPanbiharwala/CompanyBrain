@@ -17,5 +17,11 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["bun"]
   },
-  "include": ["src", "test"]
+  // `scripts` was missing until M5 Phase 0, and nothing in src/ or test/ imports a script, so tsc
+  // loaded ZERO files from it — verified with `tsc --listFilesOnly`. That mattered because six of
+  // the ten resolveGrants() call sites live in scripts/, including the NovaByte harness that is
+  // supposed to PROVE team scope works. A signature change there would have broken at runtime with
+  // nothing red anywhere. `web` is its own project (web/tsconfig.json) because it needs lib.DOM,
+  // which must not leak into server typechecking.
+  "include": ["src", "test", "scripts"]
 }

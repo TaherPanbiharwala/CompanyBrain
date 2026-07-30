@@ -1,0 +1,78 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------------------------
+ * Design tokens (amendment A5: "tokens/type/spacing before M5").
+ *
+ * Tailwind v4 is CSS-first, so @theme IS the config — there is no tailwind.config.js to drift from
+ * this file. Every value a component reaches for should exist here first; a raw hex in a component
+ * is the smell that this layer is incomplete.
+ *
+ * TWO VISUAL SYSTEMS are planned (amendment T5): a warm member-facing surface (chat, upload, the
+ * thing a customer uses) and a dark operator surface for fleet diagnostics. Phase 0 ships the warm
+ * one and names the operator scale so the split is expressible rather than a later fork of one
+ * palette. The /admin vs /ops route split that consumes it lands with the admin UI in M5b — the
+ * design review's F11 is explicit that tenant-admin and fleet-operator are different audiences and
+ * doctor output belongs only to the latter.
+ * ------------------------------------------------------------------------------------------- */
+@theme {
+  /* Warm neutrals. Member-facing surfaces read as paper, not as a terminal. */
+  --color-paper: oklch(99% 0.005 85);
+  --color-surface: oklch(97% 0.008 85);
+  --color-surface-sunk: oklch(94% 0.01 85);
+  --color-line: oklch(89% 0.012 85);
+  --color-ink: oklch(25% 0.02 60);
+  --color-ink-muted: oklch(52% 0.02 60);
+  --color-ink-faint: oklch(66% 0.015 60);
+
+  /* One accent. Used for the primary action on a surface and nothing else. */
+  --color-brand: oklch(52% 0.16 255);
+  --color-brand-hover: oklch(46% 0.16 255);
+  --color-brand-faint: oklch(96% 0.03 255);
+
+  /* Status. `warn` carries the degraded-answer banner, which is a first-class state here, not an
+   * edge case: `ask` returns degraded:'keyword_only' whenever the embedder is down, and an answer
+   * that silently drops to keyword-only search while looking identical is the failure mode the
+   * design review called out. */
+  --color-warn: oklch(62% 0.14 70);
+  --color-warn-faint: oklch(96% 0.04 70);
+  --color-danger: oklch(55% 0.19 25);
+  --color-danger-faint: oklch(96% 0.03 25);
+  --color-ok: oklch(58% 0.13 150);
+
+  /* Operator surface (T5). Named now so the second system is a token swap, not a re-derivation. */
+  --color-op-bg: oklch(21% 0.015 260);
+  --color-op-surface: oklch(26% 0.018 260);
+  --color-op-ink: oklch(93% 0.01 260);
+
+  /* Type scale. Deliberately short — six sizes is enough for this product and a long scale is how
+   * inconsistency gets in. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 1rem;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus is never removed, only restyled. Keyboard navigation is a requirement, not a preference. */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}

@@ -38,8 +38,10 @@ function score(path: string, label: string) {
   return { mrr: mrrSum / n, r1, r3, foundAll };
 }
 
-const a = score(process.argv[2]!, 'OLD');
-const b = score(process.argv[3]!, 'NEW');
+// Called for the summary lines score() prints, not for the returned metrics — the per-question
+// comparison below re-derives what it needs from the files directly.
+score(process.argv[2]!, 'OLD');
+score(process.argv[3]!, 'NEW');
 console.log();
 for (const q of qrels) {
   const oldS = parse(process.argv[2]!).get(q.id) ?? [];
