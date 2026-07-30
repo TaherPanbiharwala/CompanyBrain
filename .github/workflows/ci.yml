@@ -39,6 +39,13 @@ jobs:
       # deliberately NOT set on this job, so skipping is permitted. The `live` job below is where
       # skipping becomes a failure.
       - name: Offline tests
+        # SESSION_SECRET is a real repo secret on the `live` job below (signs the OAuth state
+        # cookie) but was never set here — invisible until this file's first-ever run on a real
+        # runner (the repo had 0 git remotes before this commit). test/session.test.ts's OAuth
+        # round-trip only signs and verifies against ITSELF, so any >=32-char string satisfies
+        # session.ts's length guard; this is not a credential and needs no repo Settings entry.
+        env:
+          SESSION_SECRET: offline-ci-placeholder-not-a-real-secret-do-not-reuse-anywhere
         run: bun run test
 
   live:
