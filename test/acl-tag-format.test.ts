@@ -61,22 +61,61 @@ describe('the grant-tag rule is one rule, in three places', () => {
     }
   });
 
-  it('THE FORWARD GUARD: a keyring still contains only self: and ws: tags', () => {
-    // This is what makes "catch an unmintable tag before it is unrecoverable" a mechanism rather than
-    // an aspiration. resolveGrants has an `extra` parameter that is dead at every call site today, so
-    // no team:/role: tag can ever enter a keyring — which is exactly why a row stamped with one is
-    // invisible to everybody including its author, and unrepairable through the app.
-    //
-    // The day `extra` goes live, this test goes RED and forces doctor's unmintable check to be
-    // revisited in the SAME change that ships team scope. That coupling is the point.
+  it('a keyring built today contains only self: and ws: tags', () => {
+    // Necessary, but NOT sufficient as a forward guard — see the source scan below for why.
     const grants = resolveGrants('22222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111');
     expect(grants).toHaveLength(2);
     expect(grants.every((g) => GRANT_TAG_RE.test(g))).toBe(true);
-    expect(
-      grants.filter((g) => isUnmintable(g)),
-      'a keyring now mints team:/role: tags. Team scope is shipping — extend doctor\'s unmintable ' +
-        'check (src/db/doctor.ts) in this same change, or it will start reporting live rows as broken.',
-    ).toEqual([]);
+    expect(grants.filter((g) => isUnmintable(g))).toEqual([]);
     expect(grants.map((g) => g.split(':')[0]).sort()).toEqual(['self', 'ws']);
+  });
+
+  it('THE FORWARD GUARD: no call site passes resolveGrants a third argument', () => {
+    // The behavioural assertion above CANNOT carry this property, and the first version of this test
+    // assumed it could. `resolveGrants(principal, workspaceId, extra: readonly Grant[] = [])` takes
+    // `extra` as an OPTIONAL third parameter, so a two-argument call in a test returns two tags
+    // forever, no matter what any OTHER call site starts passing. On the day team scope ships, that
+    // assertion would stay green while doctor's unmintable check began reporting every legitimately
+    // team-scoped row as broken — with nothing having gone red first.
+    //
+    // What actually changes on that day is a CALL SITE, so that is what this scans. This is the
+    // coupling doctor's unmintable check depends on: a team:/role: tag is well-formed, invisible to
+    // every other guard, and unrepairable through the app once written.
+    const offenders: string[] = [];
+    let callSites = 0;
+
+    for (const rel of new Bun.Glob('{src,scripts}/**/*.ts').scanSync(ROOT)) {
+      const src = readFileSync(join(ROOT, rel), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^[ \t]*\/\/.*$/gm, '');
+      for (let at = src.indexOf('resolveGrants('); at !== -1; at = src.indexOf('resolveGrants(', at + 1)) {
+        // Skip the declaration itself — its signature is the thing being guarded against.
+        if (/(?:function|const|let|var)\s+$/.test(src.slice(Math.max(0, at - 24), at))) continue;
+        callSites += 1;
+        // Paren-balanced, not a regex: an argument can itself contain parens, brackets or braces.
+        let depth = 0;
+        let commas = 0;
+        for (let i = at + 'resolveGrants'.length; i < src.length; i++) {
+          const c = src[i];
+          if (c === '(' || c === '[' || c === '{') depth++;
+          else if (c === ')' || c === ']' || c === '}') {
+            depth--;
+            if (depth === 0) break;
+          } else if (c === ',' && depth === 1) commas++;
+        }
+        if (commas > 1) offenders.push(`${rel} (${commas + 1} args)`);
+      }
+    }
+
+    // Anti-vacuity floor: `offenders` is empty both when every call site passes two arguments AND
+    // when the scanner has gone blind. Those must not look alike (live-gate.test.ts learned this).
+    expect(callSites, `the resolveGrants scanner found only ${callSites} call sites — it has gone blind`)
+      .toBeGreaterThanOrEqual(8);
+    expect(
+      offenders,
+      `these call sites pass resolveGrants a third argument, so a keyring can now carry team:/role: ` +
+        `tags: ${offenders.join(', ')}. Team scope is shipping — extend doctor's unmintable check ` +
+        `(src/db/doctor.ts) in THIS change, or it will start reporting live rows as broken.`,
+    ).toEqual([]);
   });
 });

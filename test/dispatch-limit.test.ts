@@ -76,40 +76,111 @@ describe('the per-principal budget fires at dispatch, on every transport', () =>
     expect(second.ok, 'the limiter is inert — the unmetered test above proved nothing').toBe(false);
   });
 
+  it('the DEFAULT limiter is the shared apiLimiter — metered by omission', async () => {
+    // The property D94 is actually about, and the one every other test here misses: they all pass an
+    // explicit `limiter`, so `opts.limiter ?? apiLimiter` was never executed. Swap the fallback for a
+    // freshly-constructed limiter (a meter that can never fire, because each call gets a new bucket)
+    // and every other test in this file stays green. This one does not.
+    //
+    // A dedicated principal so the shared singleton's bucket cannot be polluted by another suite in
+    // the same bun process.
+    const solo = '44444444-4444-4444-8444-444444444444';
+    try {
+      for (let i = 0; i < 120; i++) {
+        const r = await dispatchOp(ctxFor(solo), 'whoami', {}, quiet); // NOTE: no limiter passed
+        expect(r.ok, `call ${i + 1} was refused below the shared ceiling`).toBe(true);
+      }
+      const over = await dispatchOp(ctxFor(solo), 'whoami', {}, quiet);
+      expect(over.ok, 'the 121st call was allowed — dispatchOp is not defaulting to apiLimiter').toBe(false);
+      if (over.ok) throw new Error('unreachable');
+      expect(over.error.code).toBe('rate_limited');
+    } finally {
+      apiLimiter.reset();
+    }
+  });
+
   // ── THE REACH ────────────────────────────────────────────────────────────
   // Source-scanned, in the shape of test/scoped-tx-guard.test.ts, because this is a property of WHERE
   // the meter sits and no amount of black-box calling can observe it.
+  //
+  // COMMENTS ARE STRIPPED FIRST, and that is the whole lesson of this block. The first version asserted
+  // `dispatch.ts` still contains the string `apiLimiter` — which its own DOC COMMENTS satisfy, so
+  // deleting both the import and the `?? apiLimiter` fallback left the test green. A scanner that
+  // cannot tell code from prose about code will eventually certify the prose (D90 records the same
+  // lesson for the live-gate and scoped-tx guards).
+  const codeOf = (f: string): string =>
+    readFileSync(join(SRC, f), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+
   it('no transport opts itself out, and the Express route no longer owns the meter', () => {
-    for (const f of ['mcp.ts', 'call.ts']) {
-      const src = readFileSync(join(SRC, f), 'utf8');
-      expect(src, `src/api/${f} calls dispatchOp with unmetered — the agent/CLI lane is the one that ` +
-        `most needs a meter, and this is exactly the hole M4 closed`).not.toContain('unmetered');
-    }
-
-    const server = readFileSync(join(SRC, 'server.ts'), 'utf8');
-    expect(server, 'src/api/server.ts imports apiLimiter again. If the budget is shed at the route, ' +
-      'it protects REST and nothing else — MCP and the CLI reach dispatchOp directly (D94).')
-      .not.toContain('apiLimiter');
-
-    // …and dispatch.ts really is where it lives now, so this test cannot pass by everyone having
-    // dropped the limiter entirely.
-    const dispatch = readFileSync(join(SRC, 'dispatch.ts'), 'utf8');
-    expect(dispatch, 'dispatch.ts no longer references apiLimiter — the meter has gone missing').toContain('apiLimiter');
-  });
-
-  it('every unmetered exemption in the tree states a reason', () => {
-    // Same discipline as `// rls-exempt:`: an exemption whose justification is unwritten is
-    // indistinguishable from an oversight. Matches `unmetered:` followed by a non-empty string.
-    const root = join(new URL('.', import.meta.url).pathname, '..');
-    const files = [...new Bun.Glob('{src,scripts}/**/*.ts').scanSync(root)];
-    const bare: string[] = [];
-    for (const rel of files) {
-      const src = readFileSync(join(root, rel), 'utf8');
-      for (const m of src.matchAll(/unmetered:\s*(.)/g)) {
-        // A quote starts a reason; `true`/`false`/an identifier does not.
-        if (m[1] !== "'" && m[1] !== '"' && m[1] !== '`') bare.push(rel);
+    // server.ts included: the REST route can opt itself out just as easily as the other two, and the
+    // first version of this loop never looked at it.
+    for (const f of ['mcp.ts', 'call.ts', 'server.ts']) {
+      const src = codeOf(f);
+      expect(src, `src/api/${f} passes dispatchOp an opt-out (unmetered or a private limiter). The ` +
+        `agent/CLI lane is the one that most needs a meter, and this is exactly the hole M4 closed`)
+        .not.toMatch(/\b(?:unmetered|limiter)\s*:/);
+      // …and it still reaches dispatchOp at all. Without this, a transport that stopped calling
+      // dispatchOp entirely — the strongest possible opt-out — would pass the negative above.
+      if (f !== 'server.ts') {
+        expect(src, `src/api/${f} no longer calls dispatchOp, so it is metered by nothing`).toContain('dispatchOp(');
       }
     }
+
+    expect(codeOf('server.ts'), 'src/api/server.ts imports apiLimiter again. If the budget is shed at ' +
+      'the route, it protects REST and nothing else — MCP and the CLI reach dispatchOp directly (D94).')
+      .not.toContain('apiLimiter');
+
+    // …and dispatch.ts really is where it lives now, asserted on the EXECUTABLE form so this cannot
+    // pass on a comment that merely mentions the name.
+    expect(codeOf('dispatch.ts'), 'dispatch.ts no longer falls back to the shared apiLimiter — the ' +
+      'meter has gone missing, or become opt-IN')
+      .toMatch(/limiter\s*\?\?\s*apiLimiter/);
+  });
+
+  it('every budget exemption in the tree states a reason', () => {
+    // Same discipline as the rls-exempt markers: an exemption whose justification is unwritten is
+    // indistinguishable from an oversight six months later. Comments stripped for the same reason as
+    // the reach test above.
+    const root = join(new URL('.', import.meta.url).pathname, '..');
+    const bare: string[] = [];
+    let exemptions = 0;
+    for (const rel of new Bun.Glob('{src,scripts}/**/*.ts').scanSync(root)) {
+      const src = readFileSync(join(root, rel), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^[ \t]*\/\/.*$/gm, '');
+      // Scanned INSIDE dispatchOp() call sites only. A bare file-wide search for `limiter:` also
+      // matches TYPE ANNOTATIONS — `shedIfLimited(limiter: FixedWindowLimiter, …)` in
+      // src/api/envelope.ts is a parameter declaration, not an opt-out — and reporting that as an
+      // unjustified exemption is a false positive that would train the next reader to ignore this test.
+      //
+      // `limiter:` is included alongside `unmetered:` because it is the SECOND way to opt out: passing
+      // a private limiter with an enormous max is fully unmetered and states no reason. The first
+      // version of this scan was blind to it, so only one of the two escape hatches was governed.
+      for (let at = src.indexOf('dispatchOp('); at !== -1; at = src.indexOf('dispatchOp(', at + 1)) {
+        let depth = 0;
+        let end = at + 'dispatchOp'.length;
+        for (; end < src.length; end++) {
+          const c = src[end];
+          if (c === '(' || c === '[' || c === '{') depth++;
+          else if (c === ')' || c === ']' || c === '}') {
+            depth--;
+            if (depth === 0) break;
+          }
+        }
+        for (const m of src.slice(at, end).matchAll(/\b(unmetered|limiter)\s*:\s*(.)/g)) {
+          exemptions += 1;
+          // A quote starts a reason; `true`/an identifier does not.
+          if (m[2] !== "'" && m[2] !== '"' && m[2] !== '`') bare.push(`${rel} (${m[1]})`);
+        }
+      }
+    }
+    // Anti-vacuity floor: `bare` is empty both when every exemption is justified AND when the scan
+    // matches nothing at all — delete the one real exemption and this test would otherwise still pass.
+    expect(exemptions, 'the exemption scanner matched nothing — it has gone blind, or the one real ' +
+      'exemption (scripts/load-a17-corpus.ts) was removed without updating this floor')
+      .toBeGreaterThanOrEqual(1);
     expect(bare, `these opt out of the budget without stating why: ${bare.join(', ')}`).toEqual([]);
   });
 });

@@ -54,7 +54,11 @@ export function liveOrFail(name: string, ready: boolean): boolean {
  * @throws when CB_RUN_PERF_TESTS=1 and `ready` is false
  */
 export function perfOrFail(name: string, ready: boolean): boolean {
-  if (config.CB_RUN_PERF_TESTS !== 1) return false;
+  // `!== 0`, NOT `!== 1`. CB_RUN_PERF_TESTS is a z.coerce.number(), so `CB_RUN_PERF_TESTS=2` parses to
+  // 2 — and under the strict-equality form the whole suite skipped GREEN, which is exactly the lie
+  // this function exists to prevent. Any value the operator bothered to set means "asked for".
+  // (`true`/`yes` do not coerce to a number and fail loudly at config parse, which is fine.)
+  if (config.CB_RUN_PERF_TESTS === 0) return false;
   if (ready) return true;
   throw new Error(
     `${name}: CB_RUN_PERF_TESTS=1 but the live environment is not configured, so this suite would ` +

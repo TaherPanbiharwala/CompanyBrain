@@ -46,7 +46,7 @@ export interface DispatchOpts {
    *  NOT `ctx.remote`, which was considered and rejected (D94): `auth/resolver.ts:123` sets
    *  `remote:false` for a REAL browser session and `api/dev-auth.ts:99` sets `remote:true` for the
    *  local header stub, so `remote` splits traffic in precisely the wrong place — exempting
-   *  `!remote` would unmeter every production request. `core/context.ts:30` also says outright that
+   *  `!remote` would unmeter every production request. `OperationContext.remote` in core/context.ts also says outright that
    *  it is "NOT a scope switch". */
   unmetered?: string;
 }
@@ -67,7 +67,17 @@ export async function dispatchOp(
   const started = performance.now();
   const op: Operation | undefined = operationsByName[name];
 
-  const finish = (outcome: string, result: DispatchResult, dims?: RequestLogEntry['dims']): DispatchResult => {
+  const finish = (
+    outcome: string,
+    result: DispatchResult,
+    dims?: RequestLogEntry['dims'],
+    // Skip the param summary entirely. Used ONLY by the rung-0 shed below: summarizeParams calls
+    // approxBytes, which JSON.stringify()s the whole raw body to bucket its size — up to the 8 MB
+    // upload limit — so measuring a request we are refusing turns the throttle into a CPU amplifier
+    // under exactly the flood it exists to absorb. Before M4 a shed request cost O(1) and never
+    // reached this function at all.
+    skipParams = false,
+  ): DispatchResult => {
     const entry: RequestLogEntry = {
       ts: new Date().toISOString(),
       reqId,
@@ -76,7 +86,7 @@ export async function dispatchOp(
       principal: ctx.principal,
       role: ctx.role,
       remote: ctx.remote,
-      params: summarizeParams(op, rawParams),
+      params: skipParams ? null : summarizeParams(op, rawParams),
       outcome, // code/enum ONLY — never a message
       ms: Math.round(performance.now() - started),
       ...(dims ? { dims } : {}),
@@ -103,7 +113,7 @@ export async function dispatchOp(
   // only, so the Express route was metered while src/api/mcp.ts and src/api/call.ts called this
   // function bare. Since M3 that path carries `ask`, `search` and `ingest_file` — all paid provider
   // calls — which made the AGENT lane the one expensive surface with no meter on it
-  // (test/live-gate.test.ts:139-143 recorded the hole in prose for a whole milestone).
+  // (the REQUIRED_LIVE_SUITES doc-comment in test/live-gate.test.ts recorded the hole in prose for a whole milestone).
   //
   // Charging BEFORE op lookup is deliberate on two counts. It preserves the REST behaviour exactly —
   // server.ts shed before dispatch ever ran, so an unknown op still costs a token and the existing
@@ -113,6 +123,13 @@ export async function dispatchOp(
   // This is a RATE meter, not a spend cap. There is no ledger, no per-workspace quota and no usage
   // accounting anywhere in src/; D18 puts that at M5. What this bounds is calls per minute per
   // principal, which bounds the blast radius of a loop without pretending to price it.
+  //
+  // AND IT DOES NOT COVER THE CLI, despite reaching it. FixedWindowLimiter's buckets are a
+  // per-process Map and src/api/call.ts is one-shot — it dispatches once and exits — so every
+  // invocation starts with an empty bucket and `while true; do bun run call ask …; done` is metered
+  // at 1 per process, forever. REST and MCP are long-lived and genuinely covered. Stated here rather
+  // than papered over: the CLI runs on a developer's own machine against their own principal, so the
+  // gap is accepted, not fixed. A shared store is the real answer and belongs with the M5 ledger.
   if (!opts.unmetered) {
     const limiter = opts.limiter ?? apiLimiter;
     if (limiter.hit(ctx.principal)) {
@@ -125,11 +142,12 @@ export async function dispatchOp(
           code: 'rate_limited',
           message: 'too many requests',
           // "this workspace" is what the Express version said, and it was wrong: the bucket is keyed
-          // on ctx.principal (src/auth/ratelimit.ts:79-84), so one member hitting the ceiling never
-          // throttled their colleagues. Corrected while moving it rather than carried over.
-          suggestion: 'Slow down — you have hit your per-minute operation budget. Applies to REST, MCP and the CLI alike.',
+          // on ctx.principal (see apiLimiter in src/auth/ratelimit.ts), so one member hitting the
+          // ceiling never throttled their colleagues. Corrected while moving it rather than carried
+          // over. It also does not claim the CLI: see the note on `unmetered` above.
+          suggestion: 'Slow down — you have hit your per-minute operation budget. Applies to REST and MCP alike.',
         },
-      });
+      }, undefined, true); // skipParams — see finish(); do not measure a body we are refusing
     }
   }
 

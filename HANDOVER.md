@@ -201,8 +201,10 @@ deliberately blunted. D68, D69, D73 and D74 are four instances of the same shape
    chunk whose acl has drifted survives and becomes an invisible duplicate. A unique index makes it
    loud. Real tradeoff: a 23505 the caller cannot diagnose from their own view. Task chip exists.
 
-4. **MCP has no rate limiter.** `apiLimiter` is REST-only; `mcp.ts` calls `dispatchOp` directly. M3
-   added three more spend-per-call ops to that path.
+4. ~~**MCP has no rate limiter.**~~ **CLOSED at M4 (D94).** The per-principal budget moved to
+   `dispatchOp` rung 0, so REST and MCP are metered by one instance. Note the CLI is reached but not
+   effectively metered — `FixedWindowLimiter` is per-process and `call.ts` is one-shot — which is
+   accepted and recorded in D94 rather than fixed. Spend *accounting* remains open (M5, D18).
 
 5. **`README.md` is stale.** Does not mention the five new ops, `src/ingest/extract/`, or the upload
    route's separate body cap.

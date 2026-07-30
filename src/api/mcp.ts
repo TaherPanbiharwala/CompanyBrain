@@ -92,7 +92,15 @@ export function buildHandlers(): McpHandlers {
       if (result.ok) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(result.data, null, 2) }] };
       }
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result.error, null, 2) }], isError: true };
+      // retryAfter is merged in, not dropped. This is the lane the budget exists for — an agent in a
+      // loop, with no human reading an HTTP header — and serializing `result.error` alone handed it
+      // "too many requests" with no interval, which is an invitation to hot-retry. There is no header
+      // channel over stdio, so the number has to ride in the payload or it does not reach the caller
+      // at all (D94).
+      const payload = result.retryAfter === undefined
+        ? result.error
+        : { ...result.error, retryAfterSeconds: result.retryAfter };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }], isError: true };
     },
   };
 }

@@ -187,9 +187,10 @@ test('every suite gated on a live database routes through liveOrFail', () => {
  *
  *  `mcp` is on this list for a specific reason. Its gate needs CB_MCP_PRINCIPAL and CB_MCP_WORKSPACE
  *  on top of the connection strings, so for as long as those were unset the suite could not run at
- *  all — and src/api/mcp.ts calls dispatchOp with NO rate limiter (apiLimiter is REST-only), which
- *  makes the agent lane the one paid surface with no meter on it. That is the last suite that should
- *  be allowed to quietly disappear. */
+ *  all — and until M4, src/api/mcp.ts called dispatchOp with NO rate limiter (apiLimiter was
+ *  REST-only), which made the agent lane the one paid surface with no meter on it. The budget now
+ *  sits at dispatchOp rung 0 (D94) and that hole is closed, but the coverage is exactly what must not
+ *  disappear: this is still the last suite that should be allowed to go quiet. */
 const REQUIRED_LIVE_SUITES = [
   'answer',
   'api',
@@ -288,6 +289,13 @@ test('perfOrFail is independent of CB_REQUIRE_LIVE_TESTS — the whole point of 
     // …and once it IS asked for, liveOrFail's no-silent-skip rule applies in full.
     c.CB_RUN_PERF_TESTS = 1;
     expect(perfOrFail('probe', true)).toBe(true);
+    expect(() => perfOrFail('probe', false)).toThrow(/CB_RUN_PERF_TESTS=1/);
+
+    // ANY non-zero value means "asked for". Under the original `!== 1` form, CB_RUN_PERF_TESTS=2
+    // parsed cleanly to 2 and skipped the whole suite GREEN — the precise failure this gate exists to
+    // forbid, reachable by a typo. Only 0 and 1 were ever exercised, so nothing caught it.
+    c.CB_RUN_PERF_TESTS = 2;
+    expect(perfOrFail('probe', true), 'a non-1 truthy value silently skipped the perf suite').toBe(true);
     expect(() => perfOrFail('probe', false)).toThrow(/CB_RUN_PERF_TESTS=1/);
 
     // Independent in the other direction too: the perf flag alone decides, with the live flag off.

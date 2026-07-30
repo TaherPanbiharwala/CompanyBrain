@@ -38,7 +38,7 @@ ls -l .env                            # if it's a symlink, do NOT `cp` onto it �
 cp .env.example .env                  # only if it's not a symlink
 bun install                           # M3 added mammoth/unpdf/xlsx — a stale node_modules fails typecheck
 bun run migrate && bun run migrate    # TWICE — doctor.ts:9's idempotency check needs a second run
-bun run doctor                        # must be green: 72 checks
+bun run doctor                        # must be green: 73 checks
 bun run dev                           # GET /health -> {"status":"ok"}
 ```
 Dev sign-in needs `DEV_AUTH=1 DEV_LOGIN=1` uncommented in `.env` (both ship commented out).
@@ -56,9 +56,10 @@ unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under t
 failure, by design).
 
 **M4 landed 2026-07-30** (D93–D96): `test/perf-recall.test.ts` now exists and carries the three
-properties a serial ladder cannot see; the per-principal budget moved to `dispatchOp` rung 0 so all
-three transports are metered; doctor gained the two checks `docs/plan.md:189` named and never got
-(**72 checks**). M4's own gate — "an unfiltered query leaks nothing and doctor is green" — is met on
+properties a serial ladder cannot see; the per-principal budget moved to `dispatchOp` rung 0, so REST and MCP
+are metered by one instance (the CLI is reached but not effectively metered — see §5.3); doctor gained the two checks `docs/plan.md:189` named and never got
+(**73 checks**). A seven-pass review then found that 7 of M4's own guards could pass with their
+subject deleted, plus one real regression in doctor; all are fixed and recorded in **D97**. M4's own gate — "an unfiltered query leaks nothing and doctor is green" — is met on
 evidence rather than assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
 
 **If you do only three things:**
@@ -88,8 +89,8 @@ milestones built: M0, M1, A17, M2, M3.
 |---|---|
 | ops in `operations.ts` | **12** |
 | migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
-| `DECISIONS.md` | **96 entries, D0–D92**, no duplicate IDs |
-| `doctor` | **72 checks** |
+| `DECISIONS.md` | **101 entries, D0–D97**, no duplicate IDs |
+| `doctor` | **73 checks** |
 
 ### Why this section still exists
 
@@ -304,8 +305,11 @@ anywhere:** is this M3 scope or later, and does it belong on `ask` or a future `
 ### 5.3 Rate limiting — **CLOSED at M4**. Spend accounting — still open (M5)
 
 ~~`apiLimiter` fires only at `server.ts:85`~~ — the per-principal budget now runs at **rung 0 of
-`dispatchOp`** (D94), so REST, MCP and the CLI are metered by one instance, and a transport added
-later is metered *by omission* rather than by someone remembering. The opt-out is an explicit
+`dispatchOp`** (D94), so REST and MCP are metered by one instance and a transport added later is
+metered *by omission* rather than by someone remembering. **The CLI is reached but not effectively
+metered:** `FixedWindowLimiter`'s buckets are a per-process Map and `call.ts` is one-shot, so a shell
+loop starts a fresh bucket every time. Accepted, not fixed — it runs on a developer's own machine
+against their own principal, and a shared store belongs with the M5 ledger. The opt-out is an explicit
 `DispatchOpts` field taking a reason string, reachable only from in-process TypeScript.
 `test/dispatch-limit.test.ts` source-scans `mcp.ts`/`call.ts`/`server.ts` to stop it drifting back to
 REST-only. Note `ctx.remote` was considered as the discriminator and **rejected** — it is inverted
@@ -568,7 +572,7 @@ later entry reversed, and most carry no forward pointer.
 | **D5** (and **D27**, identical claim) | `acl && grants` in engine queries at M3, RLS refinement at M4 | **Both halves overturned by D66.** Landed in RLS a milestone early (migration `0007`); engine-side enforcement *explicitly refused* — no `acl` appears anywhere in `src/search/`. Reading either leads you to add an ACL predicate to `hybridSearch`, which D66 argues is actively harmful. Neither has a forward pointer. |
 | **D0.1** | "at M2 nothing reads the `acl`"; private is aspirational until "M4" | Closed by D66 (`0007_acl_rls.sql`) at **M3**, 546 lines later. D0.1's only forward pointer says "enforced at M4" — the wrong milestone, and names no entry. A reader following it looks under M4 and finds nothing. |
 | **D29** | dev-auth is gated on `NODE_ENV != production AND DEV_AUTH=1` (a **blocklist**) | **Reversed by D33**: the gate is an *allowlist* — `NODE_ENV ∈ {development, test}` (`dev-auth.ts:16`, `config.ts:102`). D33 calls this "the sole barrier to cross-tenant reads in M1." Neither entry points at the other. See §6.1 for how this same gate was broken and re-fixed again, differently, on master. |
-| **D24** | doctor is "46 checks" | **65** today, and it has been 46, 62 and 65 within a fortnight. D24 was already corrected once in place and went stale again immediately. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
+| **D24** | doctor is "46 checks" | **72** today, and it has been 46, 62, 65 and 72 within a fortnight. D24 was already corrected once in place and went stale again immediately. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
 | **D70** | "three `// rls-exempt:` exemptions exist" | **Eleven** now, and climbing (three when D70 was written, seven at the pass-2 review, nine after `7ae4d3e`, eleven after M4 added the acl census and the scope/acl count). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
 | **D51(c)** | three A17 perf items deferred: no GIN index, `hnsw.iterative_scan` never set, chunk inserts one-per-round-trip | **All three shipped, and one was misclassified.** `0006_fts_index.sql` adds the GIN index; `client.ts:215` sets `hnsw.iterative_scan` — **D58 reclassifies it as a tenancy control, not a latency knob** (§2); D65 batched the chunk inserts. D51 points forward to nothing. |
 | **D25** | column-grant protects `google_sub` **and** `email` | `migrate.ts` grants `cb_auth` `update(name, email, email_normalized, updated_at)`. **Email is rewritable by the login lane** — only `google_sub` is protected, via `adopt_principal`'s `IS NULL` guard. |
@@ -706,11 +710,11 @@ not.** Re-run before trusting it if the SHAs in the header have moved.
 | Command | Result |
 |---|---|
 | `bun run typecheck` | **clean** |
-| offline suite (DB + provider env blanked) | **431 pass / 176 skip / 0 fail**, 6.5s |
-| `bun run doctor` | **72/72** |
+| offline suite (DB + provider env blanked) | **440 pass / 176 skip / 0 fail**, 7.1s |
+| `bun run doctor` | **73/73** |
 | `bun run migrate` (re-run) | nothing re-applied — **idempotent** |
-| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **567 pass / 17 skip / 0 fail**, 284s |
-| `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **577 pass / 1 skip / 0 fail**, 312s |
+| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **576 pass / 17 skip / 0 fail**, 286s |
+| `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **586 pass / 1 skip / 0 fail**, 323s |
 | empty-acl insert as owner, post-`0012` | **23514 check_violation** — §6.5 genuinely enforced now |
 | `select count(*) from pg_index where not indisvalid` | **0** |
 | PostgreSQL | **17.6** · pgvector **0.8.2** · `hnsw.ef_search` **40** |

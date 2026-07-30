@@ -152,6 +152,14 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
       }));
       await admin`insert into content_chunks ${admin(rows, 'workspace_id', 'page_id', 'acl', 'ord', 'content', 'embedding', 'token_count')}`;
     }
+
+    // A2 asserts a specific PLANNER CHOICE, and the planner chooses on statistics. Freshly-inserted
+    // rows carry none until autovacuum gets to them, so without this the plan measured depends on
+    // whether an ANALYZE happened to land between the seed and the query — which would make A2 flap
+    // red for a reason that has nothing to do with the property, in the one suite whose own comments
+    // admit it is the timing-dependent one.
+    await admin`analyze content_chunks`;
+    await admin`analyze pages`;
   }, 600_000);
 
   afterAll(async () => {
@@ -160,16 +168,36 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
     mutableConfig.OPENROUTER_API_KEY = realOpenRouter;
     mutableConfig.CHAT_MODEL = realChatModel;
 
-    const admin = adminSql();
-    await admin`drop schema if exists cb_perf cascade`;
-    await admin`delete from workspaces where id in (${wsBig}, ${wsSmall})`; // cascades pages + chunks + members
-    await admin`delete from principals where id in (${pBig}, ${pSmall})`;
-    await closePools({ timeout: 5 });
+    // RESTORE FIRST, assert second. bun test shares ONE process across files
+    // (src/db/client.ts:157), so a DB_POOL_MAX left at 1 or 2 gives every later suite a starved pool
+    // and produces cascading timeouts that look like unrelated failures. The first version only
+    // ASSERTED the restore here while the actual restores lived in the nested afterAll hooks — so if a
+    // nested beforeAll threw after mutating it, this fired and then left the pool starved anyway.
+    // Detect-and-leave is worse than repair-and-report.
+    const leaked = config.DB_POOL_MAX;
+    mutableConfig.DB_POOL_MAX = realPoolMax;
 
-    // bun test shares ONE process across files (src/db/client.ts:157). A DB_POOL_MAX left at 1 or 2
-    // would give every later suite a starved pool and produce cascading timeouts that look like
-    // unrelated failures. Assert the restore rather than trusting it.
-    expect(config.DB_POOL_MAX, 'DB_POOL_MAX leaked out of the perf suite').toBe(realPoolMax);
+    const admin = adminSql();
+    // Each statement guarded on its own, and each independently: ids are '' until seeding gets that
+    // far, and `where id in ('','')` raises 22P02, which would abort the REST of this hook — masking
+    // whatever made beforeAll fail and leaking the principals it did manage to create.
+    const swallow = async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+      try { await fn(); } catch (err) { console.error(`[perf-recall cleanup] ${label} failed:`, err); }
+    };
+    await swallow('drop cb_perf', () => admin`drop schema if exists cb_perf cascade`);
+    const wsIds = [wsBig, wsSmall].filter(Boolean);
+    const pIds = [pBig, pSmall].filter(Boolean);
+    // cascades pages + chunks + members
+    if (wsIds.length) await swallow('delete workspaces', () => admin`delete from workspaces where id in ${admin(wsIds)}`);
+    if (pIds.length) await swallow('delete principals', () => admin`delete from principals where id in ${admin(pIds)}`);
+    // Real self-healing: a run killed before afterAll leaves rows behind, and RUN is regenerated each
+    // time so nothing else would ever reclaim them.
+    await swallow('sweep stale perf principals', () => admin`
+      delete from principals where email_normalized like 'perf-%@ex.com' and created_at < now() - interval '1 day'`);
+    await swallow('close pools', () => closePools({ timeout: 5 }));
+
+    expect(leaked, 'DB_POOL_MAX leaked out of the perf suite (restored now, but a nested afterAll was skipped)')
+      .toBe(realPoolMax);
   }, 300_000);
 
   // ── A. Filtered-HNSW recall at corpus scale (D58) ────────────────────────
@@ -427,6 +455,7 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
       const bigGrants = resolveGrants(pBig, wsBig);
       const smallGrants = resolveGrants(pSmall, wsSmall);
 
+      try {
       const out = await withScopedTx(ctxBig(), async (tx) => {
         try {
           // force_generic_plan removes the five-execution heuristic, so the plan built on the first
@@ -498,6 +527,13 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
       expect(out.second.live, 'public.current_grants() carried one principal\'s keyring into another\'s query').toEqual(smallGrants);
       // …and the rows follow it: the RLS predicate re-evaluated, it did not reuse a baked-in keyring.
       expect(out.second.n, 'the row count did not follow the identity switch').toBe(SMALL_PAGES);
+      } finally {
+        // Dropped by the test that CREATED it, not only by the outer afterAll. The schema carries a
+        // live `grant usage … to cb_app`, and it was deliberately placed outside `public` so doctor's
+        // snapshots cannot see it — which means a leftover is invisible to the one tool that would
+        // otherwise report it. Narrowing the window to this test is the cheap half of that fix.
+        await adminSql()`drop schema if exists cb_perf cascade`;
+      }
     }, 180_000);
   });
 
@@ -568,27 +604,38 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
 
     it('C2 property: six concurrent answers leave the pool free — no tx spans the model call', async () => {
       const N = 6;
+      // try/finally around everything below, because the assertion that can fail is the one that
+      // fails EXACTLY when the defect this test detects is present: a transaction held across chat()
+      // stops the last four from starting. Without the finally, `release()` never runs, six
+      // generations stay parked, and the describe's afterAll calls closePools() underneath them —
+      // producing unhandled rejections attributed to whichever file bun runs next.
       const answers = Array.from({ length: N }, () => answerQuestion(ctxSmall(), QUERY));
+      try {
+        // Bounded, and deliberately well under idle_in_transaction_session_timeout (15s): if a
+        // transaction WERE held across the model call, waiting past that timeout would surface as a
+        // confusing 25P03 instead of this message.
+        const deadline = Date.now() + 10_000;
+        while (arrived < N && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+        expect(
+          arrived,
+          `only ${arrived} of ${N} answers reached the model call. With DB_POOL_MAX=2, that is what a ` +
+            `transaction held across chat() looks like: the first two occupy the pool and the rest ` +
+            `cannot even start their retrieval (D6).`,
+        ).toBe(N);
 
-      // Bounded, and deliberately well under idle_in_transaction_session_timeout (15s): if a
-      // transaction WERE held across the model call, waiting past that timeout would surface as a
-      // confusing 25P03 instead of this message.
-      const deadline = Date.now() + 10_000;
-      while (arrived < N && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-      expect(
-        arrived,
-        `only ${arrived} of ${N} answers reached the model call. With DB_POOL_MAX=2, that is what a ` +
-          `transaction held across chat() looks like: the first two occupy the pool and the rest ` +
-          `cannot even start their retrieval (D6).`,
-      ).toBe(N);
+        // The property. Every answer is parked mid-generation and the pool is still serving.
+        expect(await probe(), 'the pool is exhausted while six answers sit in the model call').toBe('ok');
 
-      // The property. Every answer is parked mid-generation and the pool is still serving.
-      expect(await probe(), 'the pool is exhausted while six answers sit in the model call').toBe('ok');
-
-      release();
-      const settled = await Promise.all(answers);
-      expect(settled.length).toBe(N);
-      for (const a of settled) expect(a.answer.length).toBeGreaterThan(0);
+        release();
+        const settled = await Promise.all(answers);
+        expect(settled.length).toBe(N);
+        for (const a of settled) expect(a.answer.length).toBeGreaterThan(0);
+      } finally {
+        // Idempotent: release() twice is harmless, and allSettled drains whatever is still parked so
+        // no rejection outlives this test.
+        release();
+        await Promise.allSettled(answers);
+      }
     }, 180_000);
   });
 });

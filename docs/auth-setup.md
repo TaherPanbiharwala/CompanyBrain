@@ -22,7 +22,7 @@ DEV_LOGIN=1
 
 ```bash
 bun run migrate     # creates cb_app + cb_auth, applies schema + 0001, sets the grant matrix
-bun run doctor      # 72 checks on the security posture — must be green before you trust anything
+bun run doctor      # 73 checks on the security posture — must be green before you trust anything
 bun run start       # prints the exact redirect URI to register (only needed for the Google path)
 ```
 

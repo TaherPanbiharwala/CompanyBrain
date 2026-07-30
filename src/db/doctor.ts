@@ -28,6 +28,35 @@ interface Check {
   detail?: string;
 }
 
+/**
+ * Compare the migration files on disk against the `_migrations` ledger.
+ *
+ * PURE, and exported, so the three classifications can be tested without a database — the checks that
+ * use them were the only part of doctor that had no coverage at all, and the `null`-checksum branch
+ * in particular is unreachable from a healthy live run.
+ *
+ * Three lists rather than one because the remedies are three different actions: run migrate /
+ * reconcile the branches / restore the file. A NULL recorded checksum counts as DRIFT, not as
+ * "fine" — an unverified checksum is not a verified one, which is the position the migrate runner
+ * already takes.
+ */
+export function classifyLedger(
+  files: readonly { name: string; sha: string }[],
+  ledger: ReadonlyMap<string, string | null>,
+): { pending: string[]; orphans: string[]; drifted: string[] } {
+  const onDisk = new Set(files.map((f) => f.name));
+  const pending = files.filter((f) => !ledger.has(f.name)).map((f) => f.name);
+  const orphans = [...ledger.keys()].filter((n) => !onDisk.has(n));
+  const drifted: string[] = [];
+  for (const f of files) {
+    const recorded = ledger.get(f.name);
+    if (recorded === undefined) continue; // already reported as pending
+    if (recorded === null) { drifted.push(`${f.name} (no checksum recorded)`); continue; }
+    if (f.sha !== recorded) drifted.push(`${f.name} (content changed)`);
+  }
+  return { pending, orphans, drifted };
+}
+
 /** Print one verdict the moment it is reached.
  *
  *  Shared by the fixture diffs and by every boolean check, because buffering was the actual defect:
@@ -390,18 +419,32 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // Three checks rather than one, because the remedies are three different actions: run migrate /
   // reconcile the branches / restore the file.
   const files = await collectFiles();
+  // Guarded on the ledger's own existence, for the same reason the page_sources drift count above is:
+  // `migrate:reset` drops the public schema, and a data-only restore can leave the tables without it.
+  // The check whose entire job is reporting "this database's migration state is unknown" must not be
+  // the one that throws 42P01 on it — a throw here costs every check BELOW this point.
+  const hasLedger =
+    (await sql<{ present: boolean }[]>`select to_regclass('public._migrations') is not null as present`)[0]!.present;
   const ledger = new Map(
-    (await sql<{ filename: string; checksum: string | null }[]>`select filename, checksum from _migrations`)
-      .map((r) => [r.filename, r.checksum]),
+    hasLedger
+      ? (await sql<{ filename: string; checksum: string | null }[]>`select filename, checksum from _migrations`)
+          .map((r) => [r.filename, r.checksum] as const)
+      : [],
   );
+  if (!hasLedger) {
+    add('the _migrations ledger exists', false,
+      '_migrations is absent, so NOTHING is known about this database\'s migration state. Run `bun run migrate` TWICE.');
+  }
 
-  const pending = files.filter((f) => !ledger.has(f.name)).map((f) => f.name);
+  const { pending, orphans, drifted } = classifyLedger(
+    files.map((f) => ({ name: f.name, sha: sha256(readFileSync(f.path, 'utf8')) })),
+    ledger,
+  );
   add('every migration file on disk has been applied', pending.length === 0,
     pending.length
       ? `NOT APPLIED: ${pending.join(', ')}. Run \`bun run migrate\` TWICE (see the header of this file), then re-run doctor.`
       : `${files.length} files, all present in _migrations`);
 
-  const orphans = [...ledger.keys()].filter((n) => !files.some((f) => f.name === n));
   add('every applied migration still exists in this tree', orphans.length === 0,
     orphans.length
       ? `APPLIED BUT ABSENT FROM THIS TREE: ${orphans.join(', ')}. This database has had a migration ` +
@@ -409,16 +452,6 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
         `re-applied differently — reconcile the branches. Do NOT delete the ledger row.`
       : '');
 
-  // NULL counts as a mismatch: an unverified checksum is not a verified one (the runner takes the
-  // same position). doctor REPORTS this where migrate REFUSES to run on it, so an operator can see
-  // the whole posture before being blocked by the first offender.
-  const drifted: string[] = [];
-  for (const f of files) {
-    const recorded = ledger.get(f.name);
-    if (recorded === undefined) continue; // already reported as pending
-    if (recorded === null) { drifted.push(`${f.name} (no checksum recorded)`); continue; }
-    if (sha256(readFileSync(f.path, 'utf8')) !== recorded) drifted.push(`${f.name} (content changed)`);
-  }
   add('applied migrations match their recorded checksums', drifted.length === 0,
     drifted.length
       ? `${drifted.join(', ')}. An applied migration is immutable — restore the file (\`git checkout -- <path>\`) ` +
@@ -432,39 +465,77 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // scripts/ — and NOT on pages.acl or content_chunks.acl, which every ingest writes. 0007:114 says
   // so outright: "GRANT_TAG_RE in src/core/context.ts is the only thing excluding that today."
   //
+  // ONE copy of each pattern. They were written out per UNION branch, four times each, and the test
+  // that pins them against GRANT_TAG_RE uses toContain — which is satisfied by ONE match, so three
+  // branches could drift and `pages` could be censused under a different rule than its siblings with
+  // every test green.
+  const GRANT_TAG_SQL = '^(self|ws|team|role):[A-Za-z0-9_-]+$';
+  const UNMINTABLE_SQL = '^(team|role):';
+
+  // The CATALOG decides which tables carry an acl, not a hand-written list. The first version compared
+  // a literal ACL_TABLES against the literal table names in its own UNION — two copies of the same
+  // list, checked against each other — so a fifth acl-bearing table added by a later migration would
+  // be absent from BOTH halves at once and doctor would report green while censusing nothing for it.
+  // That is D95's own stated failure ("a database missing a migration nothing here touches reports
+  // GREEN") reproduced one level up, and it is not hypothetical: page_sources and quarantine joined
+  // this set in 0009, so the set has already grown once.
+  //
+  // rls-exempt: an information_schema catalog read on the owner pool. Column metadata, no rows.
+  const aclTables = (
+    await sql<{ table_name: string }[]>`
+      select table_name from information_schema.columns
+      where table_schema = 'public' and column_name = 'acl' and data_type = 'ARRAY'
+      order by table_name`
+  ).map((r) => r.table_name).filter((t) => /^[a-z_][a-z0-9_]*$/.test(t));
+
+  // rls-exempt: not a query — the NAMES this census expects to find, compared against the catalog
+  // above. A mismatch in either direction is the finding.
+  const EXPECTED_ACL_TABLES = ['content_chunks', 'page_sources', 'pages', 'quarantine'];
+  const unexpectedAcl = aclTables.filter((t) => !EXPECTED_ACL_TABLES.includes(t));
+  const missingAclTables = EXPECTED_ACL_TABLES.filter((t) => !aclTables.includes(t));
+  add('the acl-bearing tables are exactly the ones this census knows about',
+    unexpectedAcl.length === 0 && missingAclTables.length === 0,
+    unexpectedAcl.length
+      ? `UNCENSUSED: ${unexpectedAcl.join(', ')} carry an acl column and are not in EXPECTED_ACL_TABLES, so ` +
+        `the two checks below silently skip them. Add them here in the same change that adds the column.`
+      : missingAclTables.length
+        ? `MISSING: ${missingAclTables.join(', ')} — migration 0009 has not been applied. Run \`bun run migrate\`.`
+        : `${aclTables.join(', ')}`);
+
+  // Built ONLY over tables that exist. Unguarded, a bare `from page_sources` raised 42P01 on any
+  // database below 0009 and — because a throw ends booleanChecks — took every check BELOW this point
+  // with it, including cb_app NOBYPASSRLS, every-table-RLS-ENABLED and the zero-policy check. That is
+  // the exact defect the page_sources drift count above was already fixed for; it came straight back
+  // 110 lines lower. Table names come from the catalog and are re-validated against /^[a-z_]\w*$/.
+  //
   // Per-table aggregates UNIONed, deliberately not `group by tbl`: a GROUP BY emits only tables that
-  // have rows, so on a database where page_sources and quarantine are empty it returns two rows and
-  // the structural check below would fail on a healthy database. An aggregate with no GROUP BY
-  // returns exactly one row over zero input rows, so every table always reports.
+  // HAVE rows, so with page_sources and quarantine empty it returns two rows and the coverage check
+  // would fail on a healthy database. An aggregate with no GROUP BY returns exactly one row over zero
+  // input rows, so every table always reports.
   //
   // rls-exempt: a cross-TENANT census of acl tag SHAPES on the owner pool. A scoped read could not
   // answer this even in principle — an unmintable tag makes its own row invisible to every principal
   // INCLUDING its author, so the rows this exists to find are exactly the rows cb_app cannot see.
   // Tag prefixes and COUNTS only; no content, no ids, no tag values.
-  const census = await sql<{ tbl: string; malformed: number; unmintable: number; total: number }[]>`
-              select 'pages'          as tbl, count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int as malformed,
-                     count(*) filter (where t ~ '^(team|role):')::int as unmintable, count(*)::int as total
-                from pages,          unnest(acl) t
-    union all select 'content_chunks', count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
-                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
-                from content_chunks, unnest(acl) t
-    union all select 'page_sources',   count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
-                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
-                from page_sources,   unnest(acl) t
-    union all select 'quarantine',     count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
-                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
-                from quarantine,     unnest(acl) t`;
+  const census = aclTables.length
+    ? await sql.unsafe<{ tbl: string; malformed: number; unmintable: number; total: number }[]>(
+        aclTables
+          .map((t) => `select '${t}' as tbl,
+              count(*) filter (where tag !~ '${GRANT_TAG_SQL}')::int as malformed,
+              count(*) filter (where tag ~ '${UNMINTABLE_SQL}')::int as unmintable,
+              count(*)::int as total
+            from ${t}, unnest(acl) tag`)
+          .join(' union all '),
+      )
+    : [];
 
-  // Structural, not `total > 0`: doctor must be green immediately after migrate on an EMPTY database.
-  // That makes the two drift checks below vacuous on an empty corpus by necessity, so their vacuity
-  // control lives in test/acl-tag-format.test.ts (classification table + a GRANT_TAG_RE cross-check),
-  // not here. Said out loud because this repo has shipped vacuous assertions three times by not
-  // saying it.
-  const ACL_TABLES = ['content_chunks', 'page_sources', 'pages', 'quarantine'];
-  const censusTables = census.map((r) => r.tbl).sort();
-  add('the acl census covers all four acl-bearing tables',
-    censusTables.length === 4 && ACL_TABLES.every((t) => censusTables.includes(t)),
-    census.map((r) => `${r.tbl}=${r.total}`).join(' ') || 'census returned nothing');
+  // The two checks below are DRIFT detectors: on an empty corpus they are vacuous by necessity,
+  // because doctor must be green immediately after migrate on a fresh database. Their vacuity control
+  // therefore lives in test/acl-tag-format.test.ts, not here. Said out loud because this repo has
+  // shipped vacuous assertions three times by not saying it.
+  add('the acl census reported a row for every acl-bearing table',
+    census.length === aclTables.length,
+    census.map((r) => `${r.tbl}=${r.total}`).join(' ') || 'no acl-bearing tables exist');
 
   const malformed = census.filter((r) => r.malformed > 0);
   add('every acl tag matches the grant-tag format', malformed.length === 0,

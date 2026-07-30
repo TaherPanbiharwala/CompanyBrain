@@ -236,6 +236,19 @@ describe.skipIf(!live)('leak canary — a row is reachable only via workspace AN
 
         // Phase 2 — the actual assertion.
         const other = await dispatchOp(ctxC, name, spec.params);
+        // A REFUSAL IS NOT A CLEAN NEGATIVE. Since M4 put the per-principal budget at dispatchOp rung
+        // 0 (D94), this call can come back `rate_limited` — and because the line below collapses any
+        // non-ok result to '', all three assertions would then pass while asserting nothing. The sweep
+        // is 7 ops against a 120/min ceiling so it cannot happen today, but apiLimiter is a module
+        // singleton shared across every suite in one bun process, and nothing here resets it. Phase 1
+        // has a positive control; this is Phase 2's.
+        if (!other.ok) {
+          expect(
+            (other as { error: { code: string } }).error.code,
+            `${name}: the cross-tenant call was SHED by the rate limiter, so the assertions below ` +
+              `would pass without ever testing tenancy. The canary must never be answered by the meter.`,
+          ).not.toBe('rate_limited');
+        }
         const otherBody = other.ok ? JSON.stringify((other as { data: unknown }).data) : '';
         expect(otherBody, `${name} leaked workspace 1 data to workspace 2`).not.toContain(spec.expect(ctxA));
         expect(otherBody).not.toContain(A_PRIVATE_SECRET);

@@ -43,7 +43,7 @@ is the M0 down payment on it.
 cp .env.example .env      # fill in all three Supabase strings + both role passwords + API keys
 bun install
 bun run migrate           # (as postgres) enables pgvector, creates cb_app + cb_auth, applies schema.sql + every migration, sets the grant matrix
-bun run doctor            # 72 checks on the security posture — green before you trust anything
+bun run doctor            # 73 checks on the security posture — green before you trust anything
 bun run dev               # boots Express; GET /health -> {"status":"ok"}
 ```
 
@@ -141,7 +141,7 @@ a model call — DECISIONS D6).
   input, deliberately), `roles.ts`, `errors.ts`, `redact.ts`, `reqid.ts`, `server.ts`
   (`/api/:op` + `/api/_ops`), `tool-defs.ts` + `mcp.ts` (stdio MCP), `dev-auth.ts` (the header stub,
   now only a local fallback behind the session resolver), `call.ts` (local CLI)
-- `src/db/doctor.ts` — `bun run doctor`: 68 assertions + 4 snapshot fixtures (72 checks) over the grant matrix,
+- `src/db/doctor.ts` — `bun run doctor`: 69 assertions + 4 snapshot fixtures (73 checks) over the grant matrix,
   RLS policies and the `SECURITY DEFINER` surface. The twelve cross-tenant defects closed during M2's
   review were closed by GRANTs and POLICIES, which no type system or unit test can see; this is what
   makes them fail loudly if they ever drift.

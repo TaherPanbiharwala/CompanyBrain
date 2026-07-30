@@ -1022,17 +1022,22 @@ branches both append to will collide again the moment work forks.
   `apiLimiter` fired at exactly one site — `src/api/server.ts` — while `src/api/mcp.ts` and
   `src/api/call.ts` called `dispatchOp` bare. Since M3 that path carries `ask`, `search` and
   `ingest_file`, every one a paid provider call, so the AGENT lane was the one expensive surface with
-  no meter on it. `test/live-gate.test.ts:139-143` had recorded the hole in prose for a milestone,
+  no meter on it. The REQUIRED_LIVE_SUITES doc-comment in `test/live-gate.test.ts` had recorded the hole in prose for a milestone,
   which is the tell: a defect everyone can see and nobody owns.
   `ctx.remote` was considered as the metered/unmetered discriminator and REJECTED, recorded here so it
   is not re-proposed: `auth/resolver.ts:123` sets `remote:false` for a REAL browser session and
   `api/dev-auth.ts:99` sets `remote:true` for the local header stub, so `remote===false` is
-  {production HTTP, CLI} and exempting it would unmeter every paying customer. `core/context.ts:30`
+  {production HTTP, CLI} and exempting it would unmeter every paying customer. `OperationContext.remote` in core/context.ts
   also says outright that it is "NOT a scope switch". The opt-out is an explicit `DispatchOpts` field
   that takes a REASON STRING rather than a boolean — same discipline as the rls-exempt markers — and
   is reachable only from in-process TypeScript, since `DispatchOpts` is never built from a request
   body. The limiter DEFAULTS to the shared instance, so a transport added later is metered by
   omission rather than by someone remembering.
+  The CLI is REACHED but not effectively METERED, and that is recorded rather than implied:
+  `FixedWindowLimiter`'s buckets are a per-process Map and `src/api/call.ts` is one-shot, so every
+  invocation starts with an empty bucket and a shell loop is metered at 1 per process. REST and MCP
+  are long-lived and genuinely covered. The shipped suggestion string says "REST and MCP alike" for
+  that reason. A shared store is the real answer and belongs with the M5 ledger.
   Charging before op lookup is deliberate: it keeps the REST path byte-identical (the route already
   shed before dispatch ran) and an agent spraying op names it does not have is exactly the loop this
   bounds. `retryAfter` rides on the result rather than being re-derived per transport, so the header
@@ -1071,9 +1076,12 @@ branches both append to will collide again the moment work forks.
   The malformed/unmintable checks are drift detectors and therefore vacuous on an empty corpus by
   necessity — doctor must be green straight after `migrate` on a fresh database — so their vacuity
   control lives in `test/acl-tag-format.test.ts`, which pins `GRANT_TAG_RE` against its two SQL copies
-  and asserts a keyring still mints only `self:`/`ws:`. That last assertion is the coupling that
-  matters: the day `extra` goes live it goes RED and forces the unmintable check to be revisited in
-  the same change. Two new `rls-exempt` markers (now eleven), both cross-tenant counts on the owner
+  and asserts a keyring still mints only `self:`/`ws:`. The coupling that matters is the SOURCE SCAN, not the behavioural
+  assertion: `resolveGrants(principal, workspaceId, extra = [])` takes `extra` OPTIONALLY, so a
+  two-argument call in a test returns two tags forever no matter what any other call site starts
+  passing — the first version of that test asserted a guarantee it could not provide. What changes on
+  the day team scope ships is a CALL SITE, so the test scans every `resolveGrants(` in src/ and
+  scripts/ and fails on a third argument, with an anti-vacuity floor on the call-site count. Two new `rls-exempt` markers (now eleven), both cross-tenant counts on the owner
   pool, both stating that a scoped read could not answer the question even in principle.
 
 - **D96 — `current_grants()` being STABLE is the SOLE barrier, and now it is measured.**
@@ -1101,3 +1109,36 @@ branches both append to will collide again the moment work forks.
   small tenant gets ZERO rows under `iterative_scan=off` and all sixteen under `relaxed_order`. The
   ACL index that makes RLS affordable is also what keeps the planner out of the regime the GUC exists
   to fix, which is an interaction none of the three documents records.
+
+- **D97 — The M4 guards were reviewed and seven of them did not guard.** A seven-pass pre-landing
+  review (five specialists, a fresh-context adversarial pass, a red-team gap hunt) ran against the M4
+  commits. It found no cross-tenant leak and no auth bypass; the shipped behaviour was sound and the
+  live ladder was green. What it found instead was that **seven of the guards M4 added to PROVE that
+  behaviour could pass with their subject deleted** — which is D91's "a control that did not control",
+  one milestone later, in the controls written to close it.
+  The generative mistake is worth naming precisely, because it looks like diligence. M4's
+  red-then-green pass broke each guard's SUBJECT and watched the guard go red. It never asked the
+  other question: can this guard pass when its subject is REMOVED? Those are different tests, and
+  only the second one detects a guard that is scanning prose. `expect(dispatch).toContain('apiLimiter')`
+  goes red when the identifier is renamed and stays green when the import and the fallback are both
+  deleted, because the word survives in two doc comments. **Break the subject AND delete it.**
+  The most expensive finding was not a test at all: doctor's new acl census queried `page_sources`
+  and `quarantine` with no `to_regclass` guard, ~110 lines below the comment explaining why that
+  exact shape had already been fixed once (`7ae4d3e`). Because `booleanChecks` accumulates, a 42P01
+  on a pre-0009 database took every check BELOW it — NOBYPASSRLS, every-table-RLS-ENABLED, the
+  zero-policy check — and doctor reported nothing at all on precisely the partially-migrated database
+  D95 added those checks to describe. The census is now built from `information_schema` over the
+  tables that exist, which fixes three findings at once: the crash, the four hand-copied regexes, and
+  the fact that the old coverage check compared a literal list against its own UNION and so could
+  never see a FIFTH acl-bearing table (`page_sources` and `quarantine` joined that set in 0009, so it
+  had already grown once).
+  Two claims in D94/D95 were corrected rather than defended. **D95's forward guard did not exist**:
+  `resolveGrants(principal, workspaceId, extra = [])` takes `extra` optionally, so a two-argument call
+  in a test returns two tags forever no matter what any other call site starts passing — the entry
+  asserted a coupling the code could not provide. It is now a source scan over every call site, with
+  an anti-vacuity floor. **D94 over-claimed the CLI**: `FixedWindowLimiter` is a per-process Map and
+  `call.ts` is one-shot, so a shell loop is metered at 1 per process. REST and MCP are genuinely
+  covered; the CLI gap is now stated in the code, the suggestion string and the entry instead of
+  implied away.
+  Cross-model dissent was attempted again and is still unavailable — `codex exec` reports authenticated
+  and 401s on a real call, exactly as CONTEXT.md §9 records. Four passes now, single-model.
