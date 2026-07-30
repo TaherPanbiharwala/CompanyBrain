@@ -58,6 +58,63 @@ test('every suite gated on a live database routes through liveOrFail', () => {
   ).toEqual([]);
 });
 
+/** The live suites that must EXIST, keyed by the name each one passes to liveOrFail().
+ *
+ *  The scan above answers "is every database-backed suite gated?". It cannot answer "is every suite
+ *  that should exist still here?", because a deleted suite deletes its own evidence: drop the live
+ *  `describe` block and the `src/db/client.ts` import goes with it, touchesDb() stops matching, and
+ *  the file falls out of `inspected` entirely. The floor is the only thing left standing — and at 8
+ *  against 10 real suites it will absorb the loss of two before it says a word.
+ *
+ *  Names, not filenames: a rename is free, a deletion is not. What is being pinned is the coverage,
+ *  not the path it happens to live at today.
+ *
+ *  `mcp` is on this list for a specific reason. Its gate needs CB_MCP_PRINCIPAL and CB_MCP_WORKSPACE
+ *  on top of the connection strings, so for as long as those were unset the suite could not run at
+ *  all — and src/api/mcp.ts calls dispatchOp with NO rate limiter (apiLimiter is REST-only), which
+ *  makes the agent lane the one paid surface with no meter on it. That is the last suite that should
+ *  be allowed to quietly disappear. */
+const REQUIRED_LIVE_SUITES = [
+  'answer',
+  'api',
+  'hybrid',
+  'ingest',
+  'invites',
+  'm2-auth',
+  'mcp',
+  'rls-smoke',
+  'scope-acl',
+] as const;
+
+test('every required live suite still declares a liveOrFail gate', () => {
+  const found = new Set<string>();
+  for (const name of readdirSync(TEST_DIR).filter((n) => n.endsWith('.test.ts'))) {
+    if (name === 'live-gate.test.ts') continue; // its own liveOrFail('probe') calls are fixtures, not suites
+    const src = readFileSync(join(TEST_DIR, name), 'utf8');
+    // Matches both the one-line form and the wrapped `liveOrFail(\n  'name',` used where the
+    // readiness expression is long enough to break the line (api, m2-auth).
+    for (const m of src.matchAll(/liveOrFail\(\s*'([^']+)'/g)) found.add(m[1]!);
+  }
+
+  const missing = REQUIRED_LIVE_SUITES.filter((s) => !found.has(s));
+  expect(
+    missing,
+    `these live suites no longer declare a liveOrFail() gate anywhere in test/: ${missing.join(', ')}. ` +
+      `Either the suite was deleted — restore it, or remove it from REQUIRED_LIVE_SUITES deliberately — ` +
+      `or its gate name changed and this list needs updating.`,
+  ).toEqual([]);
+
+  // The other direction, so the list cannot rot into a historical artifact. Without this, suite #11
+  // is registered by nobody and inherits exactly the deletion hole this test was written to close —
+  // the same "written six months from now" failure the scan above is guarding against.
+  const unregistered = [...found].filter((s) => !(REQUIRED_LIVE_SUITES as readonly string[]).includes(s));
+  expect(
+    unregistered,
+    `these suites call liveOrFail() but are not in REQUIRED_LIVE_SUITES: ${unregistered.join(', ')}. ` +
+      `Add them, so that deleting one later fails this test instead of silently reducing coverage.`,
+  ).toEqual([]);
+});
+
 test('liveOrFail throws rather than skipping when the flag demands a live run', async () => {
   const { liveOrFail } = await import('./helpers/live.ts');
   const { config } = await import('../src/config.ts');
