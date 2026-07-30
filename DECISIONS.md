@@ -993,3 +993,111 @@ branches both append to will collide again the moment work forks.
   `.normalize('NFKC')` closes both, and is tried only after the raw form fails, so it can turn a false
   negative into a match but never accept a wrong password. Not cosmetic: a false negative re-runs
   `ALTER ROLE` on every migrate, which is precisely the credential-cache churn D63 exists to stop.
+
+## M4 — the proof, and one meter (2026-07-30)
+
+- **D93 — The perf/scale suite gets its OWN opt-in flag, not `CB_REQUIRE_LIVE_TESTS`.**
+  `test/leak-canary.test.ts:5-9` had promised `test/perf-recall.test.ts` for a whole milestone and the
+  file did not exist, so filtered-HNSW recall at scale, GUC bleed and pool headroom were covered
+  nowhere. Reinstating them under the flag CI already sets was the obvious move and is the wrong one:
+  that flag is what makes the SACRED leak canary fail rather than skip, and welding the only
+  timing-dependent tests in the repo to it means the first flake creates pressure to turn it off. So
+  `perfOrFail` (test/helpers/live.ts) has two axes and the ORDER between them is the design — "was
+  this suite asked for?" is checked FIRST and answers to `CB_RUN_PERF_TESTS` alone; only once it HAS
+  been asked for does `liveOrFail`'s no-silent-skip rule apply and a skip become a throw. Reverse the
+  two and a CI run would start throwing on a suite nobody requested, which is why a dedicated test
+  pins the ordering rather than a comment asking for it.
+  The registry in `test/live-gate.test.ts` needed its own copy for a mechanical reason worth
+  recording: that file's collector is `/liveOrFail\(\s*'([^']+)'/g`, which cannot match
+  `perfOrFail('perf-recall'`, so adding the name to `REQUIRED_LIVE_SUITES` would demand a gate that by
+  design will never exist. Hence `REQUIRED_PERF_SUITES` + `PERF_SUITE_FILES`, both checked in BOTH
+  directions, and the weakened-gate scanner extended to both helper names — `perfOrFail(…) && HAVE` is
+  the same hole as `liveOrFail(…) && HAVE`, and worse, because a suite whose whole justification is
+  "it may skip" makes a weakened gate look intentional.
+  CI wiring is deliberately NOT part of this: `.github/workflows/ci.yml` runs `bun run migrate` with
+  owner credentials on `branches: ['**']` and the repo has no remote, so it is an unreviewed trap that
+  arms on the first push. Adding a job to it before that is fixed is the wrong order.
+
+- **D94 — The per-principal budget moves from the Express route to `dispatchOp` rung 0.**
+  `apiLimiter` fired at exactly one site — `src/api/server.ts` — while `src/api/mcp.ts` and
+  `src/api/call.ts` called `dispatchOp` bare. Since M3 that path carries `ask`, `search` and
+  `ingest_file`, every one a paid provider call, so the AGENT lane was the one expensive surface with
+  no meter on it. `test/live-gate.test.ts:139-143` had recorded the hole in prose for a milestone,
+  which is the tell: a defect everyone can see and nobody owns.
+  `ctx.remote` was considered as the metered/unmetered discriminator and REJECTED, recorded here so it
+  is not re-proposed: `auth/resolver.ts:123` sets `remote:false` for a REAL browser session and
+  `api/dev-auth.ts:99` sets `remote:true` for the local header stub, so `remote===false` is
+  {production HTTP, CLI} and exempting it would unmeter every paying customer. `core/context.ts:30`
+  also says outright that it is "NOT a scope switch". The opt-out is an explicit `DispatchOpts` field
+  that takes a REASON STRING rather than a boolean — same discipline as the rls-exempt markers — and
+  is reachable only from in-process TypeScript, since `DispatchOpts` is never built from a request
+  body. The limiter DEFAULTS to the shared instance, so a transport added later is metered by
+  omission rather than by someone remembering.
+  Charging before op lookup is deliberate: it keeps the REST path byte-identical (the route already
+  shed before dispatch ran) and an agent spraying op names it does not have is exactly the loop this
+  bounds. `retryAfter` rides on the result rather than being re-derived per transport, so the header
+  and the decision that produced it cannot drift apart. One correction carried in the move: the old
+  message said "this workspace has hit its budget" while the bucket is keyed on `ctx.principal`, so
+  one member never throttled their colleagues.
+  This is a RATE meter and not a spend cap. No ledger, quota or usage accounting exists anywhere in
+  `src/`; D18 puts per-workspace caps at M5. What this bounds is the blast radius of a loop, not its
+  price — and `test/dispatch-limit.test.ts` asserts the REACH by source-scanning `mcp.ts`/`call.ts`
+  for an opt-out and `server.ts` for the import, because no black-box call can observe where a meter
+  sits.
+
+- **D95 — doctor learns the two checks `docs/plan.md:189` named and never got.**
+  Doctor was 65 checks against a spec asking for five, and TWO of those five were the missing ones.
+  *Migrations current*: every other check in the file probes an ARTIFACT of a specific migration
+  (`current_grants()` ⇒ 0007, an index ⇒ 0011, `cardinality()` ⇒ 0012), so a database missing a
+  migration nothing happens to touch reported green — which is exactly the state this project's shared
+  database was already found in once. Three checks, not one, because the remedies differ: run migrate
+  / reconcile the branches / restore the file. `collectFiles` is IMPORTED from `migrate.ts` rather
+  than re-globbed, because its `.endsWith('.sql')` filter is the only thing that makes
+  `0008_revert_*.sql.disabled` not a migration; a second implementation would drift and report two
+  permanent phantoms.
+  *ACL-tag coverage*: the grant-tag format was enforced on `acl_grants.grant_tag` — a table with zero
+  readers and zero writers — and not on `pages.acl`/`content_chunks.acl`, which every ingest writes.
+  0007:114 said so at the time and nobody acted on it. The check with the real value is the third one,
+  **unmintable** rather than merely malformed: a `team:`/`role:` tag is WELL-FORMED, so every existing
+  guard accepts it, and `resolveGrants`' `extra` parameter is dead at every call site — so a row
+  carrying one is invisible to every principal including its author AND unrepairable through the app,
+  because the policy that hides it blocks the UPDATE that would fix it. Catching it in doctor catches
+  it while repair is still possible.
+  The census UNIONs four per-table aggregates instead of `group by tbl`, and that is a correctness fix
+  rather than a style one: GROUP BY emits only tables that HAVE rows, so with `page_sources` and
+  `quarantine` empty it returned two rows and the structural check would have failed on a healthy
+  database. An aggregate with no GROUP BY returns one row over zero input rows. Found by running the
+  query before writing the check, which is the only reason it was not shipped broken.
+  The malformed/unmintable checks are drift detectors and therefore vacuous on an empty corpus by
+  necessity — doctor must be green straight after `migrate` on a fresh database — so their vacuity
+  control lives in `test/acl-tag-format.test.ts`, which pins `GRANT_TAG_RE` against its two SQL copies
+  and asserts a keyring still mints only `self:`/`ws:`. That last assertion is the coupling that
+  matters: the day `extra` goes live it goes RED and forces the unmintable check to be revisited in
+  the same change. Two new `rls-exempt` markers (now eleven), both cross-tenant counts on the owner
+  pool, both stating that a scoped read could not answer the question even in principle.
+
+- **D96 — `current_grants()` being STABLE is the SOLE barrier, and now it is measured.**
+  `0007:36-39`, `doctor.ts` and `CONTEXT.md` §2 all assert the same chain — an IMMUTABLE zero-argument
+  function is constant-folded at PLAN time, so a cached generic plan would bake in one principal's
+  keyring and hand it to the next request — and nothing had ever tested it. Two plausible objections
+  were raised while writing the test, and BOTH ARE WRONG, which is the reason this entry exists:
+  that `LANGUAGE sql` inlining would prevent the fold, and that the policy's own
+  `acl && (SELECT public.current_grants())` wrapper would block it because `eval_const_expressions`
+  does not fold a SubLink.
+  Measured on four clones inside one transaction under `force_generic_plan`, switching identity
+  between two EXECUTEs of the same prepared statement: `plpgsql` bare, `plpgsql` wrapped, `LANGUAGE
+  sql` bare and `LANGUAGE sql` wrapped ALL FROZE at the first principal's keyring. The real STABLE
+  function tracked the switch in both bare and wrapped form. So neither the language nor the
+  `(SELECT …)` wrapper is a backup; the volatility marking is the whole defence, and doctor's
+  `provolatile='s'` pin is load-bearing rather than decorative. `test/perf-recall.test.ts` B3 keeps the
+  broken IMMUTABLE clone permanently as the DETECTOR — without proving the fold can happen on this
+  server, "the real one did not freeze" is a claim about a defect that might not exist — and pins the
+  wrapped case too, so nobody relaxes the marking on the theory that the wrapper covers them.
+  A second measurement worth keeping, from the same suite: at this corpus size the planner does not
+  use the HNSW index at all. It BitmapAnds `idx_chunks_ws` with `idx_chunks_acl` — both RLS predicates
+  served from indexes, exactly what the `(SELECT …)` InitPlan form was designed to enable — and sorts
+  the tenant's rows exactly. So D58's truncation hazard is LATENT at small scale rather than absent,
+  and demonstrating it requires forcing the plan with `enable_sort = off`; with the plan forced, the
+  small tenant gets ZERO rows under `iterative_scan=off` and all sixteen under `relaxed_order`. The
+  ACL index that makes RLS affordable is also what keeps the planner out of the regime the GUC exists
+  to fix, which is an interaction none of the three documents records.

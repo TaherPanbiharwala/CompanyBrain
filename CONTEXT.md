@@ -19,8 +19,9 @@ trust it, with the corrections in §7. `HANDOVER.md` narrates the session that b
 with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
 actually *is*, and where those three get out of sync with the code or each other.
 
-Written against `master` = **`2ac308a`**. **If that SHA has moved, re-derive §6 and §10 before
-trusting them; the rest ages more slowly.** §10 is timestamped observation and decays fastest.
+Written against `master` = **`2ac308a`**, then updated for **M4** (see §0). **If the SHA has moved
+again, re-derive §6 and §10 before trusting them; the rest ages more slowly.** §10 is timestamped
+observation and decays fastest.
 
 ---
 
@@ -37,7 +38,7 @@ ls -l .env                            # if it's a symlink, do NOT `cp` onto it �
 cp .env.example .env                  # only if it's not a symlink
 bun install                           # M3 added mammoth/unpdf/xlsx — a stale node_modules fails typecheck
 bun run migrate && bun run migrate    # TWICE — doctor.ts:9's idempotency check needs a second run
-bun run doctor                        # must be green: 65 checks
+bun run doctor                        # must be green: 72 checks
 bun run dev                           # GET /health -> {"status":"ok"}
 ```
 Dev sign-in needs `DEV_AUTH=1 DEV_LOGIN=1` uncommented in `.env` (both ship commented out).
@@ -54,16 +55,23 @@ curl -s -b c.txt -XPOST localhost:3000/api/whoami -H 'content-type: application/
 unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under that flag is a
 failure, by design).
 
-**If you do only three things** (the previous top three are all done — see §6):
+**M4 landed 2026-07-30** (D93–D96): `test/perf-recall.test.ts` now exists and carries the three
+properties a serial ladder cannot see; the per-principal budget moved to `dispatchOp` rung 0 so all
+three transports are metered; doctor gained the two checks `docs/plan.md:189` named and never got
+(**72 checks**). M4's own gate — "an unfiltered query leaks nothing and doctor is green" — is met on
+evidence rather than assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
+
+**If you do only three things:**
 
 1. **Vendor `docs/enabling-team-scope.md` into the repo** (§5.1). The spec for the largest open item
    still exists only at `~/Desktop/novabyte-test-dataset/docs/`, reachable through a `$HOME`-relative
    default. A fresh clone has the #1 open item and no spec for it. Five minutes against a total loss.
-2. **Move the rate limiter in front of `dispatchOp`**, not the Express route (§5.3). It still has
-   exactly one enforcement site, so MCP and the CLI reach `ask`/`search`/`ingest_file` — all paid
-   provider calls — with no meter at all. That is the surface an agent drives in a loop.
-3. **Fix the CI workflow before adding a git remote** (§6.2). It is inert today only because no
+2. **Fix the CI workflow before adding a git remote** (§6.2). It is inert today only because no
    remote exists; on the first `git push` it starts migrating the shared database from every branch.
+   M4 deliberately did *not* wire the perf suite into it for this reason (D93).
+3. **Decide where spend accounting lives** (§5.3). M4 shipped a rate meter, not a cap — there is
+   still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
+   M8. Those disagree, and the decision is yours.
 
 Then: the README is stale in nine ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
 design decision waiting on you, not an implementation task.
@@ -81,7 +89,7 @@ milestones built: M0, M1, A17, M2, M3.
 | ops in `operations.ts` | **12** |
 | migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
 | `DECISIONS.md` | **96 entries, D0–D92**, no duplicate IDs |
-| `doctor` | **65 checks** |
+| `doctor` | **72 checks** |
 
 ### Why this section still exists
 
@@ -293,14 +301,20 @@ shape: an optional `audience` that filters retrieval to chunks whose ACL is a su
 structurally, not by asking the model to be careful. **Open founder decisions, not yet answered
 anywhere:** is this M3 scope or later, and does it belong on `ask` or a future `draft`/`publish` op?
 
-### 5.3 Rate limiting and spend — MCP *and* CLI
+### 5.3 Rate limiting — **CLOSED at M4**. Spend accounting — still open (M5)
 
-`apiLimiter` fires only at `server.ts:85`, in front of the Express `/api/:op` route. **Both**
-`mcp.ts:91` and `call.ts:40` call `dispatchOp` bare. Since M3 that path carries `ask`, `search` and
-`ingest_file` — all paid provider calls. No spend ledger, no per-workspace cap, no usage accounting
-anywhere in `src/`; `docs/plan.md` defers it to M8. A looping agent on the stdio bridge can spend
-without bound. **Fix by moving the limiter in front of `dispatchOp` itself**, not the Express route
-— that's what makes it apply to all three transports at once.
+~~`apiLimiter` fires only at `server.ts:85`~~ — the per-principal budget now runs at **rung 0 of
+`dispatchOp`** (D94), so REST, MCP and the CLI are metered by one instance, and a transport added
+later is metered *by omission* rather than by someone remembering. The opt-out is an explicit
+`DispatchOpts` field taking a reason string, reachable only from in-process TypeScript.
+`test/dispatch-limit.test.ts` source-scans `mcp.ts`/`call.ts`/`server.ts` to stop it drifting back to
+REST-only. Note `ctx.remote` was considered as the discriminator and **rejected** — it is inverted
+(`resolver.ts:123` is `remote:false` for a real browser session), so exempting `!remote` would
+unmeter production; don't re-propose it.
+
+**Still open:** this is a rate meter, not a spend cap. No ledger, per-workspace quota or usage
+accounting exists anywhere in `src/` — D18 puts caps at M5, which is the entry to follow, not
+`docs/plan.md`'s M8.
 
 ### 5.4 Documentation
 
@@ -407,9 +421,9 @@ prevent, and doctor asserts nothing about it.
   Added alongside it: a `pg_constraint` assertion on the acl CHECKs by DEFINITION, since nothing
   queried `pg_constraint` — which is exactly how four constraints enforcing nothing survived a
   62-check verifier.
-- **`test/perf-recall.test.ts` does not exist.** `leak-canary.test.ts:5-7` says filtered-HNSW recall
-  at scale, GUC-bleed concurrency, and pool headroom "are gated separately" in that file. They are
-  covered nowhere.
+- ~~`test/perf-recall.test.ts` does not exist~~ — **FIXED at M4 (D93/D96).** All three properties
+  `leak-canary.test.ts:5-7` promised are now in that file, gated on `CB_RUN_PERF_TESTS` rather than
+  `CB_REQUIRE_LIVE_TESTS` so the sacred canary's flag is never under pressure from a timing flake.
 - **`novabyte-eval.ts` writes results to the repo root** with no matching `.gitignore` entry — a
   full run leaves graded answers from a two-tenant dataset one `git add -A` from being committed.
 - **`.claude/settings.local.json`** (untracked) carries a permanent allow-rule that reads `.env` via
@@ -555,7 +569,7 @@ later entry reversed, and most carry no forward pointer.
 | **D0.1** | "at M2 nothing reads the `acl`"; private is aspirational until "M4" | Closed by D66 (`0007_acl_rls.sql`) at **M3**, 546 lines later. D0.1's only forward pointer says "enforced at M4" — the wrong milestone, and names no entry. A reader following it looks under M4 and finds nothing. |
 | **D29** | dev-auth is gated on `NODE_ENV != production AND DEV_AUTH=1` (a **blocklist**) | **Reversed by D33**: the gate is an *allowlist* — `NODE_ENV ∈ {development, test}` (`dev-auth.ts:16`, `config.ts:102`). D33 calls this "the sole barrier to cross-tenant reads in M1." Neither entry points at the other. See §6.1 for how this same gate was broken and re-fixed again, differently, on master. |
 | **D24** | doctor is "46 checks" | **65** today, and it has been 46, 62 and 65 within a fortnight. D24 was already corrected once in place and went stale again immediately. Treat any doctor count in `DECISIONS.md` — or in this file — as a timestamp, never a target. |
-| **D70** | "three `// rls-exempt:` exemptions exist" | **Nine** now, and climbing (it was three when D70 was written, seven at the pass-2 review, nine after the doctor work in `7ae4d3e`). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
+| **D70** | "three `// rls-exempt:` exemptions exist" | **Eleven** now, and climbing (three when D70 was written, seven at the pass-2 review, nine after `7ae4d3e`, eleven after M4 added the acl census and the scope/acl count). The property holds — each states a reason — but the count is what stands between "recorded reason" and "invisible hole", and it silently more than doubled. |
 | **D51(c)** | three A17 perf items deferred: no GIN index, `hnsw.iterative_scan` never set, chunk inserts one-per-round-trip | **All three shipped, and one was misclassified.** `0006_fts_index.sql` adds the GIN index; `client.ts:215` sets `hnsw.iterative_scan` — **D58 reclassifies it as a tenancy control, not a latency knob** (§2); D65 batched the chunk inserts. D51 points forward to nothing. |
 | **D25** | column-grant protects `google_sub` **and** `email` | `migrate.ts` grants `cb_auth` `update(name, email, email_normalized, updated_at)`. **Email is rewritable by the login lane** — only `google_sub` is protected, via `adopt_principal`'s `IS NULL` guard. |
 | **D14** | pgvector ≥0.8 "gates the M0 docker image" | D22 replaced Docker with Supabase entirely. The floor is real; the docker clause is residue. |
@@ -656,9 +670,15 @@ retrieval numbers above it are stale (§6.7).
 - **Extraction on real documents.** All eight fixtures are generated. Two-column PDFs, page-spanning
   tables, scanned pages and Devanagari/Tamil remain untested — and §6.8 and §6.9 both landed in
   exactly this blind spot (a blank CSV cell; a wide sheet). The next defect of that shape will too.
-- **Concurrency and scale.** `test/perf-recall.test.ts` still does not exist. GUC bleed between
-  interleaved requests on one pooled connection is invisible to a serial ladder, and it is precisely
-  what `current_grants()` being `STABLE` exists to prevent. `extract/index.ts`'s semaphore can also
+- **Concurrency and scale — now covered, with two findings.** `test/perf-recall.test.ts` exists
+  (M4): GUC bleed on a `max=1` pool, filtered-HNSW recall, and pool headroom under six concurrent
+  answers. Two things it established that no document had recorded. **(1)** `STABLE` on
+  `current_grants()` is the *sole* barrier to the plan-time fold — measured across four clones,
+  neither `LANGUAGE sql` inlining nor the policy's own `(SELECT …)` wrapper blocks it (D96), so
+  doctor's `provolatile='s'` pin is load-bearing. **(2)** At this corpus size the planner never uses
+  the HNSW index: it BitmapAnds `idx_chunks_ws` with `idx_chunks_acl` and sorts exactly, so D58's
+  truncation is **latent, not absent** — forcing the plan with `enable_sort=off` gives the small
+  tenant **0 rows** under `iterative_scan=off` and all 16 under `relaxed_order`. `extract/index.ts`'s semaphore can also
   over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
   waking) — reachable only if an `await` is ever introduced between them.
 - **Cross-model dissent.** Codex's token is revoked (`codex login status` reports "Logged in"; a real
@@ -681,18 +701,24 @@ retrieval numbers above it are stale (§6.7).
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
 
-### Current — master at `2ac308a`, measured 2026-07-30 after the merge
+### Current — measured 2026-07-30 after M4
 
 | Command | Result |
 |---|---|
 | `bun run typecheck` | **clean** |
-| offline suite (DB + provider env blanked) | **420 pass / 160 skip / 0 fail**, 6.4s |
-| `bun run doctor` | **65/65** |
+| offline suite (DB + provider env blanked) | **431 pass / 176 skip / 0 fail**, 6.5s |
+| `bun run doctor` | **72/72** |
 | `bun run migrate` (re-run) | nothing re-applied — **idempotent** |
-| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **556 pass / 1 skip / 0 fail**, 273s |
+| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **567 pass / 17 skip / 0 fail**, 284s |
+| `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **577 pass / 1 skip / 0 fail**, 312s |
 | empty-acl insert as owner, post-`0012` | **23514 check_violation** — §6.5 genuinely enforced now |
 | `select count(*) from pg_index where not indisvalid` | **0** |
-| PostgreSQL | **17.6** |
+| PostgreSQL | **17.6** · pgvector **0.8.2** · `hnsw.ef_search` **40** |
+
+The 17 skips in the perf-unset row are `test/perf-recall.test.ts` and its hooks; with
+`CB_RUN_PERF_TESTS=1` they run and the count drops back to the single pre-existing skip below. That
+pair of rows *is* the D93 property: the perf suite is invisible to the flag CI sets, and visible to
+its own.
 
 The single skip is `test/router.test.ts`'s `describe.skipIf(!!config.CHAT_MODEL)` — gated on model
 config, not on database liveness, so it is not a live-gate violation.
