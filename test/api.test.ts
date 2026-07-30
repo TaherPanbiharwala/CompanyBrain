@@ -7,6 +7,7 @@ import type { Server } from 'node:http';
 import { app } from '../src/index.ts';
 import { adminSql, closePools } from '../src/db/client.ts';
 import { config } from '../src/config.ts';
+import { devAuthEnabled } from '../src/api/dev-auth.ts';
 import { apiLimiter, preAuthLimiter } from '../src/auth/ratelimit.ts';
 import { liveOrFail, hasDbEnv } from './helpers/live.ts';
 
@@ -16,7 +17,10 @@ const RUN = crypto.randomUUID().slice(0, 8);
 
 const canRun = liveOrFail(
   'api',
-  hasDbEnv() && config.DEV_AUTH === 1 && config.NODE_ENV !== 'production',
+  // devAuthEnabled(config), not a `NODE_ENV !== 'production'` negative match: the server this suite
+  // boots gates the header stub on isDevEnv, so with NODE_ENV unset the old predicate said "run"
+  // while the stub was off and every request 401'd. Ask the same question the server asks.
+  hasDbEnv() && devAuthEnabled(config),
 );
 
 describe.skipIf(!canRun)('api /api/:op (live, dev-auth)', () => {

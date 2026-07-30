@@ -13,7 +13,7 @@ import { createHash, createHmac, pbkdf2Sync, timingSafeEqual } from 'node:crypto
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { config, DEV_ENVS } from '../config.ts';
+import { config, isDevEnv } from '../config.ts';
 import { adminSql } from './client.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -672,8 +672,13 @@ export function projectRefOf(adminUrl: string): string {
  *  independent confirmations line up, and prints what it is about to delete first. */
 async function reset(): Promise<void> {
   const confirm = process.env.CB_CONFIRM_RESET ?? '';
-  if (!DEV_ENVS.has(config.NODE_ENV)) {
-    throw new Error(`migrate:reset refuses to run with NODE_ENV=${JSON.stringify(config.NODE_ENV)} (must be development or test).`);
+  // isDevEnv, not DEV_ENVS.has — the third of the three drifted copies config.ts names. NODE_ENV
+  // defaults to 'development', so an unset variable passed this gate too. Lower severity than the
+  // auth gates only because --yes-destroy and CB_CONFIRM_RESET=<project-ref> still stand behind it;
+  // the point of isDevEnv is that there is now one answer to this question, not three.
+  if (!isDevEnv(config)) {
+    const shown = config.nodeEnvExplicit ? JSON.stringify(config.NODE_ENV) : '(unset — it defaults to "development")';
+    throw new Error(`migrate:reset refuses to run with NODE_ENV=${shown} (must be EXPLICITLY development or test).`);
   }
   if (!process.argv.includes('--yes-destroy')) {
     throw new Error('migrate:reset requires the explicit flag --yes-destroy.');
