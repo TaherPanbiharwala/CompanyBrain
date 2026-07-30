@@ -1,11 +1,56 @@
 # A17 answer-quality eval
 
-## Retrieval scoring
-- hit@1: 1.00
-- hit@3: 1.00
-- MRR: 1.00
+## Provenance — read this before the numbers
+
+| | |
+|---|---|
+| Retrieval engine scored | four-arm weighted RRF (`W_KW_AND 1.0`, `W_KW_OR 0.4`, `W_VEC 1.0`, `W_TITLE 0.5`), `BLEND_RRF 0.7` / `BLEND_COS 0.3`, autocut OFF |
+| Scored from | `eval/top8-baseline.txt` against `eval/a17-qrels.json` |
+| Corpus | `test/fixtures/a17-corpus/` — 12 docs, 14 chunks |
+| Scored | 2026-07-30 |
+
+**The numbers below were wrong until 2026-07-30 and are worth understanding rather than trusting.**
+They previously read `1.00 / 1.00 / 1.00`. Those were real, but they described the **two-arm**
+predecessor of the search that ships: this file's `Retrieved:` lines were captured before commit
+`aa8752a` rewrote hybrid search, and nobody re-scored afterwards. The regression was sitting in a
+committed file and the report kept reporting a ceiling.
+
+**This benchmark cannot fail usefully.** Ten questions over fourteen chunks, and it scored 1.000 on
+every metric before any change was made. It can show a *shape*; it cannot justify a tuned constant,
+and a green run here is not evidence the product answers correctly. The actual regression guard is
+`bun run dump:top8 --check`, which diffs the committed ranking and exits non-zero on any movement.
+
+## Retrieval scoring (four-arm engine, 2026-07-30)
+- hit@1: 0.900
+- hit@3: 1.000
+- MRR: 0.950
+
+Identical in chunk-rank and page-rank space, so the two harnesses' differing conventions do not
+matter on this corpus. One miss: **q10** ranks `northstar-robotics` first, while the relevant
+`finch-logistics` is 2nd and `sara-kim` is absent from the top slots.
 
 ## Answer transcript — hand-grade each: does this correctly answer the question, with honest citations?
+
+> **The `Retrieved:` line in each block is historical** — it records the two-arm engine's ranking and
+> does **not** match `eval/top8-baseline.txt`. For q1 this file lists `priya-nair, rohan-mehta,
+> northstar-robotics, …` where the current engine returns `priya-nair, northstar-robotics,
+> warehouse-routing-engine, rohan-mehta, …`: the same eight documents in a different order. The
+> **Answer** and **Cited** lines are still the right thing to hand-grade; the retrieval order is not.
+
+### AI pre-grade, 2026-07-30 — NOT the human gate
+
+An automated pass read all ten answers line by line against `test/fixtures/a17-corpus/` and found
+**zero hallucinations and zero mis-citations**; every `[n]` resolves to a document that supports the
+claim it is attached to. Two sub-threshold imprecisions, neither a grading failure:
+
+- **q7** says a rate limit "was bumped" (past tense) where the source records a *decision* to bump it.
+  The answer self-corrects in the same sentence with "a plan to ship that change within the week".
+- **q4** omits that 8% was the *opening* position and that Finch had not yet responded.
+
+**The `Grade:` boxes below are deliberately left empty.** This pre-grade is evidence for a human, not
+a substitute for one — ticking a box labelled "hand-grade" on a model's say-so is how a gate becomes
+decorative. It also verifies each answer against the whole *document*, not against the specific chunk
+retrieval actually put in front of the model, which is the weaker of the two things worth checking.
 
 ### q1: Who is the engineering lead at Northstar Robotics?
 
