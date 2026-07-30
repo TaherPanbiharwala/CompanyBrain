@@ -1,0 +1,58 @@
+-- ROLLBACK for 0009. NOT APPLIED — note the `.disabled` suffix: collectFiles() in migrate.ts only
+-- picks up `*.sql`, so this file is inert until someone deliberately renames it.
+--
+-- It exists for the reason 0008 exists: 0009 becomes checksum-immutable the moment it applies, the
+-- convention is forward-only (D23), and discovering there is no down path during an incident is the
+-- expensive way to learn this.
+--
+-- READ THIS BEFORE RENAMING IT. 0007's revert was a policy change — reversible, nothing lost. This
+-- one is not symmetric with its forward migration, ON PURPOSE:
+--
+--   `page_sources.bytes` is THE ONLY COPY of every file a user uploaded. There is no object store
+--   holding a second one (D71 — that is the whole point). `DROP TABLE page_sources` is unrecoverable
+--   data loss for every tenant at once, and it is not something a `git mv` and a `bun run migrate`
+--   should be able to do at 3am.
+--
+-- So this file reverts the OPERATIONAL surface — the constraints and indexes that can block a
+-- legitimate ingest — and deliberately drops NOTHING that holds data.
+--
+-- TO USE: rename to `0010_revert_multiformat.sql`, run `bun run migrate`, then `bun run doctor
+-- --update` and review the diff (the two sha indexes and the locator CHECK disappear; the grants and
+-- policies do NOT move, because nothing here drops a table).
+
+SET LOCAL lock_timeout = '3s';
+
+-- The most likely thing to actually need reverting. A unique index bypasses RLS, so if the dedup
+-- rule turns out to be wrong for some real workflow it fails a legitimate upload with a 23505 that
+-- the uploader cannot diagnose, because the row it collided with may be invisible to them.
+DROP INDEX IF EXISTS pages_sha_shared;
+DROP INDEX IF EXISTS pages_sha_private;
+
+-- Second most likely: a locator shape the Locator union grows but this CHECK has not learned about
+-- yet, rejecting an otherwise-good ingest at the last insert.
+ALTER TABLE content_chunks DROP CONSTRAINT IF EXISTS chunks_locator_shape;
+
+-- Pure performance; dropping it degrades the title arm to a seq scan and nothing else.
+DROP INDEX IF EXISTS idx_pages_title_prefix;
+
+-- WHAT THIS DOES NOT UNDO, deliberately:
+--
+--   * page_sources and quarantine — see above. To genuinely remove them, take a verified dump of
+--     `bytes` first, confirm you can restore from it, and write the DROP as its own migration with
+--     a named human accountable for it. If the goal is only to STOP writing them, that is an
+--     application change, not a schema change.
+--
+--   * pages.extracted_text / source_format / source_meta / source_sha256 / extractor and
+--     content_chunks.locator — dropping a column drops its data. extracted_text is what makes
+--     re-chunking possible without re-running the parsers, and locator is what makes a citation say
+--     "page 7"; both are expensive to regenerate and impossible to regenerate exactly (parser output
+--     is not stable across versions, which is why `extractor` records the version). Nullable unused
+--     columns cost nothing. Leave them.
+--
+--   * the acl non-empty CHECKs on the new tables — correctness constraints independent of anything
+--     here, and an empty acl is a row permanently invisible to everyone including its author (0007
+--     section 3 explains why that is unrecoverable).
+--
+--   * migrate.ts narrowGrants' `revoke update on page_sources / quarantine` — that is not a
+--     migration and reverting it means editing the deny-matrix, which `bun run doctor` will then
+--     report as a grant change. Do it deliberately or not at all.

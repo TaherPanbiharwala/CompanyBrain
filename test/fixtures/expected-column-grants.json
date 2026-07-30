@@ -122,6 +122,24 @@
   {
     "grantee": "cb_app",
     "table_name": "content_chunks",
+    "column_name": "locator",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "locator",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "locator",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
     "column_name": "ord",
     "privilege_type": "INSERT"
   },
@@ -349,6 +367,102 @@
   },
   {
     "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "acl",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "acl",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "byte_len",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "byte_len",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "bytes",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "bytes",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "filename",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "filename",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "page_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "page_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "sha256",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "sha256",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
     "table_name": "pages",
     "column_name": "acl",
     "privilege_type": "INSERT"
@@ -440,6 +554,42 @@
   {
     "grantee": "cb_app",
     "table_name": "pages",
+    "column_name": "extracted_text",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "extracted_text",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "extracted_text",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "extractor",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "extractor",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "extractor",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
     "column_name": "id",
     "privilege_type": "INSERT"
   },
@@ -525,6 +675,60 @@
     "grantee": "cb_app",
     "table_name": "pages",
     "column_name": "slug",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_format",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_format",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_format",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_meta",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_meta",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_meta",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_sha256",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_sha256",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "source_sha256",
     "privilege_type": "UPDATE"
   },
   {
@@ -663,6 +867,138 @@
     "grantee": "cb_app",
     "table_name": "principals",
     "column_name": "updated_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "acl",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "acl",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "byte_len",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "byte_len",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "detail",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "detail",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "filename",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "filename",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "owner_principal",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "owner_principal",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "reason",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "reason",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "sha256",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "sha256",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "source_format",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "source_format",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "quarantine",
+    "column_name": "workspace_id",
     "privilege_type": "SELECT"
   },
   {

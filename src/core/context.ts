@@ -58,8 +58,17 @@ export class ContextError extends Error {
   }
 }
 
-export const selfGrant = (principal: string): Grant => `self:${principal}`;
-export const wsGrant = (workspaceId: string): Grant => `ws:${workspaceId}`;
+// Tags are LOWERCASED, and that is a correctness requirement rather than tidiness.
+//
+// Grant matching is `acl && grants` — Postgres array overlap, which is byte equality. UUID_RE below
+// carries the /i flag, and `bun run call` / the MCP bridge take the principal verbatim from
+// CB_CLI_PRINCIPAL / CB_MCP_PRINCIPAL, so an operator pasting an uppercase UUID stamps
+// `self:A1B2…` on their page. The read path gets its ids from cb_internal.resolve_session, which
+// returns a `uuid` that postgres.js renders canonically lowercase — `self:a1b2…`. Those two strings
+// do not overlap, so the author's own private page becomes permanently unreadable by anyone.
+// Invisible today (nothing compares acl to grants); permanent the moment the M3 policy lands.
+export const selfGrant = (principal: string): Grant => `self:${principal.toLowerCase()}`;
+export const wsGrant = (workspaceId: string): Grant => `ws:${workspaceId.toLowerCase()}`;
 
 /** Build the request keyring: self + workspace, plus any team/role grants (M5). */
 export function resolveGrants(principal: string, workspaceId: string, extra: readonly Grant[] = []): Grant[] {

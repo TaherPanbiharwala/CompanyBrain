@@ -13,7 +13,7 @@ import { createHash, createHmac, pbkdf2Sync, timingSafeEqual } from 'node:crypto
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { config, DEV_ENVS } from '../config.ts';
+import { config, isDevEnv } from '../config.ts';
 import { adminSql } from './client.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -360,6 +360,33 @@ async function narrowGrants(sql: SqlLike): Promise<void> {
   // must be revoked at table level first or the column grant below is decoration.
   await sql`revoke update, delete on invites from cb_app`;
   await sql`grant update (status) on invites to cb_app`;
+  // The stored source file is immutable: replace_page deletes the row and inserts a new one, so the
+  // bytes and the sha256 that identifies them can never diverge through a partial UPDATE. INSERT and
+  // DELETE stay — ingest writes, delete_page/replace_page reap.
+  // GUARDED ON EXISTENCE, matching the pattern ensureAuthFunctions already uses for
+  // current_grants(). These revokes name tables created by migration 0009, and 0010's own footer
+  // tells a future operator to remove them "as its own migration" — the moment such a DROP commits,
+  // an unguarded revoke here throws 42P01 and rolls back the ENTIRE grant transaction
+  // (grantExisting + grantAuth + narrowGrants + ensureAuthFunctions). Since the DROP is already
+  // recorded in _migrations, every subsequent `bun run migrate` fails identically until someone
+  // edits TypeScript — a schema change bricking the runner that applies schema changes.
+  //
+  // rls-exempt: privilege DDL on the owner pool, not a row read. This is the code that DEFINES what
+  // cb_app may do to these tables; running it on a scoped tx is not a stricter version of it.
+  await sql.unsafe(`
+DO $$ BEGIN
+  -- The stored source file is immutable: replace_page deletes the row and inserts a new one, so the
+  -- bytes and the sha256 that identifies them can never diverge through a partial UPDATE.
+  IF to_regclass('public.page_sources') IS NOT NULL THEN
+    EXECUTE 'revoke update on page_sources from cb_app';
+  END IF;
+  -- A quarantine verdict is a record of what the gate decided, so it must not be editable — a
+  -- rewritable reason is not evidence. INSERT and DELETE stay: the gate writes, and a user may
+  -- discard their own rejected upload.
+  IF to_regclass('public.quarantine') IS NOT NULL THEN
+    EXECUTE 'revoke update on quarantine from cb_app';
+  END IF;
+END $$;`);
   // Unchanged, full DML: pages, content_chunks. Unchanged: _migrations stays fully revoked.
 }
 
@@ -452,6 +479,21 @@ REVOKE ALL ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_ses
 GRANT EXECUTE ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
   cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid) TO cb_app;
 GRANT EXECUTE ON FUNCTION cb_internal.adopt_principal(uuid,text) TO cb_auth;
+
+-- public.current_grants() is CREATED by migration 0007, not here — a policy cannot reference a
+-- function this helper has not made yet, because ensureAuthFunctions runs AFTER the migration loop.
+-- Its ACL is re-asserted on every run for the same reason the definers' is: a later DROP+CREATE for
+-- a signature change would silently restore PUBLIC EXECUTE, and the GRANT is what stands between
+-- cb_app and a 42501 on every single content query. Guarded so a database that has not reached 0007
+-- yet (a fresh clone mid-migrate) does not fail here.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'public' AND p.proname = 'current_grants') THEN
+    REVOKE ALL ON FUNCTION public.current_grants() FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION public.current_grants() TO cb_app;
+  END IF;
+END $$;
 `);
   }
 }
@@ -468,12 +510,82 @@ async function collectFiles(): Promise<MigrationFile[]> {
   return files;
 }
 
+/**
+ * Split a SQL script into individual statements on top-level semicolons.
+ *
+ * ONLY used by the no-transaction path, and it exists because that path was broken. Sending a
+ * multi-statement string through `sql.unsafe()` uses the simple query protocol, and Postgres wraps a
+ * multi-statement simple query in an IMPLICIT transaction block — so `CREATE INDEX CONCURRENTLY`
+ * failed with 25001 "cannot run inside a transaction block", which is the exact statement the pragma
+ * and the migrations README exist to support. The pragma had never worked; nothing had used it yet.
+ *
+ * Semicolons are only statement terminators when they are not inside something. This tracks the four
+ * things that can contain one: line comments, block comments, single-quoted literals, and
+ * dollar-quoted bodies (`$$ … $$` / `$tag$ … $tag$`, which is how every DO block in this repo is
+ * written). Double-quoted identifiers can contain a semicolon too and are tracked for completeness.
+ */
+export function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < sql.length) {
+    const two = sql.slice(i, i + 2);
+    if (two === '--') {
+      const nl = sql.indexOf('\n', i);
+      i = nl === -1 ? sql.length : nl + 1;
+      continue;
+    }
+    if (two === '/*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end === -1 ? sql.length : end + 2;
+      continue;
+    }
+    const ch = sql[i]!;
+    if (ch === "'" || ch === '"') {
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === ch) {
+          // Doubled quote is an escaped quote, not a terminator.
+          if (sql[i + 1] === ch) { i += 2; continue; }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '$') {
+      const m = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+      if (m) {
+        const tag = m[0];
+        const end = sql.indexOf(tag, i + tag.length);
+        i = end === -1 ? sql.length : end + tag.length;
+        continue;
+      }
+    }
+    if (ch === ';') {
+      const stmt = sql.slice(start, i).trim();
+      if (stmt) out.push(stmt);
+      start = i + 1;
+    }
+    i++;
+  }
+  const tail = sql.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
 async function applyFile(sql: postgres.Sql, file: MigrationFile, text: string): Promise<void> {
   const checksum = sha256(text);
   if (PRAGMA_NO_TX.test(text)) {
     // Non-transactional: statements can't be rolled back together. The file must be idempotent.
+    //
+    // ONE STATEMENT PER ROUND TRIP, deliberately. A multi-statement `unsafe()` is a simple query,
+    // which Postgres runs in an implicit transaction — defeating the entire point of the pragma.
     console.log(`+ applying ${file.name} (no-transaction)`);
-    await sql.unsafe(text);
+    for (const stmt of splitStatements(text)) {
+      await sql.unsafe(stmt);
+    }
     await sql`insert into _migrations (filename, checksum) values (${file.name}, ${checksum})`;
     return;
   }
@@ -619,8 +731,13 @@ export function projectRefOf(adminUrl: string): string {
  *  independent confirmations line up, and prints what it is about to delete first. */
 async function reset(): Promise<void> {
   const confirm = process.env.CB_CONFIRM_RESET ?? '';
-  if (!DEV_ENVS.has(config.NODE_ENV)) {
-    throw new Error(`migrate:reset refuses to run with NODE_ENV=${JSON.stringify(config.NODE_ENV)} (must be development or test).`);
+  // isDevEnv, not DEV_ENVS.has — the third of the three drifted copies config.ts names. NODE_ENV
+  // defaults to 'development', so an unset variable passed this gate too. Lower severity than the
+  // auth gates only because --yes-destroy and CB_CONFIRM_RESET=<project-ref> still stand behind it;
+  // the point of isDevEnv is that there is now one answer to this question, not three.
+  if (!isDevEnv(config)) {
+    const shown = config.nodeEnvExplicit ? JSON.stringify(config.NODE_ENV) : '(unset — it defaults to "development")';
+    throw new Error(`migrate:reset refuses to run with NODE_ENV=${shown} (must be EXPLICITLY development or test).`);
   }
   if (!process.argv.includes('--yes-destroy')) {
     throw new Error('migrate:reset requires the explicit flag --yes-destroy.');

@@ -72,6 +72,15 @@ const EnvSchema = z.object({
   // only the *chat* model is restricted per the founder's cost preference above.
   EMBEDDING_MODEL: z.string().default('openai:text-embedding-3-small'),
   EMBEDDING_DIM: z.coerce.number().default(1536),
+  // Cross-encoder reranking. OFF by default (empty = off), and the default is the decision, not
+  // laziness: a reranker adds a paid provider call to the hot ask path, and there is no eval in this
+  // repo that could show it earning that. The seam is real and wired — set e.g.
+  // `cohere:rerank-v3.5` to turn it on — so enabling it later is configuration, not code.
+  // D15 kept this seam in v0 precisely so the shape would exist before the evidence did.
+  RERANK_MODEL: z.string().default(''),
+  // Multi-query expansion: paraphrase the question with the chat model and widen the KEYWORD arm
+  // with the extra terms. 0 = off. Also a paid call on the ask path, also unmeasurable here.
+  QUERY_EXPANSION: z.coerce.number().default(0),
 
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
@@ -104,7 +113,7 @@ export const DEV_ENVS: ReadonlySet<string> = new Set(['development', 'test']);
  *
  * `devLoginEnabled` had it right, but via a SECOND mechanism (an `env` parameter read straight from
  * process.env), which is precisely why the other two could drift away from it. Same shape as
- * `appBaseUrlExplicit` above: when a default would satisfy the check, the check has to know whether
+ * `appBaseUrlExplicit` below: when a default would satisfy the check, the check has to know whether
  * it is looking at a default.
  */
 export function isDevEnv(cfg: Pick<Config, 'NODE_ENV' | 'nodeEnvExplicit'>): boolean {

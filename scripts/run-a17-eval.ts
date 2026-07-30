@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   console.log('Scoring retrieval...');
   const summary = await scoreRetrieval(qrels, async (question) => {
     const q = qrels.find((x) => x.question === question);
-    const hits = q ? results.get(q.id)!.sources : await hybridSearch(ctx, question);
+    const hits = q ? results.get(q.id)!.sources : (await hybridSearch(ctx, question)).hits;
     const slugs: string[] = [];
     for (const h of hits) if (!slugs.includes(h.slug)) slugs.push(h.slug);
     return slugs;

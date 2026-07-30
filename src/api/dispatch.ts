@@ -36,7 +36,7 @@ export async function dispatchOp(
   const started = performance.now();
   const op: Operation | undefined = operationsByName[name];
 
-  const finish = (outcome: string, result: DispatchResult): DispatchResult => {
+  const finish = (outcome: string, result: DispatchResult, dims?: RequestLogEntry['dims']): DispatchResult => {
     const entry: RequestLogEntry = {
       ts: new Date().toISOString(),
       reqId,
@@ -48,9 +48,19 @@ export async function dispatchOp(
       params: summarizeParams(op, rawParams),
       outcome, // code/enum ONLY — never a message
       ms: Math.round(performance.now() - started),
+      ...(dims ? { dims } : {}),
     };
     logSink(entry);
     return result;
+  };
+
+  /** The closed set from detect.ts. An allow-list rather than "whatever the handler returned",
+   *  because this value goes into a log line and the handler's return type cannot promise it stayed
+   *  inside the union — a future op returning `format: <user text>` would otherwise inject it. */
+  const KNOWN_FORMATS = new Set(['pdf', 'docx', 'xlsx', 'csv', 'json', 'html', 'markdown', 'text']);
+  const dimsOf = (data: unknown): RequestLogEntry['dims'] | undefined => {
+    const f = (data as { format?: unknown } | null)?.format;
+    return typeof f === 'string' && KNOWN_FORMATS.has(f) ? { format: f } : undefined;
   };
 
   const fail = (code: OpErrorCode, message: string, suggestion?: string): DispatchResult =>
@@ -75,11 +85,48 @@ export async function dispatchOp(
   // 4. run — handlers open their own withScopedTx; any chat()/embed() stays OUTSIDE it (D6).
   try {
     const data = await op.handler(ctx, parsed.data);
-    return finish('ok', { ok: true, reqId, data });
+    // `ok_degraded`, not `ok`, when the handler says the result rests on less than it should.
+    //
+    // This is deliberately read off the RESULT rather than plumbed through a side channel: any op
+    // whose success can be partial should be able to say so by returning `degraded`, and one that
+    // never degrades needs no code here at all. Still a code/enum, never a message (D28), and still
+    // a success — the caller got an answer.
+    //
+    // Without this, an embedding outage is invisible in the logs: every request reads `ok`, latency
+    // barely moves (keyword-only is FASTER), and the only symptom is that answers quietly get worse.
+    // Both shapes count. `search`/`ask` report a STRING naming which arm was lost; `ingest_file`
+    // reports a BOOLEAN meaning the extraction was partial (a 40-page PDF where 37 pages were scans).
+    // Different causes, same operational fact — the request succeeded and the result is worth less
+    // than it looks — so they share one outcome code rather than one being silently logged as clean.
+    const degraded = (data as { degraded?: unknown } | null)?.degraded;
+    const isDegraded = degraded === true || (typeof degraded === 'string' && degraded !== '');
+    return finish(isDegraded ? 'ok_degraded' : 'ok', { ok: true, reqId, data }, dimsOf(data));
   } catch (err) {
     if (err instanceof OperationError) {
       // Op-declared error: message is intended for the caller (no secret values by construction).
       return finish(err.code, { ok: false, reqId, status: err.status, error: err.toWire() });
+    }
+    // A policy/privilege denial is not an internal error, and it is the one Postgres failure a
+    // caller can act on. Without this branch every RLS-adjacent refusal reaches the caller as
+    // `internal_error` + "Reference reqId … in server logs" — terminal for an MCP agent, which
+    // cannot read server logs and cannot usefully retry. `permission_denied` has been declared in
+    // errors.ts since M1 with the comment "acl && grants rows at M3" and was constructed nowhere;
+    // M3 is when it becomes reachable. Detail still goes to the error sink, because the Postgres
+    // message can echo a row value.
+    if ((err as { code?: string } | null)?.code === '42501') {
+      errorSink(reqId, name, err);
+      return finish('permission_denied', {
+        ok: false,
+        reqId,
+        status: 403,
+        error: {
+          code: 'permission_denied',
+          message: 'the database denied this operation for the calling identity',
+          suggestion:
+            'A row is reachable only when its workspace matches your active workspace AND its acl ' +
+            'overlaps your grants. Call whoami to see both.',
+        },
+      });
     }
     // Unexpected throw (e.g. a Postgres error echoing a value): full detail to the SEPARATE error
     // sink; the caller and the shape-only log get only the code + reqId.

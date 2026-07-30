@@ -62,6 +62,21 @@ export interface RequestLogEntry {
   params: ParamSummary | null;
   outcome: string; // a code/enum ('ok' | error code) — NEVER a message (review AM1)
   ms: number;
+  /**
+   * Low-cardinality DIMENSIONS of the request, for slicing the logs — never param values.
+   *
+   * `format` is the one entry today, and it is a deliberately scoped exception to D28's "shapes,
+   * never values" rule, so the reasoning is written here rather than assumed. It is admissible only
+   * because of where it comes from: `detect.ts`'s CLOSED UNION, decided from the file's magic bytes.
+   * It is NOT the filename extension and NOT a caller-supplied MIME string — both are user-controlled
+   * free text, and logging either would put attacker-chosen content into a JSON log line, which is
+   * exactly the injection D28 exists to prevent.
+   *
+   * The value is worth the exception: "PDF ingests started failing this morning" is not a question
+   * the logs could answer otherwise, and per-format failure rate is the first thing anyone looks at
+   * when a parser regresses.
+   */
+  dims?: { format?: string };
 }
 
 export type LogSink = (entry: RequestLogEntry) => void;

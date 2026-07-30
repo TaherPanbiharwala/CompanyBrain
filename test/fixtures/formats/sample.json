@@ -1,0 +1,12 @@
+{
+  "pricing": {
+    "starter": {
+      "perRobot": 4500,
+      "cap": 10
+    },
+    "growth": {
+      "perRobot": 3900,
+      "platformFee": 25000
+    }
+  }
+}
