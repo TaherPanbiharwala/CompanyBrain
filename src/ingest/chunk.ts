@@ -250,6 +250,90 @@ function headingPrefix(path: string[]): string {
   return path.length > 0 ? `${path.join(' > ')}\n\n` : '';
 }
 
+/** Slice `s` into runs of at most `maxBytes` UTF-8 bytes, never splitting a code point.
+ *
+ *  Bytes, not characters, and that is the whole trick: `estimateTokens` is `ceil(utf8Bytes / 4)`, so
+ *  a byte bound IS a token bound. Everything below can therefore guarantee its output fits WITHOUT
+ *  looping over an estimate that might not shrink. */
+function sliceByBytes(s: string, maxBytes: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let bytes = 0;
+  for (const cp of s) {
+    // Iterating the string yields code points, so a 4-byte emoji or Devanagari cluster is never cut.
+    const n = Buffer.byteLength(cp, 'utf8');
+    if (bytes + n > maxBytes && cur) {
+      out.push(cur);
+      cur = '';
+      bytes = 0;
+    }
+    cur += cp;
+    bytes += n;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** Break `body` into pieces of at most `budget` tokens — at line boundaries where one fits, by bytes
+ *  when a single line does not. A `row` block is one line, so rows stay whole wherever possible,
+ *  preserving rule 1 below; the byte path is the escape hatch for a row wider than the whole cap. */
+function splitToBudget(body: string, budget: number): string[] {
+  if (estimateTokens(body) <= budget) return [body];
+  const maxBytes = budget * 4;
+  const out: string[] = [];
+  let cur = '';
+  for (const line of body.split('\n')) {
+    const cand = cur ? `${cur}\n${line}` : line;
+    if (Buffer.byteLength(cand, 'utf8') <= maxBytes) {
+      cur = cand;
+      continue;
+    }
+    if (cur) {
+      out.push(cur);
+      cur = '';
+    }
+    if (Buffer.byteLength(line, 'utf8') <= maxBytes) {
+      cur = line;
+      continue;
+    }
+    out.push(...sliceByBytes(line, maxBytes));
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** Fraction of the cap the heading path + table header may occupy. */
+const FRAME_SHARE = 0.5;
+
+/** Bound the non-body part of a chunk — heading path plus repeated table header.
+ *
+ *  `prefix` is as unbounded as `header`: it is `headingPath.join(' > ')`, and nothing caps a
+ *  heading's length or the nesting depth, both of which come from the document. Capping only the
+ *  header would leave the non-convergent case intact — if the prefix alone exceeded the budget there
+ *  would be no room for any body at all. Bounding the frame FIRST is what makes the body budget
+ *  positive by construction rather than by hope. */
+function capFrame(prefix: string, header: string, maxTokens: number): string {
+  const frameCap = Math.max(1, Math.floor(maxTokens * FRAME_SHARE));
+  const prefixCap = Math.max(1, Math.floor(frameCap / 2));
+
+  let p = prefix;
+  if (estimateTokens(p) > prefixCap) p = `${sliceByBytes(p, prefixCap * 4)[0]!}…\n\n`;
+
+  let h = header;
+  const headerCap = Math.max(1, frameCap - estimateTokens(p));
+  if (h && estimateTokens(h) > headerCap) {
+    const kept = sliceByBytes(h, headerCap * 4)[0]!;
+    // Column count, not byte count: "+7 more columns" is actionable, "+312 bytes" is not.
+    const dropped = h.slice(kept.length).split(' | ').length;
+    h = `${kept}… (+${dropped} more columns)`;
+  }
+
+  const frame = `${p}${h ? `${h}\n` : ''}`;
+  // The floor. Both branches above append a marker after slicing, so either can overshoot its own
+  // cap by the marker's length; this is what actually enforces the bound the caller relies on.
+  return estimateTokens(frame) > frameCap ? sliceByBytes(frame, frameCap * 4)[0]! : frame;
+}
+
 /**
  * Pack blocks into chunks.
  *
@@ -277,17 +361,39 @@ export function chunkBlocks(blocks: Block[], opts?: BlockChunkOptions): BlockChu
   let bufTokens = 0;
   let lastHeader: string | undefined;
 
+  /**
+   * THE emitter. Every chunk leaves through here, and it measures what it EMITS.
+   *
+   * The defect this closes: the packing budget was kept on `block.text` alone, while the string that
+   * actually reached `embedAll` was `prefix + header + body`. Neither the heading path nor the
+   * repeated table header was ever counted, so `maxTokens` — documented as an absolute ceiling —
+   * bounded nothing that was emitted. A 5,000-column CSV produced 44 chunks of ~17,600 tokens each
+   * against a 7,500 limit, and every one of them was an untyped 500 at the last step of ingest.
+   *
+   * There were also TWO push sites, and the escape hatch below did not go through `flush()` — so a
+   * fix applied only to `flush()` would have skipped the more dangerous of the two. One emitter, or
+   * the guarantee is worthless.
+   */
+  const emit = (header: string | undefined, body: string, locator: Locator | undefined): void => {
+    const frame = capFrame(headingPrefix(headingPath.map((h) => h.text)), header ?? '', maxTokens);
+    // >= 1 by construction: capFrame's floor bounds the frame to at most half the cap, and Math.max
+    // covers the degenerate maxTokens=1 case. A positive budget is what makes this terminate.
+    const budget = Math.max(1, maxTokens - estimateTokens(frame));
+    for (const piece of splitToBudget(body, budget)) {
+      const text = `${frame}${piece}`.trim();
+      if (text) out.push({ text, index: out.length, locator });
+    }
+  };
+
   const flush = (): void => {
     if (buf.length === 0) return;
-    const prefix = headingPrefix(headingPath.map((h) => h.text));
-    const header = buf.find((b) => b.header)?.header;
     // The header rides ONCE per chunk, not once per row — a 50-column header inlined per row would
     // be most of the payload and would make every row's embedding near-identical.
-    const body = buf.map((b) => b.text).join('\n');
-    const text = `${prefix}${header ? `${header}\n` : ''}${body}`.trim();
-    if (text) {
-      out.push({ text, index: out.length, locator: mergeLocators(buf.map((b) => b.locator)) });
-    }
+    emit(
+      buf.find((b) => b.header)?.header,
+      buf.map((b) => b.text).join('\n'),
+      mergeLocators(buf.map((b) => b.locator)),
+    );
     buf = [];
     bufTokens = 0;
   };
@@ -309,15 +415,13 @@ export function chunkBlocks(blocks: Block[], opts?: BlockChunkOptions): BlockChu
     // splitter and let each piece keep the header and locator.
     if (blockTokens > maxTokens) {
       flush();
+      // chunkText first for SEMANTIC boundaries (it splits on paragraph/sentence delimiters), then
+      // emit for the HARD bound. Its chunkSize is a WORD count while the cap is in tokens and its
+      // own fallback is in characters — three units, none of which the provider enforces. So its
+      // output is a suggestion; emit is what guarantees the result fits.
       const approxWords = Math.max(50, Math.round(target * 0.75));
       for (const piece of chunkText(block.text, { chunkSize: approxWords, chunkOverlap: 0 })) {
-        const prefix = headingPrefix(headingPath.map((h) => h.text));
-        const header = block.header ? `${block.header}\n` : '';
-        out.push({
-          text: `${prefix}${header}${piece.text}`.trim(),
-          index: out.length,
-          locator: block.locator,
-        });
+        emit(block.header, piece.text, block.locator);
       }
       lastHeader = block.header;
       continue;

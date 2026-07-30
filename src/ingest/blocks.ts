@@ -54,6 +54,13 @@ export interface Extracted {
     sheetNames?: string[];
     headerRow?: Record<string, number>;
     attachments?: string[];
+    /** Columns clamped away by the extractor's width cap, summed across sheets.
+     *
+     *  Deliberately NOT folded into `unitsSkipped`, which means "this unit's value was lost" (an
+     *  uncached formula, a scanned page). A clamped column is a different loss — the data was
+     *  present and we declined to read it — and averaging the two would make the skip ratio measure
+     *  neither. It gets its own field and its own arm in isDegraded. */
+    columnsDropped?: number;
   };
   /** Pages / sheets / records that yielded text. */
   unitsExtracted: number;
@@ -80,6 +87,9 @@ export const SKIP_THRESHOLD: Record<ExtractFormat, number> = {
 };
 
 export function isDegraded(e: Extracted): boolean {
+  // Any clamped column is degradation regardless of ratio: the caller uploaded columns we did not
+  // read, and the answer they get back will be missing them with nothing else to indicate it.
+  if ((e.meta.columnsDropped ?? 0) > 0) return true;
   const total = e.unitsExtracted + e.unitsSkipped;
   if (total === 0) return true;
   return e.unitsSkipped / total > SKIP_THRESHOLD[e.format];

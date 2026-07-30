@@ -69,6 +69,11 @@ export function extractHtml(bytes: Uint8Array): Extracted {
   };
 }
 
+/** Column cap for delimited text. Same value and same reasoning as xlsx's MAX_COLS_PER_SHEET —
+ *  kept as its own constant because the two extractors share no module, and a shared import here
+ *  would make text.ts depend on the xlsx parser it deliberately does not use. */
+const MAX_COLS_PER_ROW = 512;
+
 /** CSV/TSV: same shape as a spreadsheet — one `row` block per record, header carried separately. */
 export function extractCsv(bytes: Uint8Array): Extracted {
   const raw = decode(bytes).replace(/\r\n/g, '\n').trim();
@@ -98,12 +103,26 @@ export function extractCsv(bytes: Uint8Array): Extracted {
     return { format: 'csv', blocks: [], meta: {}, unitsExtracted: 0, unitsSkipped: 1 };
   }
 
+  // The COLUMN cap, same constant and same reasoning as xlsx: the header is repeated into every
+  // chunk of the file, so an unbounded width is unbounded per-chunk overhead. CSV is the CHEAPER
+  // input to abuse — a single line of 200k commas needs no zip container and no spreadsheet at all —
+  // so capping only xlsx would have left the easier door open.
+  //
+  // ONE cap read by the header and the rows alike. If they ever clamp differently, column N of a row
+  // stops meaning column N of the header: a silent shift, the same class as the empty-cell bug.
+  const clamp = (cells: string[]): string[] => cells.slice(0, MAX_COLS_PER_ROW);
+  let colsDropped = 0;
+
   // joinRow, not `.filter(Boolean).join(' | ')`: an interior empty cell holds its column, or every
   // value after it reads under the wrong header name. See the note on joinRow in blocks.ts.
-  const header = joinRow(splitLine(lines[0]!));
+  const headerCells = splitLine(lines[0]!);
+  colsDropped = Math.max(0, headerCells.length - MAX_COLS_PER_ROW);
+  const header = joinRow(clamp(headerCells));
   const blocks: Block[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const text = joinRow(splitLine(lines[i]!));
+    const cells = splitLine(lines[i]!);
+    colsDropped = Math.max(colsDropped, cells.length - MAX_COLS_PER_ROW);
+    const text = joinRow(clamp(cells));
     if (text === '') continue; // every cell blank — the row carries nothing
     blocks.push({ text, kind: 'row', header: header || undefined });
   }
@@ -111,7 +130,10 @@ export function extractCsv(bytes: Uint8Array): Extracted {
   return {
     format: 'csv',
     blocks,
-    meta: { headerRow: header ? { csv: 1 } : undefined },
+    meta: {
+      headerRow: header ? { csv: 1 } : undefined,
+      columnsDropped: colsDropped > 0 ? colsDropped : undefined,
+    },
     unitsExtracted: blocks.length,
     unitsSkipped: 0,
   };

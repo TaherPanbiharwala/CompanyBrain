@@ -21,6 +21,16 @@ import { joinRow } from '../blocks.ts';
 const MAX_ROWS_PER_SHEET = 5_000;
 const MAX_SHEETS = 50;
 
+/** The COLUMN axis, which had no bound at all while rows, sheets and merges all did. `range.e.c`
+ *  comes from the sheet's declared `!ref` — attacker-controlled metadata, and Excel's own maximum is
+ *  XFD (16,384). A wide sheet does not just cost memory: the header row is repeated into every chunk
+ *  of that sheet, so an unbounded header is unbounded per-chunk overhead.
+ *
+ *  Applied at BOTH loops below, from one constant. If the header loop and the data loop ever clamp
+ *  to different widths, column N of a row stops meaning column N of the header — a silent column
+ *  shift, which is the exact class fixed one commit earlier for empty cells. */
+const MAX_COLS_PER_SHEET = 512;
+
 /** Total cells expandMerges may materialise per sheet, and the widest single merge it will fill.
  *  A declared merge range is attacker-controlled metadata, not a measurement of the file. */
 const MAX_MERGE_CELLS = 200_000;
@@ -131,6 +141,10 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
   const headerRow: Record<string, number> = {};
   let extracted = 0;
   let skipped = 0;
+  // Counted separately from `skipped`, which means "a cell's VALUE was lost" (an uncached formula).
+  // A clamped column is a different loss — the data was there and we declined to read it — and
+  // folding the two together would make the degradation ratio measure neither one.
+  let colsDropped = 0;
 
   for (const sheetName of wb.SheetNames.slice(0, MAX_SHEETS)) {
     const ws = wb.Sheets[sheetName];
@@ -140,6 +154,10 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
     // bounds the read. It used to run before this line and was therefore unbounded.
     const range = XLSX.utils.decode_range(ws['!ref']);
     const lastRow = Math.min(range.e.r, range.s.r + MAX_ROWS_PER_SHEET - 1);
+    // ONE lastCol, read by both loops below. Deriving it twice is how the header and the data would
+    // drift into describing different column sets.
+    const lastCol = Math.min(range.e.c, range.s.c + MAX_COLS_PER_SHEET - 1);
+    if (range.e.c > lastCol) colsDropped += range.e.c - lastCol;
     expandMerges(ws, lastRow);
 
     const hdrIdx = findHeaderRow(ws, range, lastRow);
@@ -147,7 +165,7 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
     if (hdrIdx !== undefined) {
       headerRow[sheetName] = hdrIdx + 1; // 1-based, to match what a human sees in Excel
       const names: string[] = [];
-      for (let c = range.s.c; c <= range.e.c; c++) {
+      for (let c = range.s.c; c <= lastCol; c++) {
         names.push(cellText(ws[XLSX.utils.encode_cell({ r: hdrIdx, c })] as Cell | undefined) ?? '');
       }
       header = joinRow(names);
@@ -157,7 +175,7 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
     for (let r = firstDataRow; r <= lastRow; r++) {
       const parts: string[] = [];
       let missing = false;
-      for (let c = range.s.c; c <= range.e.c; c++) {
+      for (let c = range.s.c; c <= lastCol; c++) {
         const t = cellText(ws[XLSX.utils.encode_cell({ r, c })] as Cell | undefined);
         if (t === undefined) {
           // An uncached formula HOLDS ITS COLUMN, so the cells after it stay under their own
@@ -197,7 +215,11 @@ export function extractXlsx(bytes: Uint8Array): Extracted {
   return {
     format: 'xlsx',
     blocks,
-    meta: { sheetNames: wb.SheetNames, headerRow: Object.keys(headerRow).length ? headerRow : undefined },
+    meta: {
+      sheetNames: wb.SheetNames,
+      headerRow: Object.keys(headerRow).length ? headerRow : undefined,
+      columnsDropped: colsDropped || undefined,
+    },
     unitsExtracted: extracted,
     unitsSkipped: skipped,
   };

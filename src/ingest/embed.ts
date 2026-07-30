@@ -7,6 +7,7 @@
 // for. This splits the work into requests that can actually return, and reassembles them in an order
 // that cannot be wrong.
 import { embed } from '../ai/router.ts';
+import { OperationError } from '../api/errors.ts';
 import { estimateTokens } from './chunk.ts';
 
 /** Items per request. Well under the provider's array limit; the token bound below usually binds first. */
@@ -86,12 +87,21 @@ export async function embedAll(texts: string[]): Promise<number[][]> {
   // gate already rejects 2,000-character unbroken tokens and chunkBlocks enforces a hard cap, so an
   // oversized item means an invariant upstream stopped holding. Deliberately not dressed as a 4xx —
   // telling a user to fix their file would be pointing at the wrong thing.
+  //
+  // Typed, though, and that is not the same question. Blame belongs to us; the CALLER still has to
+  // decide what to do, and the caller is often an MCP agent that cannot read a server log. A bare
+  // Error became `internal_error` with "reference reqId <uuid>", which an agent reads as transient —
+  // so it re-uploaded the same 5 MB spreadsheet and re-paid for every batch that had succeeded.
+  // Same 500, same blame, but the suggestion now says the one thing the agent needs: do not retry.
   for (let i = 0; i < texts.length; i++) {
     const t = estimateTokens(texts[i]!);
     if (t > MAX_INPUT_TOKENS) {
-      throw new Error(
+      throw new OperationError(
+        'internal_error',
         `embedAll: chunk ${i} is ~${t} tokens, over the ${MAX_INPUT_TOKENS} per-input limit. ` +
           `The chunker should have split this; treat it as a bug in chunkBlocks, not in the document.`,
+        'This is a defect in our chunker, not a problem with your file. Retrying the same upload will ' +
+          'fail identically — report the reqId instead.',
       );
     }
   }

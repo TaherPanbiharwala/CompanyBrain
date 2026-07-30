@@ -219,3 +219,74 @@ describe('sanity gate', () => {
     expect(a).not.toBe(contentHash(new TextEncoder().encode('other bytes')));
   });
 });
+
+// The cap is enforced on what is EMITTED, not on what was handed in.
+//
+// `maxTokens` was documented as an absolute ceiling and bounded nothing that left the function: the
+// packing budget measured `block.text` while the emitted string was `prefix + header + body`, and
+// the escape hatch pushed to `out` without going through flush() at all. A 5,000-column CSV produced
+// 44 chunks of ~17,600 tokens against a 7,500 provider limit — an untyped 500 at the last step of
+// ingest, on a file that had passed every upstream check.
+//
+// These are property tests on purpose. A fixture proves one input; the claim is about all of them,
+// and the inputs that break it are the ones nobody thinks to write down.
+describe('chunkBlocks — every emitted chunk fits the cap', () => {
+  const MAX = 900; // the default: ceil(600 * 1.5)
+  const overCap = (cs: { text: string }[]): number[] =>
+    cs.map((c) => estimateTokens(c.text)).filter((t) => t > MAX);
+
+  it('a 16k-column header cannot blow the cap it is repeated into', () => {
+    const header = Array.from({ length: 16_384 }, (_, i) => `column_name_${i}`).join(' | ');
+    const blocks: Block[] = Array.from({ length: 5 }, (_, r) => ({
+      text: Array.from({ length: 16_384 }, (_, c) => `r${r}c${c}`).join(' | '),
+      kind: 'row' as const,
+      header,
+    }));
+    const chunks = chunkBlocks(blocks);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(overCap(chunks)).toEqual([]);
+  });
+
+  it('TERMINATION: a heading path longer than the whole cap still converges', () => {
+    // The case header-truncation alone does NOT fix. `prefix` is headingPath.join(' > ') and nothing
+    // bounds heading length or nesting depth, so if the prefix alone exceeded maxTokens the body
+    // budget went <= 0 and "re-split until it fits" could never finish. capFrame bounds the frame
+    // FIRST, which is what makes the budget positive by construction.
+    const deep: Block[] = [];
+    for (let i = 0; i < 40; i++) deep.push({ text: `H${i} ${'heading '.repeat(200)}`, kind: 'heading', level: (i % 6) + 1 });
+    deep.push({ text: 'the body under an absurd heading path', kind: 'paragraph' });
+    const chunks = chunkBlocks(deep);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(overCap(chunks)).toEqual([]);
+  });
+
+  it('a single 200k-character token with no whitespace is split, not emitted whole', () => {
+    // chunkText's delimiter splitter has nothing to split on here; only the byte path can bound it.
+    const chunks = chunkBlocks([{ text: 'x'.repeat(200_000), kind: 'paragraph' }]);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(overCap(chunks)).toEqual([]);
+  });
+
+  it('Devanagari is bounded too — the case a character budget gets ~4x wrong', () => {
+    // estimateTokens counts UTF-8 BYTES; Devanagari is ~3 bytes per character. A char-based cap
+    // (chunkText's fallback is 6000 CHARS) lets ~4500 tokens through where it believes it allowed
+    // 1500. Slicing by bytes is what makes the bound hold for a non-ASCII script.
+    const hi = 'पंक्ति संख्या एक और यह पाठ बहुत लंबा है। '.repeat(3_000);
+    const chunks = chunkBlocks([{ text: hi, kind: 'paragraph' }]);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(overCap(chunks)).toEqual([]);
+    // Never split mid-code-point: a lone replacement char would mean a cut cluster.
+    for (const c of chunks) expect(c.text).not.toContain('�');
+  });
+
+  it('respects a caller-supplied cap, not just the default', () => {
+    const blocks: Block[] = Array.from({ length: 30 }, (_, i) => ({
+      text: `row ${i} ${'value '.repeat(60)}`,
+      kind: 'row' as const,
+      header: Array.from({ length: 400 }, (_, c) => `h${c}`).join(' | '),
+    }));
+    const chunks = chunkBlocks(blocks, { targetTokens: 120, maxTokens: 180 });
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.map((c) => estimateTokens(c.text)).filter((t) => t > 180)).toEqual([]);
+  });
+});
