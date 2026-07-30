@@ -15,7 +15,10 @@ export type Grant = string; // e.g. 'self:<uuid>', 'ws:<uuid>', 'team:<uuid>', '
 export const GRANT_SEPARATOR = ',';
 // Strict shape: a known prefix + a safe id. Excludes the separator and empty/whitespace tags,
 // so nothing can smuggle an extra grant through the CSV (review sec S11).
-const GRANT_TAG_RE = /^(self|ws|team|role):[A-Za-z0-9_-]+$/;
+/** EXPORTED so the rule can be pinned against its two SQL copies — acl_grants_tag_ck in migration
+ *  0007 and doctor's acl-tag census — by test/acl-tag-format.test.ts. There is no way to import a
+ *  TypeScript constant into SQL, so the three copies are held together by a test or not at all. */
+export const GRANT_TAG_RE = /^(self|ws|team|role):[A-Za-z0-9_-]+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function serializeGrants(grants: readonly Grant[]): string {

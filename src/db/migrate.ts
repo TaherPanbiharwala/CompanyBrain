@@ -21,7 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // Fixed key for the session-level advisory lock that serializes concurrent migrate runs.
 const MIGRATE_LOCK_KEY = 4_021_970_233;
 
-interface MigrationFile {
+export interface MigrationFile {
   name: string;
   path: string;
 }
@@ -31,7 +31,7 @@ export function orderMigrations(names: string[]): string[] {
   return [...names].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
 }
 
-function sha256(text: string): string {
+export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
@@ -498,7 +498,11 @@ END $$;
   }
 }
 
-async function collectFiles(): Promise<MigrationFile[]> {
+/** EXPORTED so doctor.ts compares the ledger against the same list this runner applies, rather than
+ *  re-globbing. The `.endsWith('.sql')` filter below is the ONLY reason the checked-in reverts
+ *  0008_revert_acl_rls.sql.disabled and 0010_revert_multiformat.sql.disabled are not migrations; a
+ *  second implementation would drift from that rule and report two permanent phantom-pending files. */
+export async function collectFiles(): Promise<MigrationFile[]> {
   const files: MigrationFile[] = [{ name: 'schema.sql', path: join(here, 'schema.sql') }];
   try {
     const dir = join(here, 'migrations');

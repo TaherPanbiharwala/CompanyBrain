@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { adminSql, closePools } from './client.ts';
+import { collectFiles, sha256 } from './migrate.ts';
 import { config } from '../config.ts';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures');
@@ -376,6 +377,134 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   add('acl non-empty CHECKs use cardinality(), not array_length() (migration 0012)',
     aclChecks.length > 0 && stillArrayLength.length === 0,
     stillArrayLength.length ? `${stillArrayLength.join(', ')} still use array_length, which returns NULL for '{}' — a CHECK is SATISFIED when NULL, so these enforce nothing` : '');
+
+  // ── Migrations current ───────────────────────────────────────────────────
+  //
+  // docs/plan.md:189 named "migrations current" as one of doctor v1's five checks and it was never
+  // built. Everything else in this file probes an ARTIFACT of a specific migration —
+  // current_grants() implies 0007, idx_pages_ws_slug implies 0011, cardinality() in the acl CHECKs
+  // implies 0012, to_regclass('page_sources') implies 0009 — so a database missing a migration that
+  // nothing here happens to touch reports GREEN. That is not hypothetical: this project has already
+  // had a shared database sitting in a state no branch's doctor could describe.
+  //
+  // Three checks rather than one, because the remedies are three different actions: run migrate /
+  // reconcile the branches / restore the file.
+  const files = await collectFiles();
+  const ledger = new Map(
+    (await sql<{ filename: string; checksum: string | null }[]>`select filename, checksum from _migrations`)
+      .map((r) => [r.filename, r.checksum]),
+  );
+
+  const pending = files.filter((f) => !ledger.has(f.name)).map((f) => f.name);
+  add('every migration file on disk has been applied', pending.length === 0,
+    pending.length
+      ? `NOT APPLIED: ${pending.join(', ')}. Run \`bun run migrate\` TWICE (see the header of this file), then re-run doctor.`
+      : `${files.length} files, all present in _migrations`);
+
+  const orphans = [...ledger.keys()].filter((n) => !files.some((f) => f.name === n));
+  add('every applied migration still exists in this tree', orphans.length === 0,
+    orphans.length
+      ? `APPLIED BUT ABSENT FROM THIS TREE: ${orphans.join(', ')}. This database has had a migration ` +
+        `applied that your branch does not contain. Checksums are immutable, so it can never be ` +
+        `re-applied differently — reconcile the branches. Do NOT delete the ledger row.`
+      : '');
+
+  // NULL counts as a mismatch: an unverified checksum is not a verified one (the runner takes the
+  // same position). doctor REPORTS this where migrate REFUSES to run on it, so an operator can see
+  // the whole posture before being blocked by the first offender.
+  const drifted: string[] = [];
+  for (const f of files) {
+    const recorded = ledger.get(f.name);
+    if (recorded === undefined) continue; // already reported as pending
+    if (recorded === null) { drifted.push(`${f.name} (no checksum recorded)`); continue; }
+    if (sha256(readFileSync(f.path, 'utf8')) !== recorded) drifted.push(`${f.name} (content changed)`);
+  }
+  add('applied migrations match their recorded checksums', drifted.length === 0,
+    drifted.length
+      ? `${drifted.join(', ')}. An applied migration is immutable — restore the file (\`git checkout -- <path>\`) ` +
+        `and put the change in a NEW migration.`
+      : '');
+
+  // ── ACL tag coverage ─────────────────────────────────────────────────────
+  //
+  // The other check docs/plan.md:189 named and never got. The grant-tag format is enforced by
+  // acl_grants_tag_ck — on acl_grants, a table with ZERO readers and ZERO writers in all of src/ and
+  // scripts/ — and NOT on pages.acl or content_chunks.acl, which every ingest writes. 0007:114 says
+  // so outright: "GRANT_TAG_RE in src/core/context.ts is the only thing excluding that today."
+  //
+  // Per-table aggregates UNIONed, deliberately not `group by tbl`: a GROUP BY emits only tables that
+  // have rows, so on a database where page_sources and quarantine are empty it returns two rows and
+  // the structural check below would fail on a healthy database. An aggregate with no GROUP BY
+  // returns exactly one row over zero input rows, so every table always reports.
+  //
+  // rls-exempt: a cross-TENANT census of acl tag SHAPES on the owner pool. A scoped read could not
+  // answer this even in principle — an unmintable tag makes its own row invisible to every principal
+  // INCLUDING its author, so the rows this exists to find are exactly the rows cb_app cannot see.
+  // Tag prefixes and COUNTS only; no content, no ids, no tag values.
+  const census = await sql<{ tbl: string; malformed: number; unmintable: number; total: number }[]>`
+              select 'pages'          as tbl, count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int as malformed,
+                     count(*) filter (where t ~ '^(team|role):')::int as unmintable, count(*)::int as total
+                from pages,          unnest(acl) t
+    union all select 'content_chunks', count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
+                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
+                from content_chunks, unnest(acl) t
+    union all select 'page_sources',   count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
+                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
+                from page_sources,   unnest(acl) t
+    union all select 'quarantine',     count(*) filter (where t !~ '^(self|ws|team|role):[A-Za-z0-9_-]+$')::int,
+                     count(*) filter (where t ~ '^(team|role):')::int, count(*)::int
+                from quarantine,     unnest(acl) t`;
+
+  // Structural, not `total > 0`: doctor must be green immediately after migrate on an EMPTY database.
+  // That makes the two drift checks below vacuous on an empty corpus by necessity, so their vacuity
+  // control lives in test/acl-tag-format.test.ts (classification table + a GRANT_TAG_RE cross-check),
+  // not here. Said out loud because this repo has shipped vacuous assertions three times by not
+  // saying it.
+  const ACL_TABLES = ['content_chunks', 'page_sources', 'pages', 'quarantine'];
+  const censusTables = census.map((r) => r.tbl).sort();
+  add('the acl census covers all four acl-bearing tables',
+    censusTables.length === 4 && ACL_TABLES.every((t) => censusTables.includes(t)),
+    census.map((r) => `${r.tbl}=${r.total}`).join(' ') || 'census returned nothing');
+
+  const malformed = census.filter((r) => r.malformed > 0);
+  add('every acl tag matches the grant-tag format', malformed.length === 0,
+    malformed.length
+      ? `${malformed.map((r) => `${r.tbl}:${r.malformed}`).join(', ')}. The rule lives in THREE places — ` +
+        `GRANT_TAG_RE (src/core/context.ts), acl_grants_tag_ck (0007, on a table with zero readers), and ` +
+        `this check — and only the TypeScript one sits on the write path. Repair as the OWNER: a ` +
+        `malformed tag can put the row out of cb_app's reach.`
+      : '');
+
+  // The check with the real value: these tags are WELL-FORMED and UNMINTABLE. resolveGrants' `extra`
+  // parameter is dead at every call site, so no team:/role: tag ever enters a keyring — a row
+  // carrying one is invisible to every principal including its author AND unrecoverable through the
+  // app, because the same policy that hides it blocks the UPDATE that would repair it. Catching it
+  // here is catching it while repair is still possible.
+  const unmintable = census.filter((r) => r.unmintable > 0);
+  add('no acl tag is unmintable (team:/role: before team scope ships)', unmintable.length === 0,
+    unmintable.length
+      ? `${unmintable.map((r) => `${r.tbl}:${r.unmintable}`).join(', ')}. Repair NOW, as the owner, across ` +
+        `the page AND its content_chunks AND its page_sources row. If team scope is being introduced ` +
+        `deliberately, THIS check is the gate: extend it in the same change that ships the write path ` +
+        `and the keyring resolver.`
+      : '');
+
+  // scope/acl agreement — aclForScope's invariant (src/core/context.ts), asserted nowhere in the
+  // database until now. `scope` NAMES a visibility policy and `acl` is what RLS actually reads; when
+  // they disagree the label is decorative, which is precisely the regression D52 records. Also
+  // surfaces case drift: owner_principal is raw text while selfGrant lowercases.
+  //
+  // rls-exempt: a cross-TENANT integrity COUNT on the owner pool, the same shape as the acl-drift
+  // counts above. A scoped read cannot see a mis-scoped row — that is the definition of the defect.
+  const [mismatch] = await sql<{ n: number }[]>`
+    select count(*)::int as n from pages
+    where scope not in ('private','workspace')
+       or (scope = 'private'   and acl <> array['self:' || lower(owner_principal)])
+       or (scope = 'workspace' and acl <> array['ws:'   || lower(workspace_id::text)])`;
+  add('every page\'s acl agrees with its scope', (mismatch?.n ?? -1) === 0,
+    (mismatch?.n ?? -1) === 0 ? '' :
+      `${mismatch?.n} page(s) carry an acl that aclForScope would not have produced. Either the label ` +
+      `or the enforced tag is wrong, and only one of them is what RLS reads.`);
 
   // Roles: NOBYPASSRLS, and no membership edge (RLS applicability follows role membership, so an
   // edge in either direction would hand cb_app the cb_auth USING(true) policies).
