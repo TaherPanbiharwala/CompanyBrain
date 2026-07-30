@@ -8,16 +8,47 @@ import { operationsByName, type Operation } from './operations.ts';
 import { hasRole } from './roles.ts';
 import { OperationError, statusFor, type OpErrorCode, type WireError } from './errors.ts';
 import { summarizeParams, defaultLogSink, type LogSink, type RequestLogEntry } from './redact.ts';
+import { apiLimiter, type FixedWindowLimiter } from '../auth/ratelimit.ts';
 
 export type DispatchResult =
   | { ok: true; reqId: string; data: unknown }
-  | { ok: false; reqId: string; status: number; error: WireError };
+  | {
+      ok: false;
+      reqId: string;
+      status: number;
+      error: WireError;
+      /** Seconds until the caller's budget resets. Present ONLY on `rate_limited`, and read from the
+       *  same limiter instance that just refused the call — so the retry-after header a transport
+       *  sends and the decision that produced it cannot disagree. A transport re-deriving the number
+       *  from its own limiter would be re-asking a question that has already been answered. */
+      retryAfter?: number;
+    };
 
 export interface DispatchOpts {
   reqId?: string; // correlation id (propagate inbound x-request-id, else generated)
   idempotencyKey?: string; // reserved seam — unused until M3 mutating ops (AM6)
   logSink?: LogSink; // injectable for tests (the value-in-log negative test)
   errorSink?: (reqId: string, op: string, err: unknown) => void; // full detail — NEVER the request log
+  /** The per-principal budget. Defaults to the shared `apiLimiter`, which is the whole point: a
+   *  transport added later is metered BY OMISSION rather than by someone remembering to wire it up.
+   *  That is the failure direction that matters — until M4 this limiter fired at exactly one site
+   *  (the Express route), so MCP and the CLI reached `ask`, `search` and `ingest_file` — every one a
+   *  paid provider call — with no meter at all. */
+  limiter?: FixedWindowLimiter;
+  /** Opt OUT of the budget, and say why. A string rather than a boolean for the same reason the
+   *  rls-exempt markers carry one: an exemption whose reason is unwritten is indistinguishable from
+   *  an oversight six months later.
+   *
+   *  Reachable only from in-process TypeScript — `DispatchOpts` is never constructed from a request
+   *  body — so no wire caller can set it. Legitimate uses are a local seeding/eval script whose
+   *  entire job is a burst, and a test driving the limiter itself.
+   *
+   *  NOT `ctx.remote`, which was considered and rejected (D94): `auth/resolver.ts:123` sets
+   *  `remote:false` for a REAL browser session and `api/dev-auth.ts:99` sets `remote:true` for the
+   *  local header stub, so `remote` splits traffic in precisely the wrong place — exempting
+   *  `!remote` would unmeter every production request. `core/context.ts:30` also says outright that
+   *  it is "NOT a scope switch". */
+  unmetered?: string;
 }
 
 const defaultErrorSink = (reqId: string, op: string, err: unknown): void => {
@@ -65,6 +96,42 @@ export async function dispatchOp(
 
   const fail = (code: OpErrorCode, message: string, suggestion?: string): DispatchResult =>
     finish(code, { ok: false, reqId, status: statusFor(code), error: { code, message, suggestion } });
+
+  // 0. budget — ahead of lookup, and ahead of every transport.
+  //
+  // This is the rung that makes the meter universal. `apiLimiter` used to fire at src/api/server.ts
+  // only, so the Express route was metered while src/api/mcp.ts and src/api/call.ts called this
+  // function bare. Since M3 that path carries `ask`, `search` and `ingest_file` — all paid provider
+  // calls — which made the AGENT lane the one expensive surface with no meter on it
+  // (test/live-gate.test.ts:139-143 recorded the hole in prose for a whole milestone).
+  //
+  // Charging BEFORE op lookup is deliberate on two counts. It preserves the REST behaviour exactly —
+  // server.ts shed before dispatch ever ran, so an unknown op still costs a token and the existing
+  // 121-request ladder in test/api.test.ts counts identically — and an agent spraying op names it
+  // does not have is precisely the loop this exists to bound.
+  //
+  // This is a RATE meter, not a spend cap. There is no ledger, no per-workspace quota and no usage
+  // accounting anywhere in src/; D18 puts that at M5. What this bounds is calls per minute per
+  // principal, which bounds the blast radius of a loop without pretending to price it.
+  if (!opts.unmetered) {
+    const limiter = opts.limiter ?? apiLimiter;
+    if (limiter.hit(ctx.principal)) {
+      return finish('rate_limited', {
+        ok: false,
+        reqId,
+        status: statusFor('rate_limited'),
+        retryAfter: limiter.retryAfterSeconds(ctx.principal),
+        error: {
+          code: 'rate_limited',
+          message: 'too many requests',
+          // "this workspace" is what the Express version said, and it was wrong: the bucket is keyed
+          // on ctx.principal (src/auth/ratelimit.ts:79-84), so one member hitting the ceiling never
+          // throttled their colleagues. Corrected while moving it rather than carried over.
+          suggestion: 'Slow down — you have hit your per-minute operation budget. Applies to REST, MCP and the CLI alike.',
+        },
+      });
+    }
+  }
 
   // 1. lookup
   if (!op) {

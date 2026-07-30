@@ -51,7 +51,12 @@ async function main(): Promise<void> {
       const raw = await readFile(join(CORPUS_DIR, file), 'utf8');
       const { title, tags, body } = parseFrontmatter(raw);
       const slug = basename(file, '.md');
-      const result = await dispatchOp(ctx, 'ingest', { slug, title: title || slug, body, tags });
+      const result = await dispatchOp(ctx, 'ingest', { slug, title: title || slug, body, tags }, {
+        unmetered:
+          'corpus seeding: the whole job is a deliberate burst on a dedicated local principal, and a ' +
+          'throttled load:a17 would fail partway with no resume path. Today the corpus is well under ' +
+          'the 120/min ceiling, but that is an accident of its size, not a property of the script.',
+      });
       if (result.ok) {
         const data = result.data as { chunkCount: number };
         console.log(`+ ${slug} -> ${data.chunkCount} chunks`);

@@ -9,8 +9,7 @@ import { operations } from './operations.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchOp } from './dispatch.ts';
 import { mapContextError, OperationError } from './errors.ts';
-import { sendError, shedIfLimited } from './envelope.ts';
-import { apiLimiter } from '../auth/ratelimit.ts';
+import { sendError } from './envelope.ts';
 import { requestId } from './reqid.ts';
 import { resolveDevContext } from './dev-auth.ts';
 import { resolveSessionContext, hasSessionCookie } from '../auth/resolver.ts';
@@ -79,17 +78,19 @@ export function mountApi(app: Express): void {
       return;
     }
 
-    // Throttle the EXPENSIVE surface, keyed on the principal now that we know it. `ask` runs a
-    // hybrid search plus a paid model call and `ingest` embeds every chunk, so this is where a
-    // runaway agent loop actually costs money — yet only the cheap pre-auth routes were limited.
-    if (shedIfLimited(apiLimiter, ctx.principal, res, reqId,
-      'Slow down — this workspace has hit its per-minute operation budget.')) return;
-
+    // The per-principal budget used to be shed HERE, which meant it protected this route and nothing
+    // else. It now lives at rung 0 of dispatchOp, so MCP (src/api/mcp.ts) and the CLI
+    // (src/api/call.ts) are covered by the same meter (D94) — and this route's behaviour is
+    // unchanged: same 429, same envelope, same retry-after, just decided one layer down.
+    // `preAuthGuard` (300/min/IP, mounted app-wide at src/index.ts) still runs before any of this.
     const opName = String(req.params.op ?? '');
     const result = await dispatchOp(ctx, opName, req.body, { reqId });
     if (result.ok) {
       res.status(200).json({ ok: true, reqId: result.reqId, data: result.data });
     } else {
+      // Read off the result rather than re-derived from a limiter here: the number and the decision
+      // that produced it come from the same place, so they cannot drift apart.
+      if (result.retryAfter !== undefined) res.setHeader('retry-after', String(result.retryAfter));
       res.status(result.status).json({ ok: false, reqId: result.reqId, error: result.error });
     }
   });
