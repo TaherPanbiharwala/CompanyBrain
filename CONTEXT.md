@@ -20,29 +20,28 @@ trust it, with the corrections in §7. `HANDOVER.md` narrates the session that b
 with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
 actually *is*, and where those three get out of sync with the code or each other.
 
-Written against `master` = **`2ac308a`**, then updated for **M4** and its review pass (see §0).
-`master` moved to **`0b614ef`** — the M4 branch merged in as a **fast-forward** — then to
-**`72a06b6`**, a CONTEXT.md-only commit (`git show --stat` on it touches nothing else). A docs-only
-move doesn't require re-deriving §6 or §10 — the code is byte-identical to `0b614ef`, which §10 was
-already measured against — **but it's exactly the situation this file's own numbers drift in
-silently**, and a same-day pass found six: a stale master SHA (here, §0, §1 and §10), a migrations
-count in §3 that disagreed with §1's own table, a corrupted sentence in §5.4, a self-contradicting
-exemption count in §7 (D70 said both eleven and seven), a stale doctor count in §7's D24 row, and a
-§6.2 claim that `ci.yml` lives only on a branch that no longer exists separately from master. All six
-are fixed below. **If the SHA moves again *with a code diff*, re-derive §6 and §10 before trusting
-them** — that promise still stands; a docs-only move doesn't trigger it, but still warrants a pass
-like this one. §10 is timestamped observation and decays fastest regardless. (This very edit lands as
-one more commit on top of `72a06b6` — `master`'s tip will read one commit newer than that the moment
-it's saved; expected, and, like the move above, docs-only.)
+Written against `master` = **`2ac308a`**, then updated for **M4**, then for **M5a**. `master` is now
+**`a9d43f1`** ("M5a: the web app, plus every fix from its pre-landing review"), six commits past
+`72a06b6` (`4ea57d7`, `8f02d4b`, `4d4ff2c`, `8fc0be4`, `9d63033`, `a9d43f1`). **Those six carry a real
+code diff** — 47 files, +5,165/−126 across `src/`, `test/` and the new `web/` tree (new `src/web.ts`,
+rewritten `src/api/server.ts`, `src/auth/csrf.ts`, `src/ingest/lifecycle.ts`, `src/index.ts`, the
+whole `web/` SPA, five new test files) — so this file's own standing rule has fired: **§6 and §10 were
+measured against `0b614ef`/`72a06b6` and have been re-derived here against `a9d43f1`, in the same pass
+that produced this edit.** Every file:line citation in §6 and §10 below has been re-checked; a handful
+that were already wrong when written (pointing at the wrong lines even at `72a06b6`) are also
+corrected. §10 is timestamped observation and decays fastest regardless — re-run it, don't trust it,
+the next time master moves.
 
 ---
 
 ## 0. Start here
 
 **`master` is the trunk. Branch from it; merge back into it.** Everything below describes master at
-`72a06b6` (the M4 branch, `claude/context-md-review-73f2ab`, merged 2026-07-30 as a clean
-fast-forward — 0 commits behind, so nothing to reconcile — then one further CONTEXT.md-only commit
-on top) — there is no second tree to check. Before starting work, confirm your branch point is
+`a9d43f1` — the M4 line (`claude/context-md-review-73f2ab`) merged 2026-07-30 as a clean
+fast-forward, then M5 Phase −1 (`4ea57d7`, `8f02d4b`), M5 Phase 0 (`4d4ff2c`, `8fc0be4`, `9d63033`)
+and M5a (`a9d43f1`) landed on top — there is still no second tree to check (`git branch --no-merged
+master` is empty, no stashes, every worktree clean). The repo now has a remote: `origin` →
+`github.com:TaherPanbiharwala/CompanyBrain.git`. Before starting work, confirm your branch point is
 master's HEAD and not an ancestor of it:
 `git merge-base master HEAD` should equal `git rev-parse master`. That single check is what the whole
 of §1 exists to prevent a repeat of.
@@ -66,9 +65,15 @@ curl -s -b c.txt -c c.txt -XPOST localhost:3000/auth/workspaces -H 'content-type
 curl -s -b c.txt -XPOST localhost:3000/api/whoami -H 'content-type: application/json' -d '{}'
 ```
 
-**Offline verify loop** (no DB): `bun run typecheck && bun run test` — live suites skip without a DB
-unless `CB_REQUIRE_LIVE_TESTS=1` (needs Supabase + provider keys; a skip under that flag is a
-failure, by design).
+**Offline verify loop** (no DB): `bun run build:web && bun run typecheck && bun run test`. Three
+things skip or fail otherwise. Live suites skip without a DB unless `CB_REQUIRE_LIVE_TESTS=1` (needs
+Supabase + provider keys; a skip under that flag is a failure, by design). `test/web-mount.test.ts`
+gates its SPA-serving assertions on `web/dist/index.html` existing (`:32`, `:97`, `:104`, `:280`) and
+`dist/` is gitignored — without `build:web` they skip silently, which is the defect `ci.yml`'s
+`build:web` step exists to prevent. And `test/session.test.ts` **fails 4 of 11** with `SESSION_SECRET`
+empty (`session.ts:98-103` requires ≥32 chars) — despite the dev-login note above, set any ≥32-char
+placeholder in `.env` before running the suite; it signs and verifies against itself and is not a
+credential.
 
 **M4 landed 2026-07-30, then was reviewed and fixed, then merged to `master`** (D93–D97):
 `test/perf-recall.test.ts` now exists and carries the three properties a serial ladder cannot see;
@@ -85,28 +90,35 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
 
 **If you do only three things:**
 
-1. **Vendor `docs/enabling-team-scope.md` into the repo** (§5.1). The spec for the largest open item
-   still exists only at `~/Desktop/novabyte-test-dataset/docs/`, reachable through a `$HOME`-relative
-   default. A fresh clone has the #1 open item and no spec for it. Five minutes against a total loss.
-2. **Fix the CI workflow before adding a git remote** (§6.2). It is inert today only because no
-   remote exists; on the first `git push` it starts migrating the shared database from every branch.
-   M4 deliberately did *not* wire the perf suite into it for this reason (D93).
+1. ~~Vendor `docs/enabling-team-scope.md`~~ — **done in `4ea57d7`.** The spec is now in the repo at
+   `docs/enabling-team-scope.md`, with a preface listing six ways it is stale against the current tree
+   (`0007` is taken so the real migration is `0013`; touch point 3's keyring read runs before
+   `withScopedTx` and silently returns zero rows; touch point 4's `.refine()` breaks module load).
+   Read the preface before the body. Team scope itself is still unbuilt — see §5.1.
+2. **Configure the GitHub repo secrets, or the leak canary is decorative** (§6.2). The remote now
+   exists and the workflow was correctly gated before it — the risk that used to sit here is closed.
+   But the seven secrets the `live` job reads were never set in GitHub Settings, so it fails on every
+   merge to master while `offline` passes. D16 calls the canary sacred; today it runs only when a
+   human types the command locally.
 3. **Decide where spend accounting lives** (§5.3). M4 shipped a rate meter, not a cap — there is
    still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
    M8. Those disagree, and the decision is yours.
 
-Then: the README is stale in eight ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
-design decision waiting on you, not an implementation task.
+Then: the README is stale in five or six ways (§5.4 — re-count it, `a9d43f1` fixed the Status
+paragraph and added `build:web` to the quickstart while §5.4 was still listing both as defects, and
+§5.4's line numbers all shifted by ~14), and the "readable ≠ publishable" gap (§5.2) is a design
+decision waiting on you, not an implementation task.
 
 ---
 
 ## 1. Repo state — one trunk, and what the fork cost
 
-**`master` at `72a06b6` contains everything.** All branches — the original seven plus the M4 line
-(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit), plus
-one further CONTEXT.md-only commit on top — are ancestors of it (`git branch --no-merged master` is
-empty), every worktree is clean, and there are no stashes. The milestones built: M0, M1, A17, M2, M3,
-**M4**.
+**`master` at `a9d43f1` contains everything.** All branches — the original seven, the M4 line
+(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit), and the
+six M5 commits on top of `72a06b6` (Phase −1, Phase 0, M5a) — are ancestors of it (`git branch
+--no-merged master` is empty), every worktree is clean, and there are no stashes. The repo now has a
+remote: `origin` → `github.com:TaherPanbiharwala/CompanyBrain.git`. The milestones built: M0, M1, A17,
+M2, M3, M4, **M5a**.
 
 | | |
 |---|---|
@@ -210,7 +222,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 | M2 | Identity — Google OIDC, sessions, workspaces, invites |
 | M3 | The brain loop — multi-format ingest, page lifecycle, four-arm hybrid search |
 | M4 | Enforcement + doctor — **done**. RLS itself landed early at M3 (D66); M4 closed the remaining gate (the perf/scale suite, the cross-transport rate meter, doctor's migrations-current + acl-coverage checks) and survived a seven-pass review (D93–D97) |
-| M5 | Split M5a/M5b. **M5a done, uncommitted** — Vite+React SPA at `/` (13 files under `web/src`), `src/web.ts`, CSP+HSTS, ask/upload/pages/invite surfaces, 5 web test suites. M5b (teams, members, operator panel, conversations, MCP-over-HTTP) not started; see `docs/screens.md` |
+| M5 | Split M5a/M5b. **M5a done and merged** (`a9d43f1`) — Vite+React SPA at `/` (14 files under `web/src`), `src/web.ts`, CSP+HSTS, ask/upload/pages/invite surfaces; 3 web suites (`web-mount`, `web-invite-flow`, `web-render-safety`) plus `body-limits` and `answer-confidence`. Deployed to Railway. M5b (teams, members, operator panel, conversations, MCP-over-HTTP) not started; see `docs/screens.md` |
 | M8 | Spend/usage accounting — not started; see §5.3 |
 
 **Two controls you would otherwise "clean up":**
@@ -249,18 +261,24 @@ src/ai/          router.ts (one door for every model call) vector.ts
 src/web.ts       serves the SPA: security headers, static mount, SPA fallback, in-process Vite dev
 
 web/             the M5a frontend (Vite + React 19 + Tailwind 4, same-origin, no CORS anywhere)
-  src/           App.tsx (40-line useRoute, no react-router) main.tsx index.css (@theme tokens)
+  src/           App.tsx (18-line useRoute at :33-50, no react-router) main.tsx index.css (@theme tokens)
     lib/         api.ts (callOp + callAuth, the ONLY fetch layer; DOM-free by test)
-    components/  AnswerView.tsx PageList.tsx Upload.tsx ErrorPanel.tsx
-    screens/     SignIn.tsx CreateWorkspace.tsx AcceptInvite.tsx Home.tsx Invite.tsx
+    components/  AnswerView.tsx PageList.tsx Upload.tsx ErrorPanel.tsx Invite.tsx
+                 ScopeBadge.tsx (the scope label on every hit — shared by AnswerView and PageList)
+    screens/     SignIn.tsx CreateWorkspace.tsx AcceptInvite.tsx Home.tsx (Invite is a Home tab, not a route)
   dist/          gitignored; `bun run build:web` writes it and a non-loopback boot REQUIRES it
 ```
 
 `.github/workflows/ci.yml` — **exists; `HANDOVER.md` never mentions it.** Two jobs: `offline`
-(typecheck + `bun run build:web` + unit + the two meta-tests) and `live` (the D16 leak canary with DB
-secrets, **master-only** since M5a Phase −1). The `build:web` step is not cosmetic: the SPA-serving
+(typecheck + `bun run build:web` + unit + the two meta-tests) and `live` (the D16 leak canary,
+**master-only** since M5a Phase −1). The `build:web` step is not cosmetic: the SPA-serving
 assertions in `test/web-mount.test.ts` are gated on `web/dist` existing, so without it they skipped
-on every CI run, silently. Bun pinned
+on every CI run, silently. **`live` is currently RED on every master push** — `gh secret list` is
+empty, so none of `DATABASE_URL` / `DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `CB_APP_DB_PASSWORD`
+/ `CB_AUTH_DB_PASSWORD` / `SESSION_SECRET` / `CB_MCP_*` exist in GitHub Settings, and the job dies at
+`Apply migrations` in ~6s. `offline` passes. The D16 "canary runs in CI forever" guarantee is
+therefore still not real: the file exists, the credentials do not. Configuring the repo secrets —
+or standing up the second CI database §9 already asks for — is the open action. Bun pinned
 to `1.3.14` in this file only — no `engines`/`.tool-versions` elsewhere. Dependencies are pinned
 separately: `bun.lock` plus two exact specs in `package.json` (`@modelcontextprotocol/sdk` and
 `xlsx`, the latter from `cdn.sheetjs.com`, not npm — see §4).
@@ -292,6 +310,9 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
 - **Missing from `.env.example`:** `DB_STATEMENT_TIMEOUT`, `DB_IDLE_IN_TX_TIMEOUT`, `RERANK_MODEL`,
   `QUERY_EXPANSION`, `COHERE_API_KEY` (bypasses the zod config schema entirely), `CB_CLI_PRINCIPAL`,
   `CB_CLI_WORKSPACE`, `DATASET`.
+- **GitHub repo secrets were never configured.** `gh secret list` is empty, so the only automated
+  proof of tenant isolation — the `live` job's leak canary — has never executed on a runner; see
+  §3 and §6.2.
 
 ---
 
@@ -302,24 +323,25 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
 `HANDOVER.md` frames it as five touch points with `resolver.ts:122` as "the one most likely to be
 missed." Everything below that is missing:
 
-- **No write path.** No op creates a team or assigns a member, and `narrowGrants` (`migrate.ts:294-
-  296`) explicitly revokes `cb_app`'s INSERT/UPDATE/DELETE on all three of `acl_grants`, `teams`,
-  `team_memberships`. A correct keyring would have nothing to read.
+- **No write path.** No op creates a team or assigns a member, and `narrowGrants` (`migrate.ts:337`)
+  explicitly revokes `cb_app`'s INSERT/UPDATE/DELETE on all three of `acl_grants` (`migrate.ts:353`),
+  `teams` (`:354`) and `team_memberships` (`:355`). A correct keyring would have nothing to read.
 - **Chicken-and-egg on the read path.** The keyring must be built *before* `withScopedTx` opens
   (grants are GUCs set at transaction start), but `acl_grants` is itself RLS-protected on
   `workspace_id = app.workspace`. Resolving team grants needs a **sixth `SECURITY DEFINER`** in
   `cb_internal` plus a doctor fixture change. Not in the five touch points.
 - **Ten call sites, not one.** `resolveGrants` is called at `auth/resolver.ts:122`, `api/call.ts:37`,
-  `api/mcp.ts:24`, `api/dev-auth.ts:93`, and in six `scripts/` files — `load-a17-corpus.ts:34`,
-  `ingest-file.ts:80`, `novabyte-eval.ts:67`, `measure-a17.ts:67`, `run-a17-eval.ts:27`,
+  `api/mcp.ts:24`, `api/dev-auth.ts:98`, and in six `scripts/` files — `load-a17-corpus.ts:34`,
+  `ingest-file.ts:80`, `novabyte-eval.ts:66`, `measure-a17.ts:67`, `run-a17-eval.ts:27`,
   `dump-top8.ts:47` — including the NovaByte harness that is supposed to *prove* the fix. Patching
   only `resolver.ts` leaves team pages invisible on CLI and MCP.
 - **`0007`'s slug indexes assume two scopes.** A third needs a third partial index, and `import.ts`
   matches on the *index name* to build its 409.
-- **The spec is not in the repo.** `docs/enabling-team-scope.md` exists only at
-  `~/Desktop/novabyte-test-dataset/docs/`, outside version control, reachable via a `$HOME`-relative
-  default in `scripts/novabyte-eval.ts:23`. **A fresh clone has the #1 open item and no spec for it.
-  Vendor this doc into `docs/` today — five minutes against a total loss.**
+- **The spec is vendored — this is DONE.** `docs/enabling-team-scope.md` is tracked in the repo as of
+  `4ea57d7` ("M5 Phase -1: … vendor the team-scope spec"), so a fresh clone now has both the #1 open
+  item and its spec. `scripts/novabyte-eval.ts:22` still defaults `DATASET` to
+  `$HOME/Desktop/novabyte-test-dataset`, but only the ~105-page corpus lives out there now — the spec
+  does not.
 
 The `teams` / `team_memberships` / `acl_grants` substrate is entirely **dead** — schema, FKs,
 indexes, RLS, zero readers. `GRANT_TAG_RE` already permits `team:`, so validation isn't the blocker
@@ -356,29 +378,34 @@ accounting exists anywhere in `src/` — D18 puts caps at M5, which is the entry
 
 ### 5.4 Documentation
 
-`README.md` is stale in eight ways, not the three `HANDOVER.md` lists — down from a claimed nine at
-the last pass. One of those nine was a doctor-count complaint, and that count (**73**, `README.md:46`
-and `:144`) now happens to **match** current reality (§1, §10); it's re-verified here, not carried
-forward on trust — check it again next time rather than assuming it stays lucky. What's still wrong:
+`README.md` is stale in five ways, not the three `HANDOVER.md` lists — down from eight at the last
+pass, because M5a closed the Status line, the missing web-UI mention, and the missing `build:web`
+step (all three below, struck through). One of the original nine was a doctor-count complaint, and
+that count (**73**, `README.md:54` and `:158`) now happens to **match** current reality (§1, §10);
+it's re-verified here, not carried forward on trust — check it again next time rather than assuming
+it stays lucky. What's still wrong:
 
-- **Status omits M3 and M4 entirely** (`README.md:9`) — it lists only M0, M1, A17, M2.
-- **`hybrid.ts` is described as "keyword + vector"** (`README.md:135`) when it's **four** arms — the
-  file's own comment says so (`hybrid.ts:71`: "FOUR arms, not three").
-- **Layout omits `pack.ts`** (`src/core/`, `README.md:125`) **and `vector.ts`** (`src/ai/`,
-  `README.md:132`) — both listed in this file's own §3.
-- **Layout omits six ingest modules** (`README.md:133`, which names only `chunk.ts` and `import.ts`):
-  `blocks.ts`, `embed.ts`, `extract/`, `file.ts`, `lifecycle.ts`, `sanity.ts`.
-- **The test enumeration misses 24 of 47 test files** (`README.md:148-151`), including
-  `perf-recall`, `boot`, `migrate`, `lifecycle`, `invites`, and every M4-era addition.
-- **`README:92`** still says "no remote machine credential until M3" — M3 **and now M4** have
+- ~~Status omits M3 and M4~~ — **CLOSED at M5a**: `README.md:9-11` now lists M0, M1, A17, M2, M3, M4
+  and M5a.
+- **`hybrid.ts` is described as "keyword + vector"** (`README.md:149`) when it's **four** arms — the
+  file's own comment says so (`hybrid.ts:87`: "FOUR arms, not three").
+- **Layout omits `pack.ts`** (`src/core/`, `README.md:139`) **and `vector.ts`** (`src/ai/`,
+  `README.md:146`) — both listed in this file's own §3.
+- **Layout omits six ingest modules** (`README.md:147-148`, which names only `chunk.ts` and
+  `import.ts`): `blocks.ts`, `embed.ts`, `extract/`, `file.ts`, `lifecycle.ts`, `sanity.ts`.
+- **The test enumeration misses 29 of 52 test files** (`README.md:162-165`), including
+  `perf-recall`, `boot`, `migrate`, `lifecycle`, `invites`, every M4-era addition, and all three M5a
+  web tests (`web-mount`, `web-render-safety`, `web-invite-flow`).
+- **`README:106-107`** still says "no remote machine credential until M3" — M3, M4 **and M5a** have
   shipped and there still is none.
-- **No mention of the web UI at all** — M5a ships a full SPA at `/`, and the README's Status
-  paragraph and Layout section both read as if the repo were still API-only. A reader has no way to
-  learn the product has a human surface.
-- **`bun run build:web` is absent from the quickstart** and is now MANDATORY for any non-loopback
-  boot: `src/index.ts` calls `assertWebBuildPresent()`, which THROWS at import time when
-  `web/dist/index.html` is missing and `APP_BASE_URL` is not loopback. Following the README verbatim
-  gives a deploy that refuses to start, with no doc naming the missing step.
+- ~~No mention of the web UI at all~~ — **CLOSED at M5a**: `README.md:11` names M5a in the Built
+  list, `:13-16` describe the sign-in → upload → cited-answer flow, and `:18-19` name the M5b
+  remainder and link `docs/screens.md`. (The Layout section at `:134-158` still has no `web/` or
+  `src/web.ts` entry, but that is the layout gap above, not a missing mention.)
+- ~~`bun run build:web` absent from the quickstart~~ — **CLOSED at M5a**: it is step five of the
+  quickstart block (`README.md:55`), and `:59-62` explain that it is optional for a loopback dev run
+  but mandatory for any deploy, naming `assertWebBuildPresent()` and the silent-green-`/health`
+  failure mode by hand.
 
 `docs/plan.md` poses eleven gate decisions (UC1–UC6, T1–T5) — **but its own "Post-review resolution
 (2026-07-23)" section already answers all of them except T4** (whose text notes the ZDR default was
@@ -417,20 +444,26 @@ Related: `DECISIONS.md` D29/D33 (§7) record that this same gate was *already* w
 different way — the allowlist-vs-blocklist confusion. Treat any change near it as high risk; it has
 now been broken and re-fixed on **three** independent occasions.
 
-### 6.2 [moderate — RE-GRADED: latent, arms on first push] CI will migrate a shared DB from every branch
+### 6.2 [closed — gated by `4ea57d7`; CI live job red on missing repo secrets] CI will migrate a shared DB from every branch
 
-`ci.yml:14-15` runs `on: push: branches: ['**']` and `:64` executes `bun run migrate` with
-`secrets.DATABASE_ADMIN_URL` — owner credentials, no gate. `:19-21` scopes `concurrency` per-`ref`,
-so different branches do **not** serialize against each other. Combined with checksum immutability
-(`migrate.ts:607-612`), a WIP migration applied from one branch and then edited bricks every other
-branch's CI permanently.
+`ci.yml:14-15` still runs `on: push: branches: ['**']`, but that now only reaches the `offline` job
+(typecheck + `build:web` + unit suite — no secrets, no database). `bun run migrate` moved to `:104`
+and sits inside the `live` job, which is gated at `:80` to master pushes and `workflow_dispatch`
+only, and serialised fleet-wide by its own concurrency group at `:83-85`. The per-ref group at
+`:19-25` applies to `offline`, which is pure compute and free to cancel. Combined with checksum
+immutability (`migrate.ts:655-678` — NULL-checksum rejection at `:662`, drift throw at `:669`), a WIP
+migration applied from one branch and then edited would still brick CI permanently if two live runs
+ever raced — which is exactly what the fleet-wide concurrency group now prevents.
 
-**Re-graded from pass 1.** `ci.yml` was M3-only when this was first written; **master now contains
-M3** (§1), so `ci.yml` **exists on `master`** — there is no second tree left for it to be absent
-from. What still holds: the repo has **0 git remotes**, so nothing can trigger the workflow today.
-This is not "CI mutates a shared DB on every push" — it is a trap that arms itself, unreviewed, the
-moment someone runs `git remote add` and pushes. That is a narrower claim but a more urgent one: it
-fires on an action nobody will think of as risky.
+**Re-graded again — this is now CLOSED, not latent.** `origin` exists
+(`git@github.com:TaherPanbiharwala/CompanyBrain.git`) and the workflow runs on every push, so the
+"arms itself on `git remote add`" framing has expired. The arming happened, and `4ea57d7` defused it
+first: the `live` job — the only job that touches the database — is gated as described above, so no
+two live runs migrate the shared Supabase project concurrently. Feature branches now run `offline`
+only, which is pure compute. Live state today: `offline` is green; `live` FAILS because
+`DATABASE_URL` / `DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `SESSION_SECRET` / `CB_MCP_*` were
+never added under GitHub Settings → Secrets. That is a config task, not a defect — see §0 item 2 and
+§3.
 
 ### 6.3 [moderate] The upload route requires no CSRF token — because none exists, by design
 
@@ -440,13 +473,14 @@ There is no CSRF *token* anywhere in this codebase — the guard is origin-signa
 design. So the comment that used to sit at `server.ts:45-47`, claiming an 8 MB body "has had to …
 present a valid CSRF token", described a control that does not exist.
 
-**FIXED in M5a (uncommitted), and the fix itself needed a second pass — read both halves.** The
-comment is gone and `requireValidSession` (`src/api/server.ts:~119`) now sits in front of every
-raised-limit parser. Its FIRST version gated on `hasSessionCookie`, i.e. cookie PRESENCE with no
-shape or database check — which one forged header defeated: measured, `Cookie: cb_session=junkjunk`
-plus a 9 MB body returned 413, meaning the 8 MB parser had already engaged for a caller who
-authenticated nothing. That version reproduced the very failure it replaced, one layer up. It now
-calls `resolveSessionRow`, which shape-checks from memory and then does one indexed lookup.
+**FIXED in M5a (`a9d43f1`, on master), and the fix itself needed a second pass — read both halves.**
+The comment is gone and `requireValidSession` (`src/api/server.ts:140`, mounted at `:191` and `:193`)
+now sits in front of every raised-limit parser. Its FIRST version gated on `hasSessionCookie`, i.e.
+cookie PRESENCE with no shape or database check — which one forged header defeated: measured,
+`Cookie: cb_session=junkjunk` plus a 9 MB body returned 413, meaning the 8 MB parser had already
+engaged for a caller who authenticated nothing. That version reproduced the very failure it replaced,
+one layer up. It now calls `resolveSessionRow`, which shape-checks from memory and then does one
+indexed lookup.
 
 Residual, stated honestly: an attacker with a well-formed forged token still costs one indexed read
 per request, and `preAuthGuard` at 300 req/min/IP remains the actual flood control — `resolver.ts`
@@ -586,8 +620,10 @@ were **refuted**; what survives:
   last-write-wins) are wrong for the five cross-tenant collision slugs, but every live collision case
   is *also* covered by the pageId-keyed `must_cite_from_workspace` + `forbidden_workspace` checks. No
   case mis-grades today.
-- **LATENT.** `byId` (`:316`) is dead code; `searchFn` dispatches by question **text** (`:320`). No
-  two rows currently share a question string.
+- ~~`byId` is dead code; `searchFn` dispatches by question text~~ — **FIXED** `4d4ff2c`. `byId` is
+  gone; `byQuestion` (`novabyte-eval.ts:321-332`) is built with a duplicate check that throws, naming
+  both clashing row ids, and `searchFn` (`:335`) reads it. The invariant this bullet recorded as
+  latent is now asserted rather than assumed.
 - **Dead fields.** `expectation`, `expected_answer` and `may_cite` are read by nothing. No spec is
   assertion-free, so nothing passes vacuously — but the 167 `not_found` specs grade purely
   negatively: a confident fabrication that cites nothing and dodges the listed strings passes.
@@ -596,28 +632,31 @@ were **refuted**; what survives:
 
 ### 6.11 [moderate] Retrieval and router: five controls that do not constrain what they claim
 
-- `hybrid.ts:302` applies `ARM_LIMIT` (20) to the vector arm **before** `MAX_PER_PAGE` (3) is applied
-  at `:359`, so the per-page cap cannot prevent the one-document flooding its own comment (`:62-64`)
-  says it exists to prevent.
-- `hybrid.ts:453-458` checks the reranker's answer by **length, not membership**, so a provider
+- `hybrid.ts:318` applies `ARM_LIMIT` (20) to the vector arm **before** `MAX_PER_PAGE` (3) is applied
+  at `:375`/`:389`, so the per-page cap cannot prevent the one-document flooding its own comment
+  (`:76-80`) says it exists to prevent.
+- `hybrid.ts:471-476` checks the reranker's answer by **length, not membership**, so a provider
   returning a duplicated index silently duplicates one chunk and drops another — the exact
   "recall cut disguised as a reordering" the comment says it is guarding against.
-- `router.ts:356` (`rerank`) and `:266` (`embed`) call `requireScope()` and **discard the return
-  value**; only `chat()` reads it. The rerank docstring's ZDR guarantee is one the code cannot make.
+- `router.ts:374` (`rerank`, declared `:373`) and `:271` (`embed`, declared `:270`) call
+  `requireScope()` and **discard the return value**; only `chat()` reads it (`:227`). The rerank
+  docstring's ZDR guarantee is one the code cannot make.
 - `answer.ts:53-54`'s `scrubMarkers` regex cannot match comma-joined citations, and the model
   **demonstrably emits that form** — `a17-report.md:12` ends `...and firmware [1, 3].` The test
   titled "no dangling footnote, ever" cannot see it.
-- `lifecycle.ts:158` compares `page.owner_principal` (raw `text`) byte-for-byte against
-  `ctx.principal`, while `selfGrant` lowercases (`context.ts:69`). The same case-drift hazard the
-  grant path documents, on the sole authorization check for `delete_page`/`replace_page`.
+- `lifecycle.ts:162` (in `requireWriteAccess`, declared at `:161`) compares `page.owner_principal`
+  (raw `text`) byte-for-byte against `ctx.principal`, while `selfGrant` lowercases (`context.ts:69`).
+  The same case-drift hazard the grant path documents, on the sole authorization check for
+  `delete_page`/`replace_page`.
 
 ### 6.12 [moderate] `ingest-file` CLI writes values the API contract declares impossible
 
 `scripts/ingest-file.ts:19-22`'s `flag()` returns `argv[i+1]` unconditionally, so
 `--slug --title X` yields `slug === "--title"`. Nothing downstream re-validates: `importFile`
 checks only `bytes.byteLength` (`file.ts:47-57`), `pages.slug` has no CHECK constraint
-(`schema.sql:196`), and the zod regex lives only at the op boundary (`operations.ts:275`) which the
-CLI bypasses by importing `importFile` directly. Also: `--slug ""` defeats the `?? slugFromFilename`
+(`schema.sql:196`), and the zod regex lives only at the op boundary (`src/api/operations.ts:295`, and
+`:121` for the paste ops) which the CLI bypasses by importing `importFile` directly. Also: `--slug ""`
+defeats the `?? slugFromFilename`
 fallback (empty string is not nullish); `flagAll('tag')` enforces neither the 50-tag nor 64-char cap.
 
 And `slugFromFilename` itself is wrong: it strips leading hyphens only, so `.hidden.txt → ".hidden"`
@@ -652,7 +691,7 @@ added each batch, and why this paragraph no longer repeats specific line numbers
 the files changed, and a second stale count sitting next to the first one is exactly the failure
 mode being fixed here). And **D68's "Two consequences" enumeration is incomplete**: a third exists and
 the same session had to fix it — `0007`'s partial slug indexes are unusable for a scope-less slug
-lookup, which is why `0011` had to add `idx_pages_ws_slug` back (`doctor.ts:249-251`: "Both are read
+lookup, which is why `0011` had to add `idx_pages_ws_slug` back (`doctor.ts:327-329`: "Both are read
 paths whose index went missing silently"). Also minor drift: D70's "one of ten live suites" is now
 twelve.
 
@@ -666,12 +705,14 @@ The file inventory, all extraction descriptions, the migration descriptions, "fi
 1. **Open item #3 is already done.** `UNIQUE (page_id, ord)` on `content_chunks` has existed since
    `0004_integrity_constraints.sql:16-17`, reaffirmed in `0005:35`. The "real tradeoff" it asks you
    to weigh is *today's* behaviour: `replacePage` already throws an undiagnosable 23505 at
-   `lifecycle.ts:351`. **The real work is error mapping, not the index.**
+   `lifecycle.ts:355-356` (the `insert into content_chunks`). **The real work is error mapping, not
+   the index.**
 2. **"`worker.ts` rebinds `console.*` before any import can log" is false.** Lines 17–27 are the
    module body; 29–33 are static ESM imports, and ESM evaluates dependencies depth-first *first*.
-   Confirmed by bundling: the parser deps land at bundle line 49, the rebind at line 95,675 of
-   95,716. Impact is bounded (prefix contamination fails the `CBX1` frame check). Fix: `await
-   import()` the parsers inside `main()`.
+   Confirmed by bundling (re-measured at `a9d43f1`; these two numbers move with `bun.lock` — the
+   load-bearing fact is that the rebind is last, not the exact offsets): the parser deps land at
+   bundle line 49, the rebind at line 95,759 of 95,799. Impact is bounded (prefix contamination fails
+   the `CBX1` frame check). Fix: `await import()` the parsers inside `main()`.
 3. **"migrations idempotent" holds only weakly.** `0011` claims DROPs at the top of each pair handle
    an INVALID index left by a cancelled build — there are no such pairs. `IF NOT EXISTS` matches on
    *name*, so a cancelled `CREATE INDEX CONCURRENTLY` leaves an INVALID index skipped forever.
@@ -722,9 +763,10 @@ from the narrative.
 
 ## 9. What is still not covered (rewritten after pass 2 — most of pass 1's gaps are closed)
 
-**Closed by pass 2**, so do not spend budget re-covering: the live run (§10); the D66–D90 vs
-`HANDOVER.md` reconciliation (§8); `eval/a17-report.md`; and ~1,000 lines of previously unread
-in-diff code (`novabyte-eval.ts`, `ingest-file.ts`, `dump-top8.ts`, `errors.ts`, `session.ts`).
+**Closed by pass 2**, so do not spend budget re-covering: the D66–D90 vs `HANDOVER.md` reconciliation
+(§8); `eval/a17-report.md`; and ~1,000 lines of previously unread in-diff code (`novabyte-eval.ts`,
+`ingest-file.ts`, `dump-top8.ts`, `errors.ts`, `session.ts`). **The live run (§10) is NOT closed** —
+it was measured before M5a and every number in it has moved. Re-run it before trusting a single row.
 
 **A17 answer quality is now graded, and it is good.** All ten answers were checked line by line
 against `test/fixtures/a17-corpus/`: **zero hallucinations, zero mis-citations**, every `[n]`
@@ -738,6 +780,13 @@ retrieval numbers above it are stale (§6.7).
 
 **Still genuinely uncovered:**
 
+- **The web app's behaviour.** `web/src` is 14 files / ~2,100 lines of React and nothing renders it
+  under test. The three web suites are static source scans by explicit design —
+  `test/web-render-safety.test.ts:17` ("A source scan rather than a render test, deliberately. There
+  is no DOM test runner in this repo") and `test/web-invite-flow.test.ts:9-11`. They pin the *shape*
+  of the source (no `dangerouslySetInnerHTML`, guard ordering, mount order); they cannot catch a
+  component that renders the wrong thing. Adding a DOM runner is a real decision, not an oversight —
+  but the gap belongs on this list.
 - **Extraction on real documents.** All eight fixtures are generated. Two-column PDFs, page-spanning
   tables, scanned pages and Devanagari/Tamil remain untested — and §6.8 and §6.9 both landed in
   exactly this blind spot (a blank CSV cell; a wide sheet). The next defect of that shape will too.
@@ -753,30 +802,37 @@ retrieval numbers above it are stale (§6.7).
   over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
   waking) — reachable only if an `await` is ever introduced between them.
 - **Cross-model dissent.** Codex's token is revoked (`codex login status` / `codex exec` both report
-  authenticated; a real call still 401s). **Four** passes now, single-model — the M4 review tried
-  again and hit the same wall. Every pass since Pass 2 has substituted a fresh-context adversarial
+  authenticated; a real call still 401s). **Five** passes now, single-model — the M4 review tried
+  again and hit the same wall, and M5a's six-specialist review (42 findings, all fixed in `a9d43f1`)
+  did not attempt it at all. Every pass since Pass 2 has substituted a fresh-context adversarial
   agent plus a red-team gap hunt — independence of *context*, not of *model*, and it has been enough
   to catch real defects each time, but it is not the same guarantee.
-- **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4/M5.
+- **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4 and of
+  M5's *phases*. M5's **surfaces** are now defined by `docs/screens.md` (added `8fc0be4`, extended in
+  M5a): routes, screens, primary actions and reachable states, including the M5b split. Read both;
+  neither covers M6+.
 - **Out-of-diff code**, deliberately declined as re-derivation: `src/auth/{google,membership,
   normalize,blocklist,log,routes}.ts` and `src/api/{envelope,reqid,roles,tool-defs,call}.ts`
   (~740 lines, 0 changed in M3, all with test files). `session.ts` *was* read — refresh columns
   confirmed **inert**, backing D34.
 - **Whether the shared Supabase project is safe to keep sharing.** Pass 2 established that it drifts
-  (§10). It did not establish a policy, a second project, or a reset procedure — and `migrate:reset`
-  is gated on a bare `DEV_ENVS.has(NODE_ENV)` on **both** branches, one absent `NODE_ENV` from
-  dropping the schema on the one database everything shares.
+  (§10). It did not establish a policy, a second project, or a reset procedure. (`migrate:reset`
+  itself is NOT the hazard here — `migrate.ts:742` gates on `isDevEnv`, which requires an EXPLICIT
+  `NODE_ENV` of development/test (`config.ts:128-129`), and `--yes-destroy` plus
+  `CB_CONFIRM_RESET=<supabase-project-ref>` stand behind it. The exposure is the ordinary
+  shared-database one: dev, the eval harness and CI's `live` job all write the same project.)
 
 ---
 
-## 10. Observed, not derived (2026-07-30)
+## 10. Observed, not derived (last full measurement 2026-07-30 at `0b614ef`; partially re-measured 2026-08-01 at `a9d43f1`)
 
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
 
-### Current — measured 2026-07-30 on `master` at `0b614ef`, after the M4 merge (code-identical to
-the current tip `72a06b6` — the one commit between them touched only `CONTEXT.md`, so nothing below
-needs re-running on its account)
+### Stale — last measured 2026-07-30 on `master` at `0b614ef`, BEFORE M5a. `master` is now `a9d43f1`,
+six commits and ~3,200 changed lines later (`src/api/server.ts`, `src/index.ts`,
+`src/ingest/lifecycle.ts`, `src/auth/csrf.ts`, `src/web.ts`, all of `web/`). §0's re-derive trigger
+has fired. Treat every row below as historical and re-run before quoting any of it.
 
 Re-run directly on `master` after the fast-forward, not just trusted from the branch — a clean merge
 still isn't a correct one until the ladder confirms it (§1's own lesson).
@@ -784,11 +840,11 @@ still isn't a correct one until the ladder confirms it (§1's own lesson).
 | Command | Result |
 |---|---|
 | `bun run typecheck` | **clean** |
-| offline suite (DB + provider env blanked) | **440 pass / 176 skip / 0 fail**, 6.6–7.1s |
+| offline suite (DB + provider env blanked) | **506 pass / 183 skip / 0 fail**, ~6.8s — **509 pass** with `web/dist` built, because `test/web-mount.test.ts:32` gates three assertions on the build existing and `dist/` is gitignored. Run `bun install` first: M5a added `compression`, and a stale `node_modules` fails the whole suite. |
 | `bun run migrate` (re-run) | nothing re-applied — **idempotent** |
 | `bun run doctor` | **73/73** |
-| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **576 pass / 17 skip / 0 fail**, 299s — measured on `master` directly, matches the branch exactly |
-| `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **586 pass / 1 skip / 0 fail**, 323s |
+| `CB_REQUIRE_LIVE_TESTS=1 bun run test` | **not re-measured since M5a** — the 2026-07-30 figure was 576 pass / 17 skip / 0 fail at `0b614ef`, and M5a added four test files and extended three more. Re-run before quoting. |
+| `CB_REQUIRE_LIVE_TESTS=1 CB_RUN_PERF_TESTS=1 bun run test` | **659 pass / 1 skip / 0 fail** (measured 2026-08-01 at `a9d43f1`; was 586/1 at `0b614ef`) |
 | empty-acl insert as owner, post-`0012` | **23514 check_violation** — §6.5 genuinely enforced now |
 | `select count(*) from pg_index where not indisvalid` | **0** |
 | PostgreSQL | **17.6** · pgvector **0.8.2** · `hnsw.ef_search` **40** |
@@ -819,9 +875,9 @@ table on every run, and `narrowGrants` correctly re-narrows it.
 
 **Two documentation defects proven by running them:**
 
-1. **`docs/auth-setup.md:327` documents a command that fails.** It says `CB_REQUIRE_LIVE_TESTS=1 bun
+1. **`docs/auth-setup.md:341` documents a command that fails.** It says `CB_REQUIRE_LIVE_TESTS=1 bun
    test`, which bypasses the npm script's `--timeout 30000` and falls back to Bun's 5s default; the
-   RLS `WITH CHECK` test then times out. `HANDOVER.md:228`'s `bun run test` is the correct form.
+   RLS `WITH CHECK` test then times out. `HANDOVER.md:230`'s `bun run test` is the correct form.
 2. **The "offline" verify loop was never offline.** `.env` is a real file at the repo root and is
    symlinked into some worktrees; Bun auto-loads it from cwd, so `hasDbEnv()` sees a populated
    `DATABASE_URL` and every live suite runs against the shared project with real provider calls.
@@ -829,5 +885,5 @@ table on every run, and `narrowGrants` correctly re-narrows it.
    — the genuinely offline form (env vars blanked on the command line) is in §0.
 
 **One non-defect, recorded so nobody chases it:** the offline run reports a higher TOTAL test count
-than the live run (580 vs 557 today). Bun counts `beforeAll`/`afterAll` as skipped entries when their
+than the live run (689 vs ~660 at `a9d43f1`). Bun counts `beforeAll`/`afterAll` as skipped entries when their
 `describe` is skipped, and the offline run skips far more describes. Not a coverage difference.
