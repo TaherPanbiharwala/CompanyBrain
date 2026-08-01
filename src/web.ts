@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Server as HttpServer } from 'node:http';
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
-import { config, isDevEnv } from './config.ts';
+import { config, isDevEnv, type Config } from './config.ts';
 
 /** Built SPA lives here. Gitignored (`.gitignore`'s bare `dist/` covers it), so it is absent in dev
  *  and in any deploy whose build step did not run — see assertWebBuildPresent(). */
@@ -28,7 +28,7 @@ const INDEX_HTML = join(WEB_DIST, 'index.html');
  *  test/web-mount.test.ts rather than left to drift. Lowercased because EXPRESS ROUTES
  *  CASE-INSENSITIVELY by default and index.ts never enables `case sensitive routing` — the same
  *  bypass csrf.ts:128-133 documents and works around. */
-const SERVER_PREFIXES = ['/api/', '/auth/', '/health'] as const;
+const SERVER_PREFIXES = ['/api', '/auth', '/health'] as const;
 
 /** Set ONLY by createViteDev(), which only runs under `bun run dev` on a genuine dev environment
  *  with no build present. Read by securityHeaders() to relax script-src for Vite's inline Fast
@@ -43,7 +43,12 @@ export function isViteDevActive(): boolean {
 
 function isServerPath(path: string): boolean {
   const p = path.toLowerCase();
-  return SERVER_PREFIXES.some((prefix) => p === prefix || p.startsWith(prefix));
+  // `p === prefix || startsWith(prefix + '/')`, NOT a bare startsWith. Bare prefixes were missing
+  // before: GET /auth (no trailing slash) matched no route — mountAuth registers app.use('/auth',
+  // limiter) which calls next() — and fell through to the SPA, returning index.html with a 200
+  // instead of the JSON 404 this guard promises. Verified live. The '/' suffix also keeps a future
+  // SPA route like /authors from being swallowed, which a bare startsWith('/auth') would eat.
+  return SERVER_PREFIXES.some((prefix) => p === prefix || p.startsWith(prefix + '/'));
 }
 
 /**
@@ -103,6 +108,14 @@ export function securityHeaders(_req: Request, res: Response, next: NextFunction
   // shed returns for an /assets/*.js request when it fires.
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
+  // HSTS only when this deployment is actually https. Gated on the SAME predicate session.ts uses
+  // for the Secure attribute and the __Host- cookie prefix, so "this deployment is https" has one
+  // answer rather than two that can disagree. Without it, a bookmarked or first-contact http:// URL
+  // is downgradeable by a network attacker, who then controls an origin the user trusts — the
+  // Secure cookie stops session theft there, but not the served-script surface.
+  if (config.appBaseIsHttps) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 }
 
@@ -142,11 +155,11 @@ export function spaFallback(): RequestHandler {
 }
 
 /**
- * Mount static assets. Returns false when there is no build, so index.ts can decide what that means
- * (dev: Vite serves instead; production: assertWebBuildPresent has already refused to boot).
+ * Mount static assets. No-op when there is no build: in dev Vite serves instead, and in production
+ * assertWebBuildPresent has already refused to boot.
  */
-export function mountWebStatic(app: Express): boolean {
-  if (!existsSync(WEB_DIST)) return false;
+export function mountWebStatic(app: Express): void {
+  if (!existsSync(WEB_DIST)) return;
   app.use(
     express.static(WEB_DIST, {
       // index:false because express.static would otherwise answer `GET /` itself, silently deciding
@@ -156,10 +169,21 @@ export function mountWebStatic(app: Express): boolean {
         // Vite emits content-hashed filenames under /assets, so those are immutable and should never
         // be revalidated. This is also the mitigation for the flood shed: preAuthGuard exempts only
         // /health (csrf.ts:85), so every asset request spends one of 300/min/IP. A code-split first
-        // load is 10-30 requests, which means ~20 people behind one office NAT — a design-partner
-        // demo — can trip it, and a shed JSON envelope served for a .js request is a white screen,
-        // not a "slow down" message. Caching removes the traffic instead of exempting it.
-        if (filePath.includes(`${'/'}assets${'/'}`)) {
+  // Cache-Control: immutable on content-hashed files. Correct, but NOT for the reason the previous
+  // comment gave — it claimed this mitigated the flood shed, and caching removes zero requests from a
+  // COLD first load, which is the only load a first-time demo visitor performs.
+  //
+  // The shed arithmetic here was also wrong, and measured rather than reasoned: the build emits ONE
+  // JS chunk and ONE CSS file (`grep -rn 'import(' web/src/` finds no dynamic imports), so a cold
+  // load is 3 static requests plus 3 boot API calls, ~7 against preAuthGuard's 300/min/IP — about 42
+  // cold loads per minute per IP, not the "~20 people behind one NAT" the plan asserted from a
+  // code-split first load that does not exist.
+  //
+  // Worth knowing if it ever DOES fire on the JS request: the 429 is application/json with nosniff,
+  // and index.html's body is only <div id="root">, so the user gets a permanently blank page with no
+  // message and no retry. That is an argument for exempting /assets/ from the shed, not for the
+  // caching header.
+        if (filePath.includes('/assets/')) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         } else {
           // index.html must never be cached or a deploy strands clients on old chunk names.
@@ -168,7 +192,6 @@ export function mountWebStatic(app: Express): boolean {
       },
     }),
   );
-  return true;
 }
 
 /**
@@ -181,9 +204,23 @@ export function mountWebStatic(app: Express): boolean {
  * Loopback is exempt because `bun run dev` legitimately has no dist (Vite serves from memory) and
  * an API-only local run is a normal thing to want.
  */
-export function assertWebBuildPresent(): void {
-  if (config.appBaseIsLoopback) return;
-  if (existsSync(INDEX_HTML)) return;
+export function assertWebBuildPresent(
+  // Takes a config the way assertDevAuthSafe(cfg) does, and for the same reason: with a hard
+  // dependency on the module singleton the throw branch is unreachable from a test suite that runs
+  // on loopback, so the gate shipped with zero coverage. CONTEXT.md 6.1 records assertDeploymentSafe
+  // doing exactly this and calls it the reason a critical bug survived.
+  cfg: Pick<Config, 'appBaseIsLoopback'> = config,
+  // The PATH is injectable for the SAME reason, and injecting only the config was not enough —
+  // that was the bug review found. With `existsSync(INDEX_HTML)` hard-wired, the throw still could
+  // not be reached from a tree that has a build, so the test opened with `if (hasBuild) { return; }`
+  // and asserted the inverse of its own name. Adding `bun run build:web` to the offline CI job, in
+  // the same change, made a build always present there — so the branch became permanently dead.
+  // Measured: replacing this function's body with `return;` left test/web-mount.test.ts green at
+  // 19 pass / 0 fail. Not a second source of truth — index.ts passes neither argument.
+  indexHtml: string = INDEX_HTML,
+): void {
+  if (cfg.appBaseIsLoopback) return;
+  if (existsSync(indexHtml)) return;
   throw new Error(
     `No web build at ${WEB_DIST} (looked for index.html), and APP_BASE_URL is not loopback.\n` +
       'A deploy that skipped the UI build would boot green and 404 every page. Run `bun run build:web` ' +
@@ -255,6 +292,11 @@ export async function createViteDev(httpServer: HttpServer): Promise<ViteDev | n
     html: async (req: Request, res: Response, next: NextFunction) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return next();
       if (isServerPath(req.path)) return next();
+      // Same extension guard spaFallback carries. Without it a MISSING asset in dev is answered
+      // with index.html and a 200, so the browser reports a MIME/parse error rather than a 404 —
+      // the exact failure spaFallback's own comment says it exists to prevent, reintroduced in the
+      // half of the pair nobody reads.
+      if (/\.[a-z0-9]+$/i.test(req.path)) return next();
       if (!req.accepts('html')) return next();
       try {
         const template = readFileSync(join(webRoot, 'index.html'), 'utf8');

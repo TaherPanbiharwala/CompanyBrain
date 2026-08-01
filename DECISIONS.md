@@ -1142,3 +1142,53 @@ branches both append to will collide again the moment work forks.
   implied away.
   Cross-model dissent was attempted again and is still unavailable — `codex exec` reports authenticated
   and 401s on a real call, exactly as CONTEXT.md §9 records. Four passes now, single-model.
+
+---
+
+## D98 — M5a: the decisions the code was carrying alone
+
+Recorded per the per-milestone convention M4 set (D93–D97). Each of these was live in a code comment
+and nowhere else, which is the state this file exists to prevent.
+
+- **D98.1 — `securityHeaders` and `preAuthGuard` mount ABOVE the body parser.** A parser throw calls
+  `next(err)`, which skips every remaining non-error layer and lands on the terminal error
+  middleware. Below the parser, a 413 shipped with `content-security-policy: null` and was never
+  metered. Verified live before the fix; the hoist costs nothing because both are pure in-memory work
+  that reads neither body nor cookies.
+
+- **D98.2 — the raised-limit routes sit behind `requireValidSession`, which RESOLVES the session.**
+  `csrfGuard` cannot supply this: it waves through any cookieless non-`/auth` request by design. The
+  first version checked cookie PRESENCE and was defeated by one forged header — `cb_session=junk`
+  plus a 9 MB body reached the 8 MB parser, measured. Presence is free to forge, so the guard has to
+  cost a lookup. It accepts `resolveDevContext` first (pure header parsing, double-gated on
+  `NODE_ENV`+`DEV_AUTH`) because gating on cookies alone silently closed the M1/M2 dev-auth transport
+  on three of thirteen ops.
+
+- **D98.3 — `bodyLimitFor()` is the single answer for route→limit, normalised for BOTH of Express's
+  default relaxations.** Case (no `case sensitive routing`) and trailing slash (no `strict routing`).
+  Handling only case left `/api/ingest/` getting the 100kb parser while `/api/ingest` got 1mb — the
+  same "413 naming the wrong number" the function exists to kill, through a second spelling.
+
+- **D98.4 — HSTS is gated on `config.appBaseIsHttps`**, the same predicate `session.ts` uses for the
+  `Secure` attribute and the `__Host-` prefix, so "is this deployment https" has one answer rather
+  than two that can disagree.
+
+- **D98.5 — no router dependency; a 40-line `useRoute` in `App.tsx`.** The app has four routes and
+  one of them exists only to read a URL fragment. `navigate()` deliberately uses `replaceState`
+  today because its only caller is the post-accept hop, where Back must not return to a consumed
+  invite — noted because the next screen added will inherit that silently.
+
+- **D98.6 — `get_page` returns `pages.body`/`pages.extracted_text`, never a chunk rejoin.** Chunks
+  overlap by construction (50-word trailing overlap, plus a 12% block ratio), so joining them
+  repeated text at every boundary: 700 words in, 750 out, measured. The chunk join survives only for
+  rows predating migration 0009, where nothing else holds the text. The read is bounded by
+  `MAX_PAGE_CONTENT_CHARS` and reports `truncated`, because every other read in the registry is
+  bounded and a short read must be distinguishable from a complete one.
+
+- **D98.7 — invite acceptance requires a click.** Accepting sets `active_workspace_id`, so an
+  effect-fired accept made opening a URL move a signed-in user's active tenant.
+  `workspaces.ts:129-132` names that exact harm as the reason invites are token-only; the safeguard
+  it describes is deliberate presentation of the token, which "clicked a link" is not. The confirm
+  screen does not name the inviting workspace — that would make it an oracle for token validity —
+  and the post-accept **Switch back** uses the existing activate route, because a real workspace
+  picker needs a membership-listing endpoint whose `SECURITY DEFINER` is M5b's decision to make.

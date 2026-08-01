@@ -38,6 +38,12 @@ jobs:
       # The live suites skip here (no DATABASE_* set) and that is correct — CB_REQUIRE_LIVE_TESTS is
       # deliberately NOT set on this job, so skipping is permitted. The `live` job below is where
       # skipping becomes a failure.
+      # The SPA-serving assertions in test/web-mount.test.ts are gated on web/dist existing, and
+      # dist/ is gitignored — so without this step they skipped on EVERY CI run, silently, including
+      # the one proving /invites/accept resolves. This also makes CI the first place a broken Vite
+      # build is caught, rather than the deploy.
+      - run: bun run build:web
+
       - name: Offline tests
         # SESSION_SECRET is a real repo secret on the `live` job below (signs the OAuth state
         # cookie) but was never set here — invisible until this file's first-ever run on a real

@@ -178,7 +178,32 @@ describe.skipIf(!live)('leak canary — a row is reachable only via workspace AN
   // tenant's own value, and only then is its absence for the other tenant meaningful.
   describe('cross-tenant: the registry sweep', () => {
     // op name -> how to exercise it, and the tenant-specific string it must surface for its owner.
-    const SWEEP: Record<string, { params: unknown; expect: (ctx: OperationContext) => string }> = {
+    // `params` may be a function of ctx, not just a fixed value. get_page forced this: it is
+    // addressed BY a page reference, and each tenant's page has a different slug, so a single
+    // literal cannot exercise both sides. Ops whose params do not vary keep the literal form.
+    // Record, not `unknown`, on both arms: `unknown | Fn` collapses to `unknown`, which defeats the
+    // narrowing below and leaves the arrow's ctx implicitly any. Op params are always objects.
+    type SweepParams = Record<string, unknown>;
+    type SweepSpec = {
+      /** A LITERAL, never a function of ctx — deliberately narrowed back.
+       *
+       *  A `params: SweepParams | ((ctx) => SweepParams)` union lived here, justified as "get_page
+       *  forced it". It did not: get_page uses the literal form, and its own comment explains at
+       *  length why varying params per tenant makes phase 2 vacuous — workspace 2 would ask for its
+       *  OWN row, so "does not contain tenant 1's token" is trivially true with every tenancy control
+       *  deleted. No entry ever used the function arm, so it was dead machinery in the file D16 calls
+       *  sacred, AND its type signature advertised per-tenant params as sanctioned. Both phases must
+       *  address the SAME identifier. */
+      params: SweepParams;
+      expect: (ctx: OperationContext) => string;
+      /** The error code phase 2 is EXPECTED to fail with, for entries whose cross-tenant call is a
+       *  refusal rather than a filtered-empty result. Without it, `if (!other.ok)` accepts any
+       *  failure — an internal_error from a broken query, a params drift — as proof of isolation.
+       *  See get_page below, the first entry with this shape. */
+      expectRefusal?: string;
+    };
+
+    const SWEEP: Record<string, SweepSpec> = {
       get_workspace: { params: {}, expect: (ctx) => (ctx.workspaceId === ws1 ? `canary-ws1-${RUN}` : `canary-ws2-${RUN}`) },
       list_members: { params: {}, expect: (ctx) => (ctx.workspaceId === ws1 ? pA : pC) },
       whoami: { params: {}, expect: (ctx) => ctx.principal },
@@ -193,6 +218,24 @@ describe.skipIf(!live)('leak canary — a row is reachable only via workspace AN
       search: {
         params: { query: A_SHARED_TOKEN },
         expect: (ctx) => (ctx.workspaceId === ws1 ? A_SHARED_TOKEN : C_SECRET),
+      },
+      // get_page returns a page's FULL reassembled text — the largest single read of the content
+      // plane in the registry, and the only op that hands back a whole document rather than the
+      // fragments a query happened to match. Phase 2 is the interesting half here: workspace 2 asks
+      // for workspace 1's slug BY NAME, which is the most direct cross-tenant read expressible.
+      get_page: {
+        // ONE slug for BOTH phases, exactly like `search` and `ask`. Varying it by tenant made
+        // phase 2 ask for workspace 2's OWN page, so the assertion "does not contain workspace 1's
+        // token" was trivially true with every tenancy control deleted — a guard that did not
+        // guard, in the guard that was being added. Phase 2 must address workspace 1's slug BY
+        // NAME; not_found is then the meaningful negative.
+        params: { slug: `canary-shared-${RUN}` },
+        expect: (ctx) => (ctx.workspaceId === ws1 ? A_SHARED_TOKEN : C_SECRET),
+        // The FIRST entry whose phase 2 is a refusal rather than a filtered-empty result: workspace 2
+        // asks for workspace 1's slug by name, resolvePage finds nothing, and not_found is what RLS
+        // producing the right answer looks like. Named so that any OTHER failure reds instead of
+        // being silently accepted as isolation.
+        expectRefusal: 'not_found',
       },
     };
 
@@ -248,6 +291,16 @@ describe.skipIf(!live)('leak canary — a row is reachable only via workspace AN
             `${name}: the cross-tenant call was SHED by the rate limiter, so the assertions below ` +
               `would pass without ever testing tenancy. The canary must never be answered by the meter.`,
           ).not.toBe('rate_limited');
+        }
+        // If this entry's phase 2 is structurally a REFUSAL, assert it failed the way RLS makes it
+        // fail. Otherwise the three `.not.toContain` checks below run against '' forever and would
+        // stay green through an internal_error or a params drift.
+        if (!other.ok && spec.expectRefusal) {
+          expect(
+            (other as { error: { code: string } }).error.code,
+            `${name}: expected the cross-tenant call to be refused with '${spec.expectRefusal}'. A ` +
+              `different failure means this entry stopped testing tenancy and started testing a bug.`,
+          ).toBe(spec.expectRefusal);
         }
         const otherBody = other.ok ? JSON.stringify((other as { data: unknown }).data) : '';
         expect(otherBody, `${name} leaked workspace 1 data to workspace 2`).not.toContain(spec.expect(ctxA));

@@ -102,21 +102,25 @@ export async function listPages(
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
 
+  return { hasMore, pages: page.map(toSummary) };
+}
+
+/** PageRow -> PageSummary. Extracted at M5 Phase 1 when getPage became a second caller: two copies
+ *  of a snake_case-to-camelCase mapping drift silently, and the drift shows up as an undefined field
+ *  in a UI rather than as a failure anywhere near the code. */
+function toSummary(r: PageRow): PageSummary {
   return {
-    hasMore,
-    pages: page.map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      title: r.title,
-      kind: r.kind,
-      scope: r.scope,
-      tags: r.tags,
-      sourceFormat: r.source_format,
-      hasSource: r.has_source,
-      chunkCount: r.chunk_count,
-      createdAt: r.created_at.toISOString(),
-      updatedAt: r.updated_at.toISOString(),
-    })),
+    id: r.id,
+    slug: r.slug,
+    title: r.title,
+    kind: r.kind,
+    scope: r.scope,
+    tags: r.tags,
+    sourceFormat: r.source_format,
+    hasSource: r.has_source,
+    chunkCount: r.chunk_count,
+    createdAt: r.created_at.toISOString(),
+    updatedAt: r.updated_at.toISOString(),
   };
 }
 
@@ -370,5 +374,97 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
        where id = ${page.id}`;
 
     return { pageId: page.id, slug: page.slug, chunkCount: chunks.length };
+  });
+}
+
+/** Upper bound on the text `get_page` will return in one call.
+ *
+ *  Every other read in the registry is bounded — `list_pages` caps limit at 200, `search` at 20,
+ *  `ask.question` at 2,000 — and operations.ts states the house rule: every bound turns a 500 into a
+ *  diagnosable 400. `get_page` shipped as the only unbounded one, over a column whose own migration
+ *  comment calls it "deliberately UNBOUNDED". M4's rung-0 meter does not substitute; dispatch.ts says
+ *  outright it is a RATE meter, not a size cap, so 120 calls/min against a page extracted from a 5 MB
+ *  spreadsheet is unbounded response bytes from a single-process server.
+ *
+ *  Generous on purpose: this is a whole-document read and truncating a normal document would make the
+ *  op useless. It exists so a pathological row cannot take the process with it. */
+export const MAX_PAGE_CONTENT_CHARS = 1_000_000;
+
+/** A page plus its full text. `PageSummary` deliberately carries no text — a list of 50 pages should
+ *  not drag 50 documents across the wire — so this is the detail view. */
+export interface PageDetail extends PageSummary {
+  /** The document's text, from the authoritative column.
+   *
+   *  This USED TO join the chunk rows back together, and that was wrong in a way no test caught:
+   *  chunks OVERLAP by construction (chunkText carries a 50-word trailing overlap, and the block
+   *  chunker adds a 12% ratio on top), so the "document" repeated up to 50 words at every boundary.
+   *  Measured: 700 words in, 750 words out. Every get_page test seeded a single-chunk body, so the
+   *  overlap never occurred.
+   *
+   *  It was justified by a comment claiming `pages` has no body column. It has two: `pages.body`
+   *  holds pasted text (import.ts writes it) and `pages.extracted_text` holds the full extracted text
+   *  for file-sourced pages (migration 0009, NULL for pasted). The chunk join survives only as a
+   *  fallback for rows predating 0009, where it is the sole remaining source. */
+  content: string;
+  /** True when `content` hit MAX_PAGE_CONTENT_CHARS. A truncated read must be visibly truncated
+   *  rather than silently short — a client cannot tell the difference from the text alone. */
+  truncated: boolean;
+}
+
+/**
+ * Read one page and its text.
+ *
+ * Added at M5 Phase 1 because there was NO way to read a page's content back through the API.
+ * `list_pages` returns metadata only, `search` returns matching chunks, and `ask` returns whatever
+ * the retriever chose.
+ *
+ * AGENT-FACING FOR NOW, and that is worth stating rather than implying. The motivation above was
+ * written as a UI outcome ("a UI could show that a document existed and never show the document"),
+ * and M5a does not close it: nothing in `web/` calls this op, `PageList` rows are not interactive,
+ * and `docs/screens.md` has no page-detail screen. What this DID close is the API capability — it is
+ * live on REST, MCP `tools/list` and the CLI, which is where an agent reads a document back. The UI
+ * half is M5b; see the page-detail row in docs/screens.md.
+ */
+export async function getPage(ctx: OperationContext, ref: PageRef): Promise<PageDetail> {
+  requireOneRef(ref);
+  return withScopedTx(ctx, async (tx) => {
+    // resolvePage applies the same id-or-slug rules (and the same ambiguity error) every other
+    // lifecycle op uses, rather than a second lookup that could disagree with them.
+    const page = await resolvePage(tx, ref);
+    // ONE statement, not three. It used to run resolvePage, then read every chunk, then re-read the
+    // same pages row by the same id — and that third query recomputed `count(*)` over the chunks it
+    // had already fetched, under the identical RLS predicate, so the number was provably rows.length.
+    // At this repo's own measured ~110ms per round trip (hybrid.ts) that was ~220ms of pure waste.
+    const meta = await tx<(PageRow & { text: string | null; over: boolean })[]>`
+      select
+        p.id, p.slug, p.title, p.kind, p.scope, p.tags, p.source_format,
+        exists (select 1 from page_sources s where s.page_id = p.id) as has_source,
+        (select count(*)::int from content_chunks c where c.page_id = p.id) as chunk_count,
+        -- The AUTHORITATIVE text. body for pasted pages, extracted_text for file-sourced ones.
+        -- Truncation happens in SQL so an oversized document is never materialised in this process.
+        left(coalesce(p.body, p.extracted_text), ${MAX_PAGE_CONTENT_CHARS}) as text,
+        length(coalesce(p.body, p.extracted_text)) > ${MAX_PAGE_CONTENT_CHARS} as over,
+        p.created_at, p.updated_at
+      from pages p where p.id = ${page.id}`;
+    const m = meta[0];
+    if (!m) throw new OperationError('not_found', 'page not found');
+    if (m.text !== null) return { ...toSummary(m), content: m.text, truncated: m.over === true };
+
+    // FALLBACK, and only for rows that predate migration 0009 — a file ingest from before
+    // extracted_text existed has its text nowhere but the chunks. Rejoining them duplicates the
+    // chunk overlap, so this path is lossy by nature; it is reached only when the alternative is
+    // returning nothing at all.
+    //
+    // No workspace_id or acl predicate: RLS is the SOLE scoper here exactly as it is for the page
+    // row above. A chunk whose acl drifted out of view is simply absent, which is the same behaviour
+    // search has, rather than a partial read that silently claims to be complete.
+    const rows = await tx<{ content: string }[]>`
+      select content from content_chunks where page_id = ${page.id} order by ord`;
+    const joined = rows.map((r) => r.content).join('\n\n');
+    return {
+      ...toSummary(m),
+      content: joined.slice(0, MAX_PAGE_CONTENT_CHARS),
+      truncated: joined.length > MAX_PAGE_CONTENT_CHARS,
+    };
   });
 }

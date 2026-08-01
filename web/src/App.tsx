@@ -24,26 +24,50 @@ type Session =
   | { state: 'error'; error: unknown };
 
 /** Tiny path switch. react-router would be a fourth dependency tree for four routes; when the route
- *  table grows past this, add it deliberately rather than by default. */
-function useRoute(): string {
+ *  table grows past this, add it deliberately rather than by default.
+ *
+ *  Returns a `navigate` alongside the path because `history.pushState`/`replaceState` DO NOT fire
+ *  `popstate` — that event is for back/forward only. Without this, code that changed the URL
+ *  programmatically left the router showing the previous screen: after accepting an invite the URL
+ *  read `/` while the invite screen was still mounted. */
+function useRoute(): [string, (to: string, opts?: { replace?: boolean }) => void] {
   const [path, setPath] = useState(location.pathname);
   useEffect(() => {
     const onPop = () => setPath(location.pathname);
     addEventListener('popstate', onPop);
     return () => removeEventListener('popstate', onPop);
   }, []);
-  return path;
+  // The MODE is a parameter, because replaceState is right for exactly one caller and wrong as a
+  // default. Post-accept must replace (Back must not return to a consumed invite); anything else
+  // added later wants a real history entry, and inheriting replace semantics silently is how a
+  // router acquires behaviour nobody chose.
+  const navigate = useCallback((to: string, opts?: { replace?: boolean }) => {
+    if (opts?.replace) history.replaceState(null, '', to);
+    else history.pushState(null, '', to);
+    setPath(to);
+  }, []);
+  return [path, navigate];
 }
 
 export function App() {
   const [session, setSession] = useState<Session>({ state: 'loading' });
-  const path = useRoute();
+  const [path, navigate] = useRoute();
 
   const load = useCallback(async () => {
     setSession({ state: 'loading' });
     try {
-      const who = await callOp<WhoAmI>('whoami');
-      const workspace = await callOp<Workspace>('get_workspace');
+      // Promise.all, not two awaits. Neither call's params derive from the other's result, so the
+      // sequential form serialised two full round trips behind the "Loading…" screen — and each is
+      // not cheap server-side: resolveSessionContext does a lookup, then dispatchOp opens a scoped
+      // transaction (BEGIN + set_config + query + COMMIT). ~10 database round trips before first
+      // paint instead of ~5, on the first thing every visitor sees.
+      //
+      // Promise.all rejects with the FIRST rejection, which is the same ApiError the catch below
+      // already keys on, so the unauthenticated and no_workspace lanes are unchanged.
+      const [who, workspace] = await Promise.all([
+        callOp<WhoAmI>('whoami'),
+        callOp<Workspace>('get_workspace'),
+      ]);
       setSession({ state: 'ready', who, workspace });
     } catch (err) {
       if (err instanceof ApiError && err.code === 'unauthenticated') {
@@ -67,9 +91,26 @@ export function App() {
   if (path === '/invites/accept') {
     return (
       <AcceptInvite
-        signedIn={session.state === 'ready' || session.state === 'no-workspace'}
+        // null while loading — NOT false. A boolean here reads as "not signed in" during the very
+        // first render, and AcceptInvite acts on it once and never revisits, stranding a signed-in
+        // user on the sign-in prompt with a single-use token.
+        signedIn={
+          session.state === 'loading'
+            ? null
+            : session.state === 'ready' || session.state === 'no-workspace'
+        }
+        // The workspace accepting will REPLACE as active. Named on the confirm screen and used for
+        // the switch-back, so an unintended accept is recoverable without signing out.
+        currentWorkspace={
+          session.state === 'ready'
+            ? { id: session.workspace.id, name: session.workspace.name }
+            : null
+        }
         onAccepted={() => {
-          history.replaceState(null, '', '/');
+          // navigate(), not a bare replaceState: that changes the URL without telling the router,
+          // so the invite screen stayed mounted over a workspace the user had just joined.
+          // replace: the invite token is consumed, so Back must not return to this screen.
+          navigate('/', { replace: true });
           void load();
         }}
       />
@@ -103,7 +144,7 @@ export function App() {
             <ErrorPanel
               error={session.error}
               onRetry={load}
-              onSignIn={session.error instanceof ApiError ? () => undefined : undefined}
+              showSignIn
             />
           </div>
           {session.error instanceof TransportError && (

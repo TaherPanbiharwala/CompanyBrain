@@ -28,3 +28,15 @@ describe('operation registry — structural invariants (every op)', () => {
     });
   }
 });
+
+// CONTEXT.md states the op count as a number, and CONTEXT.md is the file the next session loads
+// INSTEAD of re-reading the repo. A count that disagrees with the registry is precisely the drift it
+// exists to prevent — and it had already drifted once (it read 12 after get_page made it 13).
+describe('CONTEXT.md tracks the registry', () => {
+  it('the stated op count equals operations.length', async () => {
+    const md = await Bun.file(new URL('../CONTEXT.md', import.meta.url)).text();
+    const m = /ops in `operations\.ts`\s*\|\s*\*\*(\d+)\*\*/.exec(md);
+    expect(m, 'the op-count row is gone from CONTEXT.md — this scan is vacuous').not.toBeNull();
+    expect(Number(m![1]), 'CONTEXT.md disagrees with the registry').toBe(operations.length);
+  });
+});

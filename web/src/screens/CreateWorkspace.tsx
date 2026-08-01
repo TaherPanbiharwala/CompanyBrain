@@ -74,7 +74,7 @@ export function CreateWorkspace({ onReady }: { onReady: () => void }) {
 
       {error != null && (
         <div className="mt-6">
-          <ErrorPanel error={error} onRetry={() => setError(null)} />
+          <ErrorPanel error={error} onRetry={() => setError(null)} showSignIn />
         </div>
       )}
     </main>

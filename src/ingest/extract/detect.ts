@@ -77,6 +77,19 @@ function textualKind(bytes: Uint8Array, filename: string): ExtractFormat {
   return 'text';
 }
 
+/** Extensions a user can usefully pick, as a file-input `accept` string.
+ *
+ *  Exported because `web/src/components/Upload.tsx` had its own hand-written copy and it had ALREADY
+ *  drifted: the picker hid `.tsv` and `.markdown`, both of which this module accepts (see the ext
+ *  votes above). A hidden extension is not a rejection — it is a file the user cannot select even
+ *  though the server would have taken it.
+ *
+ *  A superset is safe: detection is content-first and an unparseable file gets a typed
+ *  `unsupported_format` rather than a crash. Being too NARROW is the failure that is silent. */
+export const ACCEPTED_EXTENSIONS = [
+  '.pdf', '.docx', '.xlsx', '.csv', '.tsv', '.json', '.html', '.htm', '.md', '.markdown', '.txt',
+] as const;
+
 export function detect(bytes: Uint8Array, filename = ''): Detection {
   if (bytes.length === 0) return { format: 'unsupported', looksLike: 'an empty file' };
   if (startsWith(bytes, PDF)) return { format: 'pdf' };

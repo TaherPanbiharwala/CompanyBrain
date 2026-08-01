@@ -2,9 +2,10 @@
 import express from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
 import { config } from './config.ts';
 import { appSql } from './db/client.ts';
-import { mountApi, UPLOAD_PATH } from './api/server.ts';
+import { mountApi, parsesOwnBody, STANDARD_BODY_LIMIT } from './api/server.ts';
 import { mountAuth } from './auth/routes.ts';
 import { assertDevAuthSafe, assertDevLoginSafe } from './api/dev-auth.ts';
 import { assertDeploymentSafe } from './boot.ts';
@@ -25,32 +26,52 @@ if (config.TRUST_PROXY) {
   const hops = Number(config.TRUST_PROXY);
   app.set('trust proxy', Number.isFinite(hops) ? hops : config.TRUST_PROXY);
 }
-// Explicit body cap (review AM10), app-wide EXCEPT the one route that legitimately carries a file.
+// ── Middleware order. Every line below is load-bearing. ──────────────────────
 //
-// The exemption is about ORDER, not size. This parser runs before preAuthGuard and csrfGuard, so a
-// single 100kb cap here would either reject every upload outright, or — if simply raised — hand an
-// unauthenticated flood a multi-megabyte JSON.parse per request at 300 req/min/IP, ahead of the very
-// shed that exists to stop that. /api/ingest_file therefore parses its own body inside mountApi,
-// AFTER both guards, where an oversized body has already had to get past the flood shed and CSRF.
-const standardJson = express.json({ limit: '100kb' });
-app.use((req, res, next) => (req.path === UPLOAD_PATH ? next() : standardJson(req, res, next)));
-// Express 5 has no cookie parsing of its own. Parsing ONLY — the oauth cookie carries its own HMAC.
-app.use(cookieParser());
-// Coarse IP-keyed flood shed, BEFORE anything touches the database. Ordering is the whole point:
-// the per-principal apiLimiter cannot run until resolveSessionContext has already spent a round trip
-// on the cb_app pool, so it could never protect that pool from unauthenticated traffic. A flood of
-// well-formed junk session cookies passes looksLikeToken and reaches the database; at ~10
-// connections that starves every authenticated request. This sheds it from memory first.
-// Security headers on EVERY response, before anything can answer. M5 Phase 0: this app now serves
-// HTML that renders ingested document text and model output, on a cookie-authenticated origin with
-// no CSRF token — so `script-src 'self'` is what stands between a stored-XSS payload and full
-// authority over create_invite/delete_page. Mounted here, app-wide, for the same reason csrfGuard is:
-// a router added later inherits it rather than having to remember.
+// securityHeaders and preAuthGuard sit ABOVE the body parser, and that ordering was WRONG until the
+// M5a review. A body-parser throw (entity.too.large, entity.parse.failed) calls next(err), which
+// skips every remaining NON-error layer and lands straight on mountApi's terminal error middleware.
+// With these mounted below, a 413 shipped with no CSP, no nosniff and no X-Frame-Options while the
+// comment on securityHeaders claimed "EVERY response" — verified: a 200KB body to /api/whoami
+// returned 413 with content-security-policy: null. The shed was skipped on that path too, so
+// oversized and malformed bodies were entirely unmetered.
+//
+// Hoisting costs nothing: both are pure in-memory work with no dependency on a parsed body or on
+// cookies.
 app.use(securityHeaders);
 app.use(preAuthGuard);
+
+// gzip, above everything that produces a body.
+//
+// Measured on a real build: index.js is 221,326 bytes and index.css 12,412 — 233,738 shipped raw on
+// every cold load, against 70,668 gzipped. 3.3x, and Vite's own build report already prints the
+// gzip number next to the raw one, so the saving was being computed and discarded. express.static
+// never compresses on its own and nothing else set Content-Encoding anywhere in src/.
+//
+// Above the routers rather than beside the static mount, so JSON envelopes get it too — an `ask`
+// response carries the answer plus every retrieved chunk's text, which is the largest JSON the API
+// returns.
+app.use(compression());
+
+// Explicit body cap (review AM10), app-wide EXCEPT the routes that legitimately carry a document.
+//
+// The exemption is about ORDER, not size. A single 100kb cap here would either reject every upload
+// outright or, if simply raised, hand a flood a multi-megabyte JSON.parse per request. /api/ingest,
+// /api/replace_page and /api/ingest_file therefore parse their own bodies inside mountApi, behind
+// the shed above and behind requireSessionCookie — see bodyLimitFor().
+const standardJson = express.json({ limit: STANDARD_BODY_LIMIT });
+app.use((req, res, next) => (parsesOwnBody(req.path) ? next() : standardJson(req, res, next)));
+
+// Express 5 has no cookie parsing of its own. Parsing ONLY — the oauth cookie carries its own HMAC.
+app.use(cookieParser());
+
 // CSRF for EVERY cookie-authenticated mutating request, app-wide — deliberately not inside either
 // router. It sits after cookieParser (it needs to know whether a session cookie is present) and
 // before both mounts, so /api/:op is covered and any router added later inherits it.
+//
+// NOTE it is a no-op for a request carrying NO session cookie that is not targeting /auth/ — an
+// unauthenticated caller has no ambient authority to abuse. That is why the large per-route parsers
+// cannot rely on it, and use requireSessionCookie instead.
 app.use(csrfGuard);
 
 app.get('/health', (_req, res) => {
@@ -107,6 +128,16 @@ const viteDev =
 // Static assets ahead of the routers: a content-hashed chunk is public and should not walk the auth
 // stack. express.static is mounted with index:false, so it answers only for files that exist and
 // never decides who owns `/`.
+// Vite's assets mount ABOVE nothing in production (mountWebStatic is already after the guards), but
+// in DEV middleware mode serves every source module as its own request: ~13 files in web/src plus
+// /@vite/client, /@react-refresh, the Tailwind module and several prebundled dep chunks — roughly 20
+// requests per full reload, each spending one of preAuthGuard's 300/min/IP. That puts a reload loop
+// at ~15/minute before the shed fires, and when it fires the developer gets a JSON 429 where a module
+// should be: a white screen, for 60 seconds. HMR avoids most full reloads, so it bites during the
+// config and Tailwind edits that force one.
+//
+// Dev-only by construction: viteDevActive is set exclusively by createViteDev, which is itself gated
+// on import.meta.main and isDevEnv, so this cannot widen the production surface.
 if (viteDev) app.use(viteDev.assets);
 else mountWebStatic(app);
 

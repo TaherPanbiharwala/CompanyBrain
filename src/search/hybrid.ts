@@ -8,7 +8,7 @@ import { withScopedTx } from '../db/client.ts';
 import { embed, withRouterScope, rerank, isRerankEnabled, expandQuery, isExpansionEnabled } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
 import { RRF_K } from './rrf.ts';
-import type { Locator } from '../ingest/blocks.ts';
+import { formatLocator, type Locator } from '../ingest/blocks.ts';
 
 export interface ChunkHit {
   chunkId: string;
@@ -19,6 +19,21 @@ export interface ChunkHit {
   content: string;
   /** Where in the source document this chunk came from; null for pasted text. */
   locator: Locator | null;
+  /** The PRE-RENDERED locator ("p. 4", "Sheet1!A1"), or null for pasted text.
+   *
+   *  On the shared shape rather than projected by one op. It used to be added only inside the
+   *  `search` handler, so `ask` — the only op the UI actually calls — returned hits with no
+   *  citation at all and the source panel silently never showed a page number. Typecheck could not
+   *  see it: the client mirrors these types by hand in a separate tsc project. */
+  citation: string | null;
+  /** The owning page's visibility LABEL ('private' | 'workspace'), carried so a UI can show a
+   *  citation's audience without a second round trip per hit.
+   *
+   *  It is a label, not the control: `acl` is what RLS enforces, and this hit only exists because
+   *  the acl already matched the caller's keyring. Displaying it answers "who else can see this
+   *  source", which is the question a permission-scoped answer has to be able to answer — and there
+   *  was no way to ask it before, because `list_pages` returned `scope` and search did not. */
+  scope: string;
   /** BLENDED score: `BLEND_RRF * (rrf / max rrf) + BLEND_COS * cosine similarity`, not raw RRF.
    *  Comparable WITHIN one result set only — the normalisation is per-query. */
   score: number;
@@ -32,6 +47,7 @@ interface FusedRow {
   ord: number;
   content: string;
   locator: Locator | null;
+  scope: string;
   score: number; // ::float8, so postgres.js gives a number rather than numeric-as-string
 }
 
@@ -380,7 +396,7 @@ export async function hybridSearch(
     -- page is not visible (drift; test/leak-canary.test.ts proves that state is representable)
     -- silently cost a result rather than being skipped.
     candidates as (
-      select c.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator,
+      select c.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator, p.scope,
              f.score as rrf,
              -- Cosine SIMILARITY (1 - distance), so bigger is better on both terms of the blend.
              -- coalesce because a chunk reached through the keyword or title arm may have no
@@ -417,7 +433,7 @@ export async function hybridSearch(
     -- The RRF term is normalised by the best score in this candidate set, because RRF scores have no
     -- absolute scale — an unnormalised sum of ~1/60 terms would be swamped by a cosine similarity of
     -- ~0.8 and the blend would silently become a pure vector sort.
-    select chunk_id, page_id, slug, title, ord, content, locator,
+    select chunk_id, page_id, slug, title, ord, content, locator, scope,
            (${BLEND_RRF} * (rrf / nullif(max(rrf) over (), 0)) + ${BLEND_COS} * cos_sim)::float8 as score
     from deduped
     where dup_rk = 1
@@ -432,6 +448,8 @@ export async function hybridSearch(
     ord: r.ord,
     content: r.content,
     locator: r.locator,
+    citation: formatLocator(r.locator ?? undefined) ?? null,
+    scope: r.scope,
     score: r.score,
   }));
 

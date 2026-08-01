@@ -24,6 +24,8 @@ const hit = (n: number, over: Partial<ChunkHit> = {}): ChunkHit => ({
   pageId: `p${n}`,
   slug: `slug-${n}`,
   title: `Title ${n}`,
+  scope: 'workspace',
+  citation: null,
   ord: 0,
   content: `CONTENT_${n}`,
   // M3 added these to the hit. They default to the pasted-text shape (no source document, so no

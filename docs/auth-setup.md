@@ -284,10 +284,16 @@ You cannot invite someone at a role above your own: an `admin` minting an `owner
 with `insufficient_role`. That check is app-layer (the database will happily store `role='owner'`,
 since `cb_app` holds table-level INSERT on `invites`), which is why it has a dedicated test.
 
-The invitee redeems it by POSTing the token — **not** by clicking the URL. `acceptUrl` carries the
-token in a URL **fragment** so it never reaches a server log or a Referer header (it IS kept in the
-browser's own history — fragments always are; the guarantee is that it does not leave the machine),
-and the page that reads that fragment ships with the M5 UI. Until then:
+The invitee redeems it by **clicking the URL** — M5a ships the page that reads the fragment
+(`web/src/screens/AcceptInvite.tsx`, routed at `/invites/accept`). It parses `#token=`, stashes the
+token in `sessionStorage` before any sign-in redirect (a fragment does not survive that navigation,
+and the token is single-use), strips it from the address bar, and POSTs it for the user.
+
+`acceptUrl` carries the token in a URL **fragment** so it never reaches a server log or a Referer
+header (it IS kept in the browser's own history — fragments always are; the guarantee is that it
+does not leave the machine).
+
+The manual form below still works, and is the right path for a machine caller or a no-UI deploy:
 
 ```bash
 curl -s -b cookies.txt -X POST localhost:3000/auth/invites/accept \

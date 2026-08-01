@@ -153,13 +153,31 @@ export async function callAuth<T>(path: string, params?: Record<string, unknown>
   }).catch((err: unknown) => {
     throw new TransportError(err instanceof Error ? err.message : 'network request failed', reqId);
   });
-  const body = (await res.json().catch(() => ({}))) as {
-    ok?: boolean;
-    reqId?: string;
-    error?: WireError;
-  };
+  // text()-then-parse, exactly like request(). `res.json().catch(() => ({}))` swallowed the one
+  // failure test/web-mount.test.ts exists to prevent: the SPA fallback answering inside /auth/* with
+  // HTML and a 200. That came back to the caller as a SUCCESSFUL call returning `{}` as T, while the
+  // identical situation on an op route threw a TransportError naming the content-type. Two doors into
+  // the same server should not disagree about what "the API did not answer this" looks like.
+  let parsed: unknown;
+  const text = await res.text();
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new TransportError(
+      `expected JSON from ${path} but got ${res.headers.get('content-type') ?? 'no content-type'} ` +
+        `(HTTP ${res.status}). Something other than the API answered this request.`,
+      res.headers.get('x-request-id') ?? reqId,
+    );
+  }
+
+  const body = parsed as { ok?: boolean; reqId?: string; error?: WireError };
   if (!res.ok || body.ok === false) {
     const e = body.error;
+    // mountAuth has its OWN rate limiter (30/5min), so /auth routes 429 on their own schedule —
+    // including /auth/invites/accept. Dropping the header here made ErrorPanel's "Try again in {N}s"
+    // structurally unreachable for every auth route, though docs/screens.md lists that countdown as
+    // the treatment for the rate-limited state.
+    const retryAfterHeader = res.headers.get('retry-after');
     throw new ApiError(
       e?.code ?? 'internal_error',
       e?.message ?? `HTTP ${res.status}`,
@@ -167,6 +185,7 @@ export async function callAuth<T>(path: string, params?: Record<string, unknown>
       res.status,
       e?.suggestion,
       e?.docs,
+      retryAfterHeader ? Number(retryAfterHeader) : undefined,
     );
   }
   return body as T;
@@ -183,4 +202,103 @@ export interface WhoAmI {
 export interface Workspace {
   id: string;
   name: string;
+}
+
+/** A retrieved chunk. `scope` is the owning page's visibility LABEL — the acl is what actually
+ *  enforced this hit being visible, so the label is for display only. */
+export interface ChunkHit {
+  chunkId: string;
+  pageId: string;
+  slug: string;
+  title: string | null;
+  ord: number;
+  content: string;
+  locator: unknown;
+  /** Pre-rendered locator ("p. 4", "Sheet1!A1"), null for pasted text. */
+  citation: string | null;
+  scope: string;
+  score: number;
+}
+
+export interface AskResult {
+  answer: string;
+  /** 1-BASED indices into `sources` — NOT into `cited`. `[2]` in the answer text is `sources[1]`.
+   *  Index-parallel with `cited`, which answer.ts:130 derives as `citations.map(n => sources[n-1])`.
+   *  This comment said "into `cited`" and the UI numbered its chips by array position because of
+   *  it, so every inline marker pointed at the wrong source. Server-clamped, so they resolve. */
+  citations: number[];
+  /** The chunks the answer actually used. */
+  cited: ChunkHit[];
+  /** Everything retrieved, including what the answer did not use. */
+  sources: ChunkHit[];
+  /** 'keyword_only' when the embedder was unavailable — results are keyword-only and may be
+   *  incomplete. Distinct from ingest's degraded flag, which is about extraction. */
+  degraded?: string;
+}
+
+/** Pre-declared for the search surface that lands in M6 — nothing calls `search` from the UI today.
+ *  Kept rather than deleted so the shape is written down once, in the same spirit as WireError.docs;
+ *  the difference between dead and deliberate is this sentence. */
+export interface SearchResult {
+  degraded?: string;
+  results: ChunkHit[];
+}
+
+export interface PageSummary {
+  id: string;
+  slug: string;
+  title: string | null;
+  kind: string;
+  scope: string;
+  tags: string[];
+  sourceFormat: string | null;
+  hasSource: boolean;
+  /** 0 means the page exists but is UNRETRIEVABLE — an ingest wrote the row and failed before its
+   *  chunks landed. Worth showing rather than hiding; the backend comment says so explicitly. */
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListPagesResult {
+  pages: PageSummary[];
+  /** No total count exists by design, so pagination is "load more", never numbered. */
+  hasMore: boolean;
+}
+
+export interface IngestResult {
+  pageId: string;
+  chunkCount: number;
+}
+
+export interface IngestFileResult {
+  pageId: string;
+  slug: string;
+  chunkCount: number;
+  format: string;
+  unitsExtracted: number;
+  unitsSkipped: number;
+  /** True when part of the document could not be extracted. A 40-page PDF where 37 pages were
+   *  scans looks exactly like a clean 3-page ingest without this. */
+  degraded: boolean;
+  sha256: string;
+}
+
+/**
+ * Confidence, derived from EVIDENCE rather than asked of the model.
+ *
+ * A model self-reporting confidence about its own retrieval-grounded answer is noise — it has no
+ * access to whether retrieval worked. These three states are all derivable from the response shape
+ * and cost nothing:
+ *
+ *   none        no sources retrieved at all
+ *   unsupported sources exist but the answer cited none of them  <- the dangerous one
+ *   grounded    the answer cites retrieved sources
+ */
+export type Confidence = 'none' | 'unsupported' | 'grounded';
+
+export function confidenceOf(r: AskResult): Confidence {
+  if (r.sources.length === 0) return 'none';
+  if (r.citations.length === 0) return 'unsupported';
+  return 'grounded';
 }

@@ -95,7 +95,7 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
    M8. Those disagree, and the decision is yours.
 
-Then: the README is stale in six ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
+Then: the README is stale in eight ways (§5.4), and the "readable ≠ publishable" gap (§5.2) is a
 design decision waiting on you, not an implementation task.
 
 ---
@@ -110,7 +110,7 @@ empty), every worktree is clean, and there are no stashes. The milestones built:
 
 | | |
 |---|---|
-| ops in `operations.ts` | **12** |
+| ops in `operations.ts` | **13** |
 | migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
 | `DECISIONS.md` | **101 entries, D0–D97**, no duplicate IDs |
 | `doctor` | **73 checks** |
@@ -210,7 +210,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 | M2 | Identity — Google OIDC, sessions, workspaces, invites |
 | M3 | The brain loop — multi-format ingest, page lifecycle, four-arm hybrid search |
 | M4 | Enforcement + doctor — **done**. RLS itself landed early at M3 (D66); M4 closed the remaining gate (the perf/scale suite, the cross-transport rate meter, doctor's migrations-current + acl-coverage checks) and survived a seven-pass review (D93–D97) |
-| M5 | The demo web app — not started |
+| M5 | Split M5a/M5b. **M5a done, uncommitted** — Vite+React SPA at `/` (13 files under `web/src`), `src/web.ts`, CSP+HSTS, ask/upload/pages/invite surfaces, 5 web test suites. M5b (teams, members, operator panel, conversations, MCP-over-HTTP) not started; see `docs/screens.md` |
 | M8 | Spend/usage accounting — not started; see §5.3 |
 
 **Two controls you would otherwise "clean up":**
@@ -246,10 +246,21 @@ src/ingest/      file.ts (the waist) lifecycle.ts blocks.ts sanity.ts embed.ts c
 src/search/      hybrid.ts rrf.ts eval-score.ts
 src/answer/      answer.ts prompt.ts
 src/ai/          router.ts (one door for every model call) vector.ts
+src/web.ts       serves the SPA: security headers, static mount, SPA fallback, in-process Vite dev
+
+web/             the M5a frontend (Vite + React 19 + Tailwind 4, same-origin, no CORS anywhere)
+  src/           App.tsx (40-line useRoute, no react-router) main.tsx index.css (@theme tokens)
+    lib/         api.ts (callOp + callAuth, the ONLY fetch layer; DOM-free by test)
+    components/  AnswerView.tsx PageList.tsx Upload.tsx ErrorPanel.tsx
+    screens/     SignIn.tsx CreateWorkspace.tsx AcceptInvite.tsx Home.tsx Invite.tsx
+  dist/          gitignored; `bun run build:web` writes it and a non-loopback boot REQUIRES it
 ```
 
 `.github/workflows/ci.yml` — **exists; `HANDOVER.md` never mentions it.** Two jobs: `offline`
-(typecheck + unit + the two meta-tests) and `live` (the D16 leak canary with DB secrets). Bun pinned
+(typecheck + `bun run build:web` + unit + the two meta-tests) and `live` (the D16 leak canary with DB
+secrets, **master-only** since M5a Phase −1). The `build:web` step is not cosmetic: the SPA-serving
+assertions in `test/web-mount.test.ts` are gated on `web/dist` existing, so without it they skipped
+on every CI run, silently. Bun pinned
 to `1.3.14` in this file only — no `engines`/`.tool-versions` elsewhere. Dependencies are pinned
 separately: `bun.lock` plus two exact specs in `package.json` (`@modelcontextprotocol/sdk` and
 `xlsx`, the latter from `cdn.sheetjs.com`, not npm — see §4).
@@ -345,7 +356,7 @@ accounting exists anywhere in `src/` — D18 puts caps at M5, which is the entry
 
 ### 5.4 Documentation
 
-`README.md` is stale in six ways, not the three `HANDOVER.md` lists — down from a claimed nine at
+`README.md` is stale in eight ways, not the three `HANDOVER.md` lists — down from a claimed nine at
 the last pass. One of those nine was a doctor-count complaint, and that count (**73**, `README.md:46`
 and `:144`) now happens to **match** current reality (§1, §10); it's re-verified here, not carried
 forward on trust — check it again next time rather than assuming it stays lucky. What's still wrong:
@@ -361,6 +372,13 @@ forward on trust — check it again next time rather than assuming it stays luck
   `perf-recall`, `boot`, `migrate`, `lifecycle`, `invites`, and every M4-era addition.
 - **`README:92`** still says "no remote machine credential until M3" — M3 **and now M4** have
   shipped and there still is none.
+- **No mention of the web UI at all** — M5a ships a full SPA at `/`, and the README's Status
+  paragraph and Layout section both read as if the repo were still API-only. A reader has no way to
+  learn the product has a human surface.
+- **`bun run build:web` is absent from the quickstart** and is now MANDATORY for any non-loopback
+  boot: `src/index.ts` calls `assertWebBuildPresent()`, which THROWS at import time when
+  `web/dist/index.html` is missing and `APP_BASE_URL` is not loopback. Following the README verbatim
+  gives a deploy that refuses to start, with no doc naming the missing step.
 
 `docs/plan.md` poses eleven gate decisions (UC1–UC6, T1–T5) — **but its own "Post-review resolution
 (2026-07-23)" section already answers all of them except T4** (whose text notes the ZDR default was
@@ -419,11 +437,21 @@ fires on an action nobody will think of as risky.
 `csrf.ts:129-132` waves through any request with no session cookie that isn't `/auth/*`, and
 `checkCsrf` (`csrf.ts:57`) returns ok for a client sending neither `Sec-Fetch-Site` nor `Origin`.
 There is no CSRF *token* anywhere in this codebase — the guard is origin-signal only, by explicit
-design. So the `server.ts:45-47` comment claiming an 8 MB body "has had to … present a valid CSRF
-token" describes a control that does not exist; don't go looking for it or try to "restore" it. The
-real gap: the only thing in front of the 8 MB `express.json` on `/api/ingest_file` is
-`preAuthLimiter` at 300 req/min/IP — ~2.4 GB/min of buffering plus `JSON.parse`, unauthenticated,
-before any identity exists. `apiLimiter` runs *after* the body is parsed and can't protect it.
+design. So the comment that used to sit at `server.ts:45-47`, claiming an 8 MB body "has had to …
+present a valid CSRF token", described a control that does not exist.
+
+**FIXED in M5a (uncommitted), and the fix itself needed a second pass — read both halves.** The
+comment is gone and `requireValidSession` (`src/api/server.ts:~119`) now sits in front of every
+raised-limit parser. Its FIRST version gated on `hasSessionCookie`, i.e. cookie PRESENCE with no
+shape or database check — which one forged header defeated: measured, `Cookie: cb_session=junkjunk`
+plus a 9 MB body returned 413, meaning the 8 MB parser had already engaged for a caller who
+authenticated nothing. That version reproduced the very failure it replaced, one layer up. It now
+calls `resolveSessionRow`, which shape-checks from memory and then does one indexed lookup.
+
+Residual, stated honestly: an attacker with a well-formed forged token still costs one indexed read
+per request, and `preAuthGuard` at 300 req/min/IP remains the actual flood control — `resolver.ts`
+says so explicitly. What changed is the per-request cost, by ~1000x. `apiLimiter` still runs *after*
+the body is parsed and still cannot protect it.
 
 ### 6.4 [minor] `parseFramed` accepts a long read — fix needs a byte slice, not a string slice
 

@@ -95,14 +95,55 @@ not carry.
 | **Answer with zero citations** | yes | **Distinct container.** `parseAnswerJson` turns unparseable model output into the whole answer with `citations: []`, and `scrubMarkers` removes any visual trace — so confident prose with no sources would otherwise look identical to a cited answer |
 | `degraded: 'keyword_only'` | yes | Banner **above** the answer: vector search unavailable, results may be incomplete |
 | Upload partially extracted | yes | Inline on the page row with real numbers. A 40-page PDF where 37 pages were scans looks exactly like a clean 3-page ingest otherwise |
-| Duplicate upload | yes | `already_exists` → offer to open the existing page |
+| Duplicate upload | yes | `already_exists` → explain, and name the two ways out (different slug, or replace). **NOT "open the existing page"**: `PageList` rows are not interactive and no page-detail screen exists, so that treatment had nowhere to go. Revisit when a detail view lands — `get_page` already returns the document |
 | Rate limited | yes | Countdown from `retry-after` |
 | Permission denied | **no** on ask/search — RLS filters silently. **yes** on `delete_page`/`replace_page` | — |
 | Stale/revoked citation | **not in Phase 1** — within one response `answer.ts` resolves `cited` server-side, so a citation cannot dangle. Real once conversations persist | Struck-through chip, identical for deleted and access-revoked, or it becomes an oracle |
 
+## Invite (admin only) — `/`, the "Invite" tab
+
+Shipped in M5a; `web/src/screens/Invite.tsx`, rendered as a Home tab.
+
+**Hidden entirely from members rather than shown and 403'd.** The op is admin-only, so rendering a
+control that always fails would be a worse lie than not rendering it.
+
+| State | Reachable | Treatment |
+|---|---|---|
+| Default | yes | Leads with the **domain auto-join** note. Most admins would otherwise send links one at a time forever, not knowing that anyone with a verified Google account at a claimed domain already joins on first login (`workspaces.ts:153-170`) |
+| Invite created | yes | The one-time link with a copy button and an explicit **shown once** warning. The token is stored only as a hash, so this really is the only time it exists |
+| `insufficient_role` | **no** — the tab is not rendered for members | — |
+
+### Accept invite — `/invites/accept#token=…`
+
+| State | Reachable | Treatment |
+|---|---|---|
+| Not signed in | yes, and it is the NORMAL case | Stash the fragment token in `sessionStorage` **before** redirecting to Google; a fragment does not survive that navigation and the token is single-use |
+| Signed in, token held | yes | **Confirm step — "Join this workspace? / Not now".** Never automatic: accepting sets `active_workspace_id`, so a zero-click accept let a link move a signed-in user's active tenant and send their next upload into someone else's workspace |
+| Joined | yes | Confirms, and offers **Switch back to {previous}** via `/auth/workspaces/:id/activate`. Without it an unintended accept was recoverable only by signing out |
+| Missing/expired/used token | yes | One message for all three. Distinguishing them turns the screen into an oracle for whether a token is live |
+
+The inviting workspace's **name is deliberately not shown before acceptance** — reading an invite
+before redeeming it would let anyone probe a token and learn whether it is valid and whose it is. The
+copy says what accepting *does* instead.
+
+## Page detail — not built, and `get_page` is why it is now cheap
+
+`get_page` (M5a) returns a page's full text by id or slug, bounded and with a `truncated` flag. It is
+**agent-facing only today**: nothing in `web/` calls it, and `PageList` rows are not interactive.
+
+That leaves one gap open that the op's own rationale names — *a UI could show that a document existed
+and never show the document*. The backend work is done; what remains is a route, a screen, and making
+the list rows clickable. Fold it into M5b alongside members and teams.
+
+| State | Treatment when built |
+|---|---|
+| Loaded | Full text, scope badge, chunk count, and the `truncated` notice when the read hit its bound |
+| `not_found` | Same message for "no such page" and "you cannot see it" — distinguishing them makes the screen an existence oracle, exactly as migration 0007's two partial indexes exist to prevent |
+| `chunkCount: 0` | Already flagged in `PageList`: the page exists but is unsearchable |
+
 ## Not yet designed
 
-Admin (invites, members, teams) and the operator surface land in M5b. They are **two audiences, not
+Members, teams and the operator surface land in M5b. They are **two audiences, not
 one**: a tenant admin manages their workspace; a fleet operator reads `doctor`. `doctor` connects
 with owner database credentials, so its output cannot sit behind a workspace-admin route — a
 customer's office manager is not the SRE. That is what the "two visual systems" amendment means in

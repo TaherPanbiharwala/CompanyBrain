@@ -13,7 +13,7 @@ import { installFakeAiFetch } from './helpers/fake-ai.ts';
 import { adminSql, withScopedTx, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants, type OperationContext } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
-import { listPages, deletePage, replacePage } from '../src/ingest/lifecycle.ts';
+import { listPages, deletePage, replacePage, getPage } from '../src/ingest/lifecycle.ts';
 import { OperationError } from '../src/api/errors.ts';
 import { config } from '../src/config.ts';
 
@@ -349,5 +349,113 @@ describe.skipIf(!live)('page lifecycle', () => {
         globalThis.fetch = counting;
       }
     }, 120_000);
+  });
+
+  describe('get_page', () => {
+    // Added with the op at M5 Phase 1. Until then there was NO way to read a page's text back
+    // through the API — list_pages returns metadata only and search returns whichever fragments a
+    // query matched — so a UI could show that a document existed and never show the document.
+    it('returns the page metadata AND its reassembled text', async () => {
+      const body = 'Clause one is about renewals. Clause two is about termination.';
+      const seeded = await seed(ctxA(), 'gp-basic', body);
+      const got = await getPage(ctxA(), { pageId: seeded.pageId });
+
+      expect(got.id).toBe(seeded.pageId);
+      expect(got.scope).toBe('workspace');
+      expect(got.chunkCount).toBeGreaterThan(0);
+      // Reassembled from chunks in ord order, because `pages` has no body column — chunks ARE the
+      // storage. So this asserts the text survives the round trip, not that a column was echoed.
+      expect(got.content).toContain('Clause one');
+      expect(got.content).toContain('Clause two');
+    });
+
+    it('addresses by slug as well as by id, and refuses both or neither', async () => {
+      await seed(ctxA(), 'gp-by-slug', 'Addressed by slug.');
+      const bySlug = await getPage(ctxA(), { slug: `gp-by-slug-${RUN}` });
+      expect(bySlug.content).toContain('Addressed by slug');
+
+      expect(await opCode(() => getPage(ctxA(), {}))).toBe('invalid_params');
+      expect(await opCode(() => getPage(ctxA(), { pageId: crypto.randomUUID(), slug: 'x' }))).toBe(
+        'invalid_params',
+      );
+    });
+
+    it('cannot read a page in another tenant, even with its exact id', async () => {
+      // The strongest form of the question: workspace 2 knows the id and asks for it directly.
+      // RLS is what refuses, not an app-layer check — resolvePage simply finds no row.
+      const other = await seed(ctxC(), 'gp-other-tenant', 'Another tenant only.');
+      expect(await opCode(() => getPage(ctxA(), { pageId: other.pageId }))).toBe('not_found');
+    });
+
+    it('does not expose a colleague private page to another member of the same workspace', async () => {
+      // Same workspace, different principal: the acl half of the policy is what filters here, and
+      // it is the half that workspace-equality alone would not catch.
+      const priv = await seed(ctxA(), 'gp-private', 'Only A may read this.', 'private');
+      expect(await opCode(() => getPage(ctxB(), { pageId: priv.pageId }))).toBe('not_found');
+    });
+  });
+
+});
+
+// ── get_page must return the DOCUMENT, not a reassembly of overlapping chunks ────────────────
+//
+// Offline and deliberately so: every live get_page case above seeds a single-chunk body, which is
+// exactly why this shipped. Chunks overlap by construction, so joining them duplicates text at every
+// boundary — and with one chunk there is no boundary. This proves the property with arithmetic
+// instead of a database.
+describe('get_page returns authoritative text, not rejoined chunks', () => {
+  it('rejoining chunks DUPLICATES the overlap window — which is why getPage must not', async () => {
+    const { chunkText } = await import('../src/ingest/chunk.ts');
+    // 700 words forces more than one chunk at the default size/overlap.
+    const words = Array.from({ length: 700 }, (_, i) => `w${i}`);
+    const chunks = chunkText(words.join(' '));
+    expect(chunks.length, 'one chunk means no boundary and this test proves nothing').toBeGreaterThan(1);
+    const rejoined = chunks.map((c) => c.text).join('\n\n');
+    // Measured: 700 words in, 750 out. The naive join is lossy in the ADDING direction.
+    expect(rejoined.split(/\s+/).length).toBeGreaterThan(words.length);
+  });
+
+  it('getPage reads the stored text columns, not content_chunks, on the primary path', async () => {
+    // Source scan, because the alternative needs a live multi-chunk page. The claim it pins is that
+    // the primary path selects the authoritative columns; the chunk join survives only as the
+    // pre-0009 fallback, below the early return.
+    const src = await Bun.file(new URL('../src/ingest/lifecycle.ts', import.meta.url)).text();
+    const at = src.indexOf('export async function getPage');
+    expect(at, 'getPage is gone — this scan reads nothing').toBeGreaterThan(-1);
+    const body = src.slice(at, src.indexOf('\n}', at));
+    expect(body).toContain('coalesce(p.body, p.extracted_text)');
+    // The old justification was a comment claiming pages has no body column. It has two.
+    const schema = await Bun.file(new URL('../src/db/schema.sql', import.meta.url)).text();
+    expect(schema, 'pages.body is gone — the fix rests on a column that no longer exists').toMatch(/^\s*body\s+text,/m);
+    // extracted_text is added by migration 0009, not by the M0 baseline — check where it lives.
+    const m0009 = await Bun.file(new URL('../src/db/migrations/0009_multiformat.sql', import.meta.url)).text();
+    expect(m0009, 'pages.extracted_text is gone — file-sourced pages lose their authoritative text')
+      .toMatch(/ADD COLUMN extracted_text/);
+    // And the chunk join must sit AFTER the authoritative return, not before it.
+    const join = body.indexOf("rows.map((r) => r.content).join");
+    const authoritative = body.indexOf('if (m.text !== null) return');
+    expect(join).toBeGreaterThan(authoritative);
+  });
+
+  it('the read is BOUNDED, and a truncated read says so', async () => {
+    const { MAX_PAGE_CONTENT_CHARS } = await import('../src/ingest/lifecycle.ts');
+    expect(MAX_PAGE_CONTENT_CHARS).toBeGreaterThan(0);
+    const src = await Bun.file(new URL('../src/ingest/lifecycle.ts', import.meta.url)).text();
+    // Truncation in SQL, so an oversized document never lands in this process's heap.
+    expect(src).toContain('left(coalesce(p.body, p.extracted_text)');
+    expect(src).toMatch(/truncated: boolean/);
+  });
+
+  it('getPage issues ONE statement on the primary path', async () => {
+    // It used to run three, the third recomputing a count over chunks it had already fetched.
+    const src = await Bun.file(new URL('../src/ingest/lifecycle.ts', import.meta.url)).text();
+    const at = src.indexOf('export async function getPage');
+    const body = src.slice(at, src.indexOf('\n}', at));
+    const beforeReturn = body.slice(0, body.indexOf('if (m.text !== null) return'));
+    // ONE. It used to be two here (chunk read, then a second read of the same page row) on top of
+    // resolvePage. The chunk_count subquery inside this one statement is NOT the waste — with the
+    // chunks no longer fetched it is the only way to know the number, and it costs no round trip.
+    expect([...beforeReturn.matchAll(/await tx</g)].length).toBe(1);
+    expect(beforeReturn, 'the separate chunk read came back').not.toContain('select content from content_chunks');
   });
 });

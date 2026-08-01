@@ -6,9 +6,17 @@ Private/commercial. Built fork-and-narrow on [gbrain](https://github.com/garryta
 
 ## Status
 
-Built: **M0 (foundations)**, **M1 (the contract spine)**, **A17 (the answer-quality spike)** and
-**M2 (identity — Google OIDC)**. Sign in with Google, get a hashed session cookie, and every request
-resolves its tenant from a verified membership row. Roadmap and the multi-lens reviews live in
+Built: **M0 (foundations)**, **M1 (the contract spine)**, **A17 (the answer-quality spike)**,
+**M2 (identity — Google OIDC)**, **M3 (the brain loop — multi-format ingest, page lifecycle,
+four-arm hybrid search)**, **M4 (enforcement + doctor)** and **M5a (the web app)**.
+
+Open `/` and you get a real UI: sign in with Google, create or join a workspace, upload a document
+(paste or file), ask a question, and read a cited answer with a scope badge on every source. Every
+request resolves its tenant from a verified membership row, and Postgres RLS — not application
+code — is what scopes the rows.
+
+Still to come in **M5b**: teams, the member/operator admin surfaces, conversations, and MCP over
+HTTP. See [`docs/screens.md`](docs/screens.md) for the screen inventory. Roadmap and the multi-lens reviews live in
 [`docs/plan.md`](docs/plan.md); decisions in [`DECISIONS.md`](DECISIONS.md); auth setup in
 [`docs/auth-setup.md`](docs/auth-setup.md).
 
@@ -44,8 +52,14 @@ cp .env.example .env      # fill in all three Supabase strings + both role passw
 bun install
 bun run migrate           # (as postgres) enables pgvector, creates cb_app + cb_auth, applies schema.sql + every migration, sets the grant matrix
 bun run doctor            # 73 checks on the security posture — green before you trust anything
-bun run dev               # boots Express; GET /health -> {"status":"ok"}
+bun run build:web         # builds the SPA into web/dist
+bun run dev               # boots Express + Vite in-process; open http://localhost:3000
 ```
+
+`build:web` is optional for a loopback dev run (Vite serves the app from source, with HMR) but
+**mandatory for any deploy**: `assertWebBuildPresent()` in `src/index.ts` refuses to boot when
+`APP_BASE_URL` is not loopback and `web/dist/index.html` is missing. A deploy whose UI build step did
+not run would otherwise come up green — `/health` is pure memory — and 404 every page.
 
 `migrate` connects as `postgres` to create the two app roles and the schema; the app then connects
 as `cb_app` so Row-Level Security actually applies (a table owner or a `BYPASSRLS` role would skip
@@ -101,18 +115,18 @@ response, so an `internal_error` can be traced to its server log.
 In `src/api/operations.ts`, add a `defineOp({...})` and register it in the `operations` array:
 
 ```ts
-const get_page = defineOp({
-  name: 'get_page',
-  description: 'Fetch a page by slug in the current workspace.', // imperative; agents read this
+const page_stats = defineOp({
+  name: 'page_stats',
+  description: 'Return chunk counts for a page by slug.', // imperative; agents read this
   params: z.object({ slug: z.string() }),   // zod → validation + MCP inputSchema + shape redaction
   requiredRole: 'member',                    // owner ⊃ admin ⊃ member (default member)
   mutating: false,
   handler: async (ctx, params) =>            // params is typed { slug: string }
-    withScopedTx(ctx, (tx) => tx`select * from pages where slug = ${params.slug}`), // RLS scopes it
+    withScopedTx(ctx, (tx) => tx`select count(*) from content_chunks c join pages p on p.id = c.page_id where p.slug = ${params.slug}`), // RLS scopes it
 });
 ```
 
-That's it — it's live on `/api/get_page`, in `/api/_ops`, and in MCP `tools/list` automatically,
+That's it — it's live on `/api/page_stats`, in `/api/_ops`, and in MCP `tools/list` automatically,
 with role-gating, validation, the error envelope, and shape-only logging applied by dispatch. Any
 `chat()`/`embed()` must run OUTSIDE the `withScopedTx` callback (never hold a pooled connection across
 a model call — DECISIONS D6).

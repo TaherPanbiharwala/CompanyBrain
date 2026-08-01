@@ -8,14 +8,22 @@ import { ROLES_TUPLE, type Role } from './roles.ts';
 import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
 import { importPage } from '../ingest/import.ts';
-import { listPages, deletePage, replacePage } from '../ingest/lifecycle.ts';
+import { listPages, deletePage, replacePage, getPage } from '../ingest/lifecycle.ts';
 import { hybridSearch } from '../search/hybrid.ts';
 import { importFile, MAX_FILE_BYTES } from '../ingest/file.ts';
-import { formatLocator } from '../ingest/blocks.ts';
 import { PACK, PACK_KINDS, DEFAULT_PACK_KIND } from '../core/pack.ts';
 import { answerQuestion } from '../answer/answer.ts';
 import { createInvite } from '../auth/invites.ts';
 import { PAGE_SCOPES, DEFAULT_PAGE_SCOPE } from '../core/context.ts';
+/** Longest pasted body an `ingest`/`replace_page` call may carry, in CHARACTERS.
+ *
+ *  Published verbatim in /api/_ops and MCP tools/list, so it is a PROMISE to callers — which is why
+ *  src/api/server.ts sizes those routes' transport limit from it rather than guessing. Worst-case
+ *  UTF-8 is 4 bytes per character, so 200k characters can be 800KB on the wire; the app-wide 100kb
+ *  cap made this schema unsatisfiable by 2x-8x until M5 Phase 1. test/body-limits.test.ts pins the
+ *  two together. */
+export const MAX_BODY_CHARS = 200_000;
+
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -112,7 +120,7 @@ const ingest = defineOp({
     // and the length matter; 200 is far under the ~2704-byte index-row limit.
     slug: z.string().min(1).max(200).regex(/^[a-z0-9][a-z0-9._-]*$/, 'slug must be lowercase alphanumeric with . _ or -'),
     title: z.string().min(1).max(300),
-    body: z.string().min(1).max(200_000),
+    body: z.string().min(1).max(MAX_BODY_CHARS),
     tags: z.array(z.string().min(1).max(64)).max(50).optional(),
     // An enum at the OP boundary, deliberately, while the column stays TEXT with no CHECK. Migration
     // 0004 recorded that on purpose — the list is a convention so a new type needs no migration — so
@@ -207,6 +215,18 @@ const list_pages = defineOp({
   handler: async (ctx, params) => listPages(ctx, params),
 });
 
+const get_page = defineOp({
+  name: 'get_page',
+  description:
+    'Fetch one page by id or slug, including its full text. list_pages returns metadata only and ' +
+    'search returns matching fragments, so this is the way to read a document back in full. ' +
+    'Pass exactly one of pageId or slug.',
+  params: z.object(PAGE_REF),
+  requiredRole: 'member',
+  mutating: false,
+  handler: async (ctx, params) => getPage(ctx, params),
+});
+
 const delete_page = defineOp({
   name: 'delete_page',
   description:
@@ -228,7 +248,7 @@ const replace_page = defineOp({
   params: z.object({
     ...PAGE_REF,
     // Same bound as `ingest`.body, for the same reason: this text reaches a paid embedding call.
-    body: z.string().min(1).max(200_000),
+    body: z.string().min(1).max(MAX_BODY_CHARS),
     title: z.string().min(1).max(300).optional().describe('Leave unset to keep the current title.'),
     tags: z.array(z.string().min(1).max(64)).max(50).optional().describe('Leave unset to keep the current tags.'),
   }),
@@ -354,7 +374,11 @@ const search = defineOp({
         // place, and the rendered one so a human-facing citation does not have to re-implement
         // formatLocator. Null for pasted text, which has no position inside a source document.
         locator: h.locator,
-        citation: formatLocator(h.locator ?? undefined) ?? null,
+        citation: h.citation,
+        // The owning page's visibility label, so a caller can show WHO ELSE can see a source it
+        // just cited. A label, never the control — `acl` is what RLS enforces, and this row only
+        // exists because the acl already matched the caller's keyring.
+        scope: h.scope,
         score: h.score,
       })),
     };
@@ -400,6 +424,7 @@ const declared: Operation[] = [
   delete_page,
   replace_page,
   ingest_file,
+  get_page,
   search,
   create_invite,
 ];

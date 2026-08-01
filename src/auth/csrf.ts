@@ -21,6 +21,7 @@ import { sessionCookieName } from './session.ts';
 import { preAuthLimiter } from './ratelimit.ts';
 import { requestId } from '../api/reqid.ts';
 import { logAuth } from './log.ts';
+import { isViteDevActive } from '../web.ts';
 
 function appOrigin(): string {
   try {
@@ -72,6 +73,10 @@ export function checkCsrf(req: Request): CsrfVerdict {
  * This is a shed, not a budget: generous enough that no real client notices, cheap enough that it
  * costs a map lookup. `apiLimiter` still runs afterwards as the real per-principal budget.
  */
+/** Paths only an in-process Vite dev server answers. `/node_modules/.vite/` covers the prebundled
+ *  dependency chunks; `/@id/` and `/@fs/` cover Vite's virtual and filesystem module ids. */
+const VITE_DEV_PREFIXES = ['/@vite/', '/@react-refresh', '/@id/', '/@fs/', '/node_modules/.vite/'] as const;
+
 export function preAuthGuard(req: Request, res: Response, next: NextFunction): void {
   // ONLY /health is exempt. It is a pure in-memory response (src/index.ts) that a platform health
   // checker polls continuously from one address and must never be shed.
@@ -83,6 +88,23 @@ export function preAuthGuard(req: Request, res: Response, next: NextFunction): v
   // it ("neither touches the tenant pool") was simply false. A health checker polling once every few
   // seconds is nowhere near 300/min, so it is unaffected by being shed-eligible.
   if (req.path === '/health') {
+    next();
+    return;
+  }
+  // Vite's own dev-server paths, and ONLY while an in-process Vite is actually running.
+  //
+  // In middleware mode Vite serves every source module as its own request — ~13 files in web/src plus
+  // /@vite/client, /@react-refresh, the Tailwind module and several prebundled dep chunks, roughly 20
+  // per full reload. Against 300/min/IP that is ~15 reloads a minute before the shed fires, and when
+  // it fires the developer gets a JSON 429 where an ES module should be: a white screen for 60
+  // seconds, with nothing naming the cause. HMR avoids most full reloads, so it bites exactly during
+  // the config and Tailwind edits that force one.
+  //
+  // Cannot widen the production surface: isViteDevActive() is set only by createViteDev, which is
+  // gated on import.meta.main AND isDevEnv, so in any deployed process this is permanently false and
+  // these prefixes are shed like everything else. They are also not paths the production build ever
+  // serves — a built bundle has no /@vite/ or /@id/.
+  if (isViteDevActive() && VITE_DEV_PREFIXES.some((p) => req.path.startsWith(p))) {
     next();
     return;
   }

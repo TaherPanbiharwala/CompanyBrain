@@ -85,8 +85,11 @@ export async function createInvite(
     // in a query string, where it lands in proxy and CDN access logs, browser history, and the
     // Referer header of anything the page subsequently loads. A fragment is never sent to a server.
     //
-    // Until M5 ships the UI that reads the fragment, the operator flow is: copy the token and POST
-    // it to /auth/invites/accept. docs/auth-setup.md spells that out.
+    // M5a ships the page that reads it: web/src/screens/AcceptInvite.tsx, routed at
+    // /invites/accept. It stashes the token in sessionStorage BEFORE any sign-in redirect — a
+    // fragment does not survive that navigation and the token is single-use — then strips it from
+    // the address bar and POSTs it here. The copy-and-POST flow in docs/auth-setup.md remains the
+    // path for a machine caller or a no-UI deploy.
     acceptUrl: `${config.APP_BASE_URL.replace(/\/+$/, '')}/invites/accept#token=${encodeURIComponent(token)}`,
     expiresAt: row.expires_at,
   };
