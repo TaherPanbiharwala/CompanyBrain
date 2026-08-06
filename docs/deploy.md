@@ -24,8 +24,8 @@ bun install --frozen-lockfile && bun run build:web
 
 `bun run build:web` is the load-bearing half. `src/index.ts:101` calls `assertWebBuildPresent()`,
 which **refuses to start** when `APP_BASE_URL` is not loopback and `web/dist/index.html` is missing.
-Nixpacks will not run it on its own: it looks for a `build` script and this project's is named
-`build:web`, so a deploy without an explicit build command boots to a crash rather than to a
+The build provider will not run it on its own: it looks for a `build` script and this project's is
+named `build:web`, so a deploy without an explicit build command boots to a crash rather than to a
 half-working app. That is the correct behaviour — a server that served the API but 404'd the entire
 UI would be worse — but it means the build command must be stated.
 
@@ -33,6 +33,31 @@ UI would be worse — but it means the build command must be stated.
 the one tested. CI pins Bun to `1.3.14` (`.github/workflows/ci.yml:35`); Railway picks its own Bun
 version, so the two can drift. That drift is not currently pinned anywhere and is worth knowing about
 before debugging a "works locally, fails on Railway" report.
+
+## The builder is deliberately NOT named
+
+`railway.json` sets a build COMMAND and no `builder`. That is a correction, not an omission: an
+earlier version named `NIXPACKS`, which pinned the service to a provider Railway has been migrating
+away from, and whose default Node — 18 — has since been removed from nixpkgs as end-of-life. The
+build then died in its setup phase, before any command in this file ran:
+
+```
+setup   nodejs_18, bun
+error:  Node.js 18.x has reached End-Of-Life and has been removed
+```
+
+Leaving `builder` unset lets Railway use whatever it has selected for the service, which is the thing
+that was working. Two lessons worth keeping: naming a builder pins you to its lifecycle, and a failure
+in the SETUP phase is never caused by your build command — it happens before the command exists.
+
+`package.json` now declares `engines.node`, which is belt-and-braces for the same failure: nothing in
+this project runs on Node (every script is `bun run`, and vite executes under bun), but every provider
+installs one because it sees a package.json, and picks a default when the repo names none. Naming a
+supported version means the default can never be a removed one again.
+
+The version-proof answer is a Dockerfile — `FROM oven/bun:<pinned>`, no Node at all, and the Bun
+version matched to CI instead of chosen by the provider. That is a bigger change than an outage is the
+right moment for, but it is the direction.
 
 ## Environment variables the app refuses to boot without
 
