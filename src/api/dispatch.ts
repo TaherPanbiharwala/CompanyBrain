@@ -72,7 +72,7 @@ export async function dispatchOp(
     result: DispatchResult,
     dims?: RequestLogEntry['dims'],
     // Skip the param summary entirely. Used ONLY by the rung-0 shed below: summarizeParams calls
-    // approxBytes, which JSON.stringify()s the whole raw body to bucket its size — up to the 8 MB
+    // approxBytes, which JSON.stringify()s the whole raw body to bucket its size — up to the raised
     // upload limit — so measuring a request we are refusing turns the throttle into a CPU amplifier
     // under exactly the flood it exists to absorb. Before M4 a shed request cost O(1) and never
     // reached this function at all.
@@ -189,7 +189,18 @@ export async function dispatchOp(
   } catch (err) {
     if (err instanceof OperationError) {
       // Op-declared error: message is intended for the caller (no secret values by construction).
-      return finish(err.code, { ok: false, reqId, status: err.status, error: err.toWire() });
+      //
+      // retryAfter rides through when the THROWER set it. Until now only rung 0 (the per-principal
+      // budget) could produce a retry-after, so the extraction admission gate's 429s — the ones a
+      // bulk client actually hits first — arrived with nothing to back off against, and
+      // docs/screens.md's promised "countdown from retry-after" was unreachable for them.
+      return finish(err.code, {
+        ok: false,
+        reqId,
+        status: err.status,
+        error: err.toWire(),
+        ...(err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {}),
+      });
     }
     // A policy/privilege denial is not an internal error, and it is the one Postgres failure a
     // caller can act on. Without this branch every RLS-adjacent refusal reaches the caller as

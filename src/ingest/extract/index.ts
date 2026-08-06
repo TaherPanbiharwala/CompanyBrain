@@ -28,7 +28,7 @@ const WORKER = join(dirname(fileURLToPath(import.meta.url)), 'worker.ts');
  */
 const CHILD_CWD = mkdtempSync(join(tmpdir(), 'cb-extract-'));
 
-/** Hard ceiling on what the child may write back. The 5 MB input cap does NOT bound the output —
+/** Hard ceiling on what the child may write back. The input cap does NOT bound the output —
  *  a spreadsheet expands enormously — and this buffer is materialised in the API process, next to
  *  the connection pool and the keys. Without it the subprocess bounds a parser CRASH but not a
  *  parser BOMB, which is half the property the design claims. */
@@ -41,32 +41,72 @@ const SIGKILL_GRACE_MS = 2_000;
 
 /** A subprocess bounds the blast radius of one parse; it does NOT bound memory across many. The API
  *  process accepts requests far faster than a PDF parses, so without a gate a burst of uploads spawns
- *  a Bun process per request, each loading three parsers, and the HOST dies rather than the child. */
-const MAX_CONCURRENT = 3;
+ *  a Bun process per request and the HOST dies rather than the child.
+ *
+ *  3 -> 6, sized against the real deployment rather than a guess. This is the THROUGHPUT ceiling for
+ *  ingest: nothing processes faster than this many files at a time, so it is the first wall any bulk
+ *  upload hits. Two things made the raise defensible that were not true before:
+ *    - The host is 8 vCPU (Railway, 1 replica). Six parser subprocesses plus the main event loop
+ *      leaves headroom; the old 3 was chosen without knowing the container at all.
+ *    - Each child now loads ONE parser, not three — the static imports in worker.ts went lazy in the
+ *      same session, which is what made a subprocess cheap enough to run more of.
+ *
+ *  Bounded from below by the DB pool (DB_POOL_MAX, default 10), but not tightly: importFile holds a
+ *  pooled connection only for its short write transaction, never across extraction or the embedding
+ *  call (D6), so six uploads in flight rarely means six connections held. If pool exhaustion ever
+ *  shows up under load, DB_POOL_MAX is the dial and it is an env var, not a code change. */
+// Exported so test/extract-admission.test.ts derives its fan-out from the real numbers. A test that
+// hardcoded these would silently stop exercising the shed the moment either constant moved.
+export const MAX_CONCURRENT = 6;
 
 /** How many requests may WAIT for a slot. The gate bounded subprocesses but not the queue in front
- *  of them, so a burst parked unbounded callers — each pinning its decoded bytes plus the ~6.7 MB
+ *  of them, so a burst parked unbounded callers — each pinning its decoded bytes plus the ~1.33x
  *  base64 string that produced them — for as long as it took. Shedding is the honest answer: the
  *  client has usually given up long before a deep-queued request would have run. */
-const MAX_WAITING = 12;
+// 12 -> 4 -> 2 -> 18, and the trip down and back up is the useful part of the story.
+//
+// COUPLED to MAX_FILE_BYTES (src/ingest/file.ts). Each in-flight upload retains ~5.33x the file size
+// at its peak: decoded bytes (1x) + the base64 still reachable via req.body (1.33x) + the Buffer
+// copy for page_sources (1x) + postgres.js's bytea serialisation, which is a hex STRING at two ascii
+// chars per byte (2x). So the ceiling is (MAX_CONCURRENT + MAX_WAITING) x 5.33 x file size.
+//
+// The cuts to 4 and then 2 were each made against a WRONG INPUT, which is worth recording because
+// the arithmetic was right both times:
+//   - the first assumed 2.33x per upload, having counted only the first two terms;
+//   - the second assumed "a small container", which was never actually checked.
+// The host is 8 GB / 8 vCPU, one replica. At 2 waiters the budget was 667 MB, i.e. 8% of the
+// machine, so the shed was firing to protect memory that was never scarce.
+//
+// 24 slots x ~133 MB = ~3.2 GB, 40% of the container, leaving ~4.8 GB for the runtime, the pool and
+// every other request. A deep queue is the right shape once the headroom is real: shedding exists to
+// prevent an OOM, and a caller is better served waiting a few seconds than told to come back.
+// test/extract-admission.test.ts asserts the product against the container size, so raising either
+// constant past the ceiling fails the suite instead of the host.
+export const MAX_WAITING = 18;
 
-/** How long a request may wait for a slot before giving up. Three slots x a 60s parse means a
- *  full queue can legitimately take minutes; past this the caller is certainly gone. */
+/** How long a request may wait for a slot before giving up. MAX_CONCURRENT slots x a 60s parse
+ *  means a full queue can legitimately take minutes; past this the caller is certainly gone. Stated
+ *  in terms of the constant rather than its value, because the value has moved three times. */
 const MAX_WAIT_MS = 30_000;
 
 let active = 0;
 const waiting: { resolve: () => void; reject: (e: Error) => void }[] = [];
 
-async function acquire(): Promise<void> {
+export async function acquire(): Promise<void> {
   if (active < MAX_CONCURRENT) {
     active++;
     return;
   }
   if (waiting.length >= MAX_WAITING) {
+    // The 2 is a FLOOR the client jitters upward, not a prediction: the queue drains as each parse
+    // finishes, so a slot is usually free within a couple of seconds. Without a number here the
+    // caller gets a bare 429 and has nothing to back off against.
     throw new OperationError(
       'rate_limited',
       'too many uploads are being processed right now',
       'Retry in a few seconds. Extraction runs a bounded number of parsers at a time.',
+      undefined,
+      2,
     );
   }
   await new Promise<void>((resolve, reject) => {
@@ -83,11 +123,15 @@ async function acquire(): Promise<void> {
     const timer = setTimeout(() => {
       const i = waiting.indexOf(entry);
       if (i !== -1) waiting.splice(i, 1);
+      // 5, not 2: this caller already waited the full MAX_WAIT_MS, so the system is genuinely
+      // saturated rather than momentarily busy.
       entry.reject(
         new OperationError(
           'rate_limited',
           'timed out waiting for an extraction slot',
           'Retry in a few seconds.',
+          undefined,
+          5,
         ),
       );
     }, MAX_WAIT_MS);
@@ -96,7 +140,7 @@ async function acquire(): Promise<void> {
   active++;
 }
 
-function release(): void {
+export function release(): void {
   active--;
   waiting.shift()?.resolve();
 }
@@ -226,7 +270,31 @@ export function extractorFor(format: Extracted['format']): string {
 
 export { EXTRACTOR_VERSIONS };
 
-export async function extractFile(bytes: Uint8Array, filename = ''): Promise<ExtractResult> {
+/** Run `fn` holding one admission slot.
+ *
+ *  The slot exists to bound MEMORY across concurrent uploads, and memory is held for the whole
+ *  request, not just the parse: the base64 body stays reachable via `req.body` until the response
+ *  ends, `embedAll` is network-bound and can run for minutes, and the final insert materialises the
+ *  original a third time as a hex string (postgres.js serialises bytea as '\x' + hex, i.e. 2x the
+ *  byte length). Gating only extractFile therefore bounded the cheapest phase and left the two
+ *  expensive ones unbounded — the ceiling was a floor.
+ *
+ *  importFile wraps its whole body in this and passes `admitted: true` down, so a slot is held once
+ *  end to end rather than acquired twice or released early. */
+export async function withUploadSlot<T>(fn: () => Promise<T>): Promise<T> {
+  await acquire();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+export async function extractFile(
+  bytes: Uint8Array,
+  filename = '',
+  opts: { admitted?: boolean } = {},
+): Promise<ExtractResult> {
   const d = detect(bytes, filename);
   if (d.format === 'unsupported') {
     throw new OperationError(
@@ -236,7 +304,10 @@ export async function extractFile(bytes: Uint8Array, filename = ''): Promise<Ext
     );
   }
 
-  await acquire();
+  // Re-entrancy, not an escape hatch: importFile already holds a slot for the whole upload, and
+  // acquiring a second here would deadlock the pool against itself at MAX_CONCURRENT callers.
+  // Direct callers (scripts/extract-audit.ts, the admission tests) pass nothing and gate normally.
+  if (!opts.admitted) await acquire();
   let proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let killer: ReturnType<typeof setTimeout> | undefined;
@@ -322,6 +393,6 @@ export async function extractFile(bytes: Uint8Array, filename = ''): Promise<Ext
       proc.kill();
       setTimeout(() => proc?.kill(9), SIGKILL_GRACE_MS).unref?.();
     }
-    release();
+    if (!opts.admitted) release();
   }
 }

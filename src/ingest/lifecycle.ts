@@ -16,7 +16,7 @@ import { toVectorLiteral } from '../ai/vector.ts';
 import { chunkText, estimateTokens } from './chunk.ts';
 import { embedAll } from './embed.ts';
 import { OperationError } from '../api/errors.ts';
-import type { OperationContext } from '../core/context.ts';
+import { aclForScope, type OperationContext, type PageScope } from '../core/context.ts';
 import type postgres from 'postgres';
 
 export interface PageSummary {
@@ -158,9 +158,15 @@ export function requireOneRef(ref: PageRef): void {
  *  Deliberately NOT the same error as an invisible page. A caller who can see a page is already
  *  entitled to know it exists, so `permission_denied` here reveals nothing that `list_pages` did not
  *  already show them, and telling them "not found" for a page they are looking at would be a lie. */
+/** The predicate behind requireWriteAccess, split out so the BATCH paths can partition instead of
+ *  throwing. An undo that aborts on the first page a colleague authored is not an undo — the user
+ *  wants the 247 they own gone and the 3 they don't reported. */
+function canWrite(ctx: OperationContext, page: { owner_principal: string }): boolean {
+  return page.owner_principal === ctx.principal || ctx.role === 'admin' || ctx.role === 'owner';
+}
+
 function requireWriteAccess(ctx: OperationContext, page: ResolvedPage, verb: string): void {
-  if (page.owner_principal === ctx.principal) return;
-  if (ctx.role === 'admin' || ctx.role === 'owner') return;
+  if (canWrite(ctx, page)) return;
   throw new OperationError(
     'permission_denied',
     `"${page.slug}" was created by someone else, so you cannot ${verb} it`,
@@ -243,6 +249,306 @@ export async function deletePage(ctx: OperationContext, ref: PageRef): Promise<D
     // owner during referential integrity, removes every child unconditionally. The looser-looking
     // mechanism is the one that actually leaves nothing behind.
     return { pageId: page.id, slug: page.slug, sourceRemoved: hadSource };
+  });
+}
+
+// ── Batch page operations ─────────────────────────────────────────────────
+//
+// These exist because upload had no undo. Scope is fixed at ingest and there is no re-scope op;
+// replace_page REFUSES any page created from a file (see its comment above); and the web app shipped
+// with no delete affordance at all, so recovering from a bad upload meant one curl per page. That is
+// tolerable for one pasted document and absurd for a folder — which is exactly the shape bulk upload
+// would have made routine.
+//
+// Both partition rather than abort. A batch where 3 of 250 pages belong to a colleague should remove
+// the 247 and TELL you about the 3, because the alternative is a user who retries the whole thing.
+
+/** Cap on one batch. Undo is a recovery path, not a bulk-mutation API — unbounded, one call could
+ *  take a workspace out in a single statement, and the request body bound would be the only thing
+ *  standing in its way. */
+export const MAX_BATCH_PAGES = 250;
+
+/** Most content_chunks rows one UPDATE may rewrite.
+ *
+ *  Sized against DB_STATEMENT_TIMEOUT (15 s, config.ts:32), not against elegance. `content_chunks`
+ *  carries a GIN index on `acl`, a GIN FTS index on `content`, and an HNSW index on a 1536-dim
+ *  vector, so an acl UPDATE can never be a heap-only tuple update: every row is rewritten into all
+ *  three. The HNSW insert alone runs ~1-3 ms, so ~2,000 rows is a few seconds with room for a loaded
+ *  database — where an unbounded statement over a full 250-page batch is tens of seconds and aborts
+ *  with 57014 mid-way. */
+const MAX_CHUNK_ROWS_PER_UPDATE = 2_000;
+
+/** What happened to one page in a batch.
+ *
+ *  `code` is the machine-readable half and `reason` is the human half — never only prose. Every other
+ *  refusal in this API carries an enum (`WireError.code`), and a caller forced to substring-match
+ *  "created by someone else" to tell one refusal from another is a caller whose error handling
+ *  breaks the first time someone improves the wording. */
+export type BatchOutcomeCode =
+  | 'ok'
+  | 'not_visible' // no such page, or the caller's grants do not reach it — deliberately one code
+  | 'not_author' // visible and readable, but the caller may not make this change
+  | 'already_at_scope' // idempotent no-op; reported with ok:true
+  | 'slug_taken' // the target scope already has this slug
+  | 'refused'; // the database declined a write the caller could read — a bug, surfaced not swallowed
+
+export interface BatchPageOutcome {
+  pageId: string;
+  slug?: string;
+  ok: boolean;
+  code: BatchOutcomeCode;
+  reason?: string;
+}
+
+export interface DeletePagesResult {
+  deleted: number;
+  sourcesRemoved: number;
+  outcomes: BatchPageOutcome[];
+}
+
+export async function deletePages(ctx: OperationContext, pageIds: string[]): Promise<DeletePagesResult> {
+  const ids = [...new Set(pageIds)];
+  if (ids.length === 0) {
+    throw new OperationError('invalid_params', 'no page ids given', 'Pass at least one pageId.');
+  }
+  if (ids.length > MAX_BATCH_PAGES) {
+    throw new OperationError(
+      'invalid_params',
+      `${ids.length} pages is more than one call may delete (limit ${MAX_BATCH_PAGES})`,
+      `Delete in batches of ${MAX_BATCH_PAGES} or fewer.`,
+    );
+  }
+
+  return withScopedTx(ctx, async (tx) => {
+    // RLS has already filtered this to pages the caller can READ. Anything missing from the result
+    // is either nonexistent or invisible, and — exactly as resolvePage argues — those two must stay
+    // indistinguishable or the op becomes an existence oracle.
+    const rows = await tx<{ id: string; slug: string; owner_principal: string }[]>`
+      select id, slug, owner_principal from pages where id = any(${ids}::uuid[])`;
+
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const outcomes: BatchPageOutcome[] = [];
+    const deletable: string[] = [];
+
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (!row) {
+        outcomes.push({ pageId: id, ok: false, code: 'not_visible', reason: 'no such page, or you cannot read it' });
+      } else if (!canWrite(ctx, row)) {
+        outcomes.push({
+          pageId: id,
+          slug: row.slug,
+          ok: false,
+          code: 'not_author',
+          reason: 'created by someone else — ask its author or a workspace admin',
+        });
+      } else {
+        deletable.push(id);
+      }
+    }
+
+    if (deletable.length === 0) return { deleted: 0, sourcesRemoved: 0, outcomes };
+
+    // Counted BEFORE the delete: afterwards the rows are gone and the answer is unknowable. The
+    // stored original is the last copy (D71), so this number is the one worth showing back.
+    const sourcesRemoved = (
+      await tx<{ n: number }[]>`
+        select count(*)::int as n from page_sources where page_id = any(${deletable}::uuid[])`
+    )[0]!.n;
+
+    // One statement. Chunks and stored bytes follow through the composite FKs' ON DELETE CASCADE —
+    // deliberately NOT deleted explicitly first, because an explicit child delete runs under RLS and
+    // would leave behind any chunk whose acl has drifted out of the caller's reach, while the
+    // cascade runs during referential integrity and removes every child unconditionally.
+    const gone = await tx<{ id: string; slug: string }[]>`
+      delete from pages where id = any(${deletable}::uuid[]) returning id, slug`;
+
+    const goneIds = new Set(gone.map((g) => g.id));
+    for (const g of gone) outcomes.push({ pageId: g.id, slug: g.slug, ok: true, code: 'ok' });
+    // Selected a moment ago in this same transaction, so a survivor is not "already gone" — it means
+    // DELETE and SELECT disagree about the policy, which is a bug worth surfacing, not swallowing.
+    for (const id of deletable) {
+      if (!goneIds.has(id)) {
+        outcomes.push({ pageId: id, ok: false, code: 'refused', reason: 'the database refused a delete you can read' });
+      }
+    }
+
+    return { deleted: gone.length, sourcesRemoved, outcomes };
+  });
+}
+
+export interface RescopePagesResult {
+  rescoped: number;
+  scope: PageScope;
+  outcomes: BatchPageOutcome[];
+}
+
+/** Move pages between `private` and `workspace`.
+ *
+ *  This is the op whose absence made "default a bulk upload to private" a trap rather than a safety
+ *  net: land 200 documents privately and, with no way to promote them, you have a company brain
+ *  nobody at the company can query — and the only fix was delete-and-re-upload all 200, paying the
+ *  extraction and embedding cost a second time. With it, default-private becomes staging: land
+ *  private, spot-check, promote.
+ *
+ *  Cheap by construction — no re-chunking, no re-embedding, no bytes move. `acl` is DERIVED from
+ *  scope by aclForScope (the only place that mapping exists), and the chunk copy is denormalized, so
+ *  the whole operation is two UPDATEs. */
+export async function rescopePages(
+  ctx: OperationContext,
+  pageIds: string[],
+  scope: PageScope,
+): Promise<RescopePagesResult> {
+  const ids = [...new Set(pageIds)];
+  if (ids.length === 0) {
+    throw new OperationError('invalid_params', 'no page ids given', 'Pass at least one pageId.');
+  }
+  if (ids.length > MAX_BATCH_PAGES) {
+    throw new OperationError(
+      'invalid_params',
+      `${ids.length} pages is more than one call may re-scope (limit ${MAX_BATCH_PAGES})`,
+      `Re-scope in batches of ${MAX_BATCH_PAGES} or fewer.`,
+    );
+  }
+  const acl = aclForScope(scope, ctx);
+
+  return withScopedTx(ctx, async (tx) => {
+    const rows = await tx<{ id: string; slug: string; scope: string; owner_principal: string }[]>`
+      select id, slug, scope, owner_principal from pages where id = any(${ids}::uuid[])`;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    const outcomes: BatchPageOutcome[] = [];
+    const candidates: { id: string; slug: string }[] = [];
+
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (!row) {
+        outcomes.push({ pageId: id, ok: false, code: 'not_visible', reason: 'no such page, or you cannot read it' });
+      } else if (!canWrite(ctx, row)) {
+        outcomes.push({
+          pageId: id,
+          slug: row.slug,
+          ok: false,
+          code: 'not_author',
+          reason: 'created by someone else — ask its author or a workspace admin',
+        });
+      } else if (row.scope === scope) {
+        // ok:TRUE. The caller asked for "these pages are workspace-scoped" and they are — reporting
+        // an idempotent no-op as a failure makes a second click look like a partial outage.
+        outcomes.push({ pageId: id, slug: row.slug, ok: true, code: 'already_at_scope', reason: `already ${scope}` });
+      } else if (scope === 'private' && row.owner_principal !== ctx.principal) {
+        // An admin CAN reach this page (canWrite allows it) but must not make it private, and the
+        // database would refuse anyway: aclForScope derives the private grant from the CALLER
+        // (`self:<caller>`, context.ts:108), so this would stamp the admin's own grant onto someone
+        // else's page. `owner_principal` would still say the author while `acl` said the admin —
+        // and RLS is ACL-based while canWrite is owner-based, so the author would be permanently
+        // locked out of their own page with only that admin able to undo it.
+        //
+        // Stamping `self:<author>` instead is not an option: 0007's WITH CHECK lets a writer stamp
+        // only grants it HOLDS, and an admin does not hold another principal's self-grant. The
+        // policy is already the right answer; this just refuses in the app with a message instead
+        // of at the constraint with a 42501.
+        outcomes.push({
+          pageId: id,
+          slug: row.slug,
+          ok: false,
+          code: 'not_author',
+          reason: 'only its author can make a page private — ask them, or leave it workspace-scoped',
+        });
+      } else {
+        candidates.push({ id: row.id, slug: row.slug });
+      }
+    }
+
+    // Slug uniqueness is PARTIAL on scope (0007's pages_ws_slug_shared / _private), so moving a page
+    // across scopes can collide with a page that was legally allowed to share its slug. Pre-checked
+    // rather than caught: a 23505 aborts the whole transaction, which would turn one collision into
+    // a total failure for the other 249.
+    if (candidates.length > 0) {
+      const slugs = candidates.map((c) => c.slug);
+      // The owner predicate is not optional, and it must match the INDEX rather than intuition. The
+      // two partial unique indexes have different keys (0007_acl_rls.sql:137-138):
+      //   pages_ws_slug_shared  (workspace_id, slug)                   WHERE scope = 'workspace'
+      //   pages_ws_slug_private (workspace_id, owner_principal, slug)  WHERE scope = 'private'
+      // Checking only (scope, slug) therefore asks the wrong question for a private target: it
+      // false-POSITIVES on a slug some other member holds privately (a legal move, wrongly refused)
+      // and false-NEGATIVES when the mover's own private slug collides — and a false negative is the
+      // expensive one, because the 23505 then aborts the whole transaction and fails all 250 as an
+      // untyped internal_error, which is the exact outcome this pre-check exists to prevent.
+      //
+      // Private targets are always self-owned by the time we get here (the not_author branch above
+      // refuses the rest), so `ctx.principal` is the right owner to test.
+      const taken = await tx<{ slug: string }[]>`
+        select slug from pages
+         where scope = ${scope}
+           and slug = any(${slugs}::text[])
+           and id <> all(${candidates.map((c) => c.id)}::uuid[])
+           and (${scope}::text = 'workspace' or owner_principal = ${ctx.principal})`;
+      const takenSet = new Set(taken.map((t) => t.slug));
+      for (let i = candidates.length - 1; i >= 0; i--) {
+        if (takenSet.has(candidates[i]!.slug)) {
+          outcomes.push({
+            pageId: candidates[i]!.id,
+            slug: candidates[i]!.slug,
+            ok: false,
+            code: 'slug_taken',
+            reason: `a ${scope} page already uses the slug "${candidates[i]!.slug}"`,
+          });
+          candidates.splice(i, 1);
+        }
+      }
+    }
+
+    if (candidates.length === 0) return { rescoped: 0, scope, outcomes };
+    const moving = candidates.map((c) => c.id);
+
+    // Chunks FIRST. Their acl is a denormalized copy of the page's (schema.sql:236), and the policy's
+    // USING clause is evaluated against the row's CURRENT acl — which the caller still holds. Doing
+    // the page first would leave the chunks readable only under the old grant while the page claims
+    // the new one, and a half-moved page is invisible to retrieval in one direction or the other.
+    //
+    // SUB-BATCHED, and "it is only two UPDATEs" is exactly the reasoning that made this wrong.
+    // `content_chunks.acl` is GIN-indexed (schema.sql:261) and the table also carries an HNSW index
+    // on a 1536-dim vector (:264) and a GIN FTS index on `content` (0006). Updating an INDEXED column
+    // means Postgres cannot do a heap-only-tuple update, so every touched row is rewritten and
+    // re-inserted into ALL of those indexes — including an HNSW graph insert at ~1-3 ms each. A
+    // full 250-page batch is ~25,000 rewrites, i.e. tens of seconds, against a per-statement
+    // DB_STATEMENT_TIMEOUT of 15 s (config.ts:32) — so the op did not merely run slow, it aborted
+    // with 57014 and surfaced as a 500 having already moved some pages.
+    //
+    // Bounding CHUNK ROWS per statement rather than pages per statement, because pages vary by three
+    // orders of magnitude: one dense spreadsheet can carry more chunks than two hundred memos.
+    // The transaction still spans every statement — statement_timeout is per statement, and
+    // idle_in_transaction only counts time spent NOT executing — so atomicity is unchanged.
+    const counts = await tx<{ page_id: string; n: number }[]>`
+      select page_id, count(*)::int as n from content_chunks
+       where page_id = any(${moving}::uuid[]) group by page_id`;
+    const chunkCount = new Map(counts.map((c) => [c.page_id, c.n]));
+
+    let batch: string[] = [];
+    let batchRows = 0;
+    const flushChunks = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      await tx`update content_chunks set acl = ${acl} where page_id = any(${batch}::uuid[])`;
+      batch = [];
+      batchRows = 0;
+    };
+    for (const id of moving) {
+      const n = chunkCount.get(id) ?? 0;
+      // Flush BEFORE adding when this page would push us over, so a single page larger than the
+      // budget still goes alone rather than being dropped or splitting a page across statements.
+      if (batchRows > 0 && batchRows + n > MAX_CHUNK_ROWS_PER_UPDATE) await flushChunks();
+      batch.push(id);
+      batchRows += n;
+    }
+    await flushChunks();
+    const moved = await tx<{ id: string; slug: string }[]>`
+      update pages set scope = ${scope}, acl = ${acl}, updated_at = now()
+       where id = any(${moving}::uuid[])
+       returning id, slug`;
+
+    for (const m of moved) outcomes.push({ pageId: m.id, slug: m.slug, ok: true, code: 'ok' });
+    return { rescoped: moved.length, scope, outcomes };
   });
 }
 

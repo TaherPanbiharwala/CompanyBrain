@@ -223,6 +223,35 @@ async function fetchJson(url: string, init: RequestInit, provider: string, timeo
   throw lastErr ?? new RouterError(`${provider} failed`);
 }
 
+/** What OpenAI-shaped providers return alongside the payload. Both OpenRouter and OpenAI send it;
+ *  embeddings omit `completion_tokens`. */
+type ProviderUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+/** Every model call this process makes goes through chat() or embed(), so this is the ONE place
+ *  spend becomes countable. Until now neither read `usage` at all — the field arrived on every
+ *  response and was discarded — which is why no ledger, quota or usage table exists anywhere in
+ *  src/ and why D18's per-workspace cap has nothing to build on.
+ *
+ *  Counts only, never content: this line is safe to leave on in production, which is the whole point
+ *  of putting it here rather than at a call site. Emitting it is not a cap and does not pretend to be
+ *  one — it is the measurement that has to exist before a cap can be honest about what it is capping.
+ *
+ *  Called BEFORE the response is validated on purpose. A moderation refusal or a null-content
+ *  finish_reason:length still bills you; logging after the throw would systematically undercount
+ *  exactly the failures worth noticing. */
+function logUsage(provider: string, model: string, usage: ProviderUsage | undefined): void {
+  if (!usage) return;
+  console.info(
+    `[router] usage provider=${provider} model=${model} ` +
+      `prompt=${usage.prompt_tokens ?? '?'} completion=${usage.completion_tokens ?? '-'} ` +
+      `total=${usage.total_tokens ?? '?'}`,
+  );
+}
+
 export async function chat(opts: { messages: ChatMessage[]; model?: string }): Promise<string> {
   const scope = requireScope();
   const modelId = opts.model || config.CHAT_MODEL;
@@ -259,7 +288,8 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
     },
     'openrouter',
     CHAT_TIMEOUT_MS,
-  )) as { choices?: { message?: { content?: string } }[] };
+  )) as { choices?: { message?: { content?: string } }[]; usage?: ProviderUsage };
+  logUsage('openrouter', model, json.usage);
   const content = json.choices?.[0]?.message?.content;
   // Distinguish "no content" (tool-call-only, moderation refusal, finish_reason:length with null
   // content) from a real answer — returning '' would make a downstream caller treat it as success.
@@ -285,7 +315,8 @@ export async function embed(texts: string[]): Promise<number[][]> {
     },
     'openai',
     EMBED_TIMEOUT_MS,
-  )) as { data: { index: number; embedding: number[] }[] };
+  )) as { data: { index: number; embedding: number[] }[]; usage?: ProviderUsage };
+  logUsage('openai', model, json.usage);
   // Place each vector at the position its `index` names, never positionally and never by sorting:
   // OpenAI may return items out of input order, and reading them in arrival order would store each
   // chunk with another chunk's vector — silent retrieval corruption with no error anywhere.

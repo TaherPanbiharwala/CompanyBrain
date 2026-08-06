@@ -122,7 +122,7 @@ M2, M3, M4, **M5a**.
 
 | | |
 |---|---|
-| ops in `operations.ts` | **13** |
+| ops in `operations.ts` | **14** (`rescope_pages` added; `delete_page` gained a `pageIds` batch arm) |
 | migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
 | `DECISIONS.md` | **101 entries, D0–D97**, no duplicate IDs |
 | `doctor` | **73 checks** |

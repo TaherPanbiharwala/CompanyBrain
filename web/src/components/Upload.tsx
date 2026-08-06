@@ -8,8 +8,8 @@ import { ErrorPanel } from './ErrorPanel';
 /** Mirrors MAX_BODY_CHARS in src/api/operations.ts. The transport can now actually carry this — the
  *  app-wide 100kb cap made it unsatisfiable until the paste routes got their own parser. */
 const MAX_BODY_CHARS = 200_000;
-/** Mirrors MAX_FILE_BYTES in src/ingest/file.ts (5 MiB, on the DECODED bytes). */
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** Mirrors MAX_FILE_BYTES in src/ingest/file.ts (on the DECODED bytes). */
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 /**
  * base64 a File, off the main thread.

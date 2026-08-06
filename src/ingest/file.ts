@@ -12,7 +12,7 @@ import { toVectorLiteral } from '../ai/vector.ts';
 import { aclForScope, DEFAULT_PAGE_SCOPE, type OperationContext, type PageScope } from '../core/context.ts';
 import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { OperationError } from '../api/errors.ts';
-import { extractFile } from './extract/index.ts';
+import { extractFile, withUploadSlot } from './extract/index.ts';
 import { assessExtraction, contentHash, sanitySuggestion } from './sanity.ts';
 import { chunkBlocks, estimateTokens } from './chunk.ts';
 import { embedAll } from './embed.ts';
@@ -40,11 +40,39 @@ export interface ImportFileResult {
   sha256: string;
 }
 
-/** Bytes accepted per file. Chosen, not discovered: five megabytes of PDF is a long contract, and
- *  the parsers run in a subprocess whose memory this bounds far more directly than any chunk cap. */
-export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** Bytes accepted per file, on the DECODED bytes.
+ *
+ *  25 MB, raised from 5 MB after auditing a real corpus: TEN of ten PDFs were refused, including
+ *  arXiv papers at 9-45 MB and the company's own 6.8 MB project proposal. A knowledge brain for a
+ *  research team that cannot accept a single research paper is not a knowledge brain.
+ *
+ *  This number is NOT free, and the cost is memory rather than disk. Extraction admits
+ *  MAX_CONCURRENT running plus MAX_WAITING queued (src/ingest/extract/index.ts), and each of those
+ *  retains ~5.33x the file size at its peak — see that file for the four terms. At 25 MB that is
+ *  ~133 MB per in-flight upload, so the gate width and this constant multiply directly into the
+ *  process's memory ceiling.
+ *
+ *  THOSE CONSTANTS ARE COUPLED, and prose is a weak binding for a cross-file invariant — so
+ *  test/extract-admission.test.ts asserts the product against the deployment's actual memory.
+ *  Raising this without lowering the gate width fails the suite instead of the host.
+ *
+ *  Still refused at this cap: the 26-45 MB tail (4 of the 10 audited). Those need a streaming or
+ *  chunked upload path, not a bigger number — 45 MB is 60 MB of base64 in one JSON body. */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/** Most chunks one document may produce, derived from the Postgres wire protocol rather than chosen.
+ *
+ *  The chunk insert binds INSERT_COLUMNS parameters per row in one multi-row statement, and a
+ *  protocol message caps at 65,534 parameters — postgres.js throws rather than splitting. Floored
+ *  with headroom so a column added to that insert shrinks the bound automatically instead of turning
+ *  it into a lie. */
+const INSERT_COLUMNS = 9; // workspace_id, page_id, acl, tags, ord, content, token_count, locator, embedding
+const MAX_CHUNKS_PER_INSERT = Math.floor(65_534 / INSERT_COLUMNS);
 
 export async function importFile(ctx: OperationContext, input: ImportFileInput): Promise<ImportFileResult> {
+  // ONE admission slot for the WHOLE upload, not just the parse. See withUploadSlot for why the
+  // extract-only gate bounded the wrong phase. The cheap size checks run outside it so an oversized
+  // file is refused without ever queuing behind real work.
   if (input.bytes.byteLength === 0) {
     throw new OperationError('invalid_params', 'the uploaded file is empty');
   }
@@ -56,6 +84,10 @@ export async function importFile(ctx: OperationContext, input: ImportFileInput):
     );
   }
 
+  return withUploadSlot(() => importFileAdmitted(ctx, input));
+}
+
+async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput): Promise<ImportFileResult> {
   const scope = input.scope ?? DEFAULT_PAGE_SCOPE;
   const acl = aclForScope(scope, ctx);
   const kind = input.kind ?? DEFAULT_PACK_KIND;
@@ -64,7 +96,7 @@ export async function importFile(ctx: OperationContext, input: ImportFileInput):
 
   // 1. Extract, in the hardened subprocess. Throws typed errors (unsupported_format,
   //    extraction_failed, payload_too_large) that reach the caller as themselves, never as a 500.
-  const extracted = await extractFile(input.bytes, input.filename);
+  const extracted = await extractFile(input.bytes, input.filename, { admitted: true });
 
   // 2. Sanity gate — AFTER extraction, BEFORE embedding. Every rejection here is money not spent on
   //    a document that was never going to be retrievable.
@@ -95,6 +127,25 @@ export async function importFile(ctx: OperationContext, input: ImportFileInput):
   const chunks = chunkBlocks(extracted.blocks);
   if (chunks.length === 0) {
     throw new OperationError('extraction_failed', 'the document produced no chunks after extraction');
+  }
+  // Refused HERE, before the embedding spend, because the wall it protects is otherwise hit at the
+  // very last statement of the whole pipeline.
+  //
+  // The chunk insert below binds 9 columns per row into ONE multi-row statement, and the Postgres
+  // wire protocol caps a message at 65,534 parameters — postgres.js throws "Max number of parameters
+  // (65534) exceeded" rather than splitting. That is 65534/9 = 7,281 chunks. At ~600 tokens per
+  // chunk it was unreachable under the old 5 MB cap (worst case ~2,400 chunks, 3x of headroom) and
+  // is reachable at 25 MB, where a text-ish file extracts close to 1:1 and can produce ~12,000.
+  //
+  // Without this the failure lands at step 5 of 5: every embedding billed, minutes burned, and an
+  // untyped 500 for a file that passed every upstream check. The same shape as §6.9's over-cap
+  // chunks, and reachable for the same reason — a bound that moved without its dependents.
+  if (chunks.length > MAX_CHUNKS_PER_INSERT) {
+    throw new OperationError(
+      'payload_too_large',
+      `this document produced ${chunks.length.toLocaleString()} passages; the limit is ${MAX_CHUNKS_PER_INSERT.toLocaleString()} in one document`,
+      'Split it into several files. A document this dense is also unlikely to retrieve well as one page.',
+    );
   }
 
   // 4. Refuse a duplicate BEFORE paying to embed it.

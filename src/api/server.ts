@@ -20,9 +20,13 @@ import { resolveSessionContext, hasSessionCookie, resolveSessionRow } from '../a
  *  only inside this module and by test/body-limits.test.ts. */
 export const UPLOAD_PATH = '/api/ingest_file';
 
-/** base64 of MAX_FILE_BYTES (5 MB) is ~6.7 MB, plus JSON framing. This is the transport bound; the
+/** This is the transport bound; the
  *  real limit is enforced on the DECODED bytes in importFile, which is the number that matters. */
-export const UPLOAD_BODY_LIMIT = '8mb';
+// Sized from MAX_FILE_BYTES (25 MB), not chosen: base64 inflates 4/3, so 25 MB of file is 33.3 MB
+// on the wire, plus the slug/title/tags/scope fields around it. 36mb is that number with headroom.
+// test/body-limits.test.ts asserts the relationship rather than the value, so raising the file cap
+// without raising this fails the suite instead of failing a user's upload with a bare 413.
+export const UPLOAD_BODY_LIMIT = '36mb';
 
 /** The routes that carry a pasted document body (`ingest`, `replace_page`).
  *

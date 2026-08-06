@@ -22,6 +22,7 @@
     "dump:top8": "bun run scripts/dump-top8.ts",
     "gen:test-files": "bun run scripts/gen-test-files.ts",
     "ingest-file": "bun run scripts/ingest-file.ts",
+    "extract-audit": "bun run scripts/extract-audit.ts",
     "eval:novabyte": "bun run scripts/novabyte-eval.ts",
     "score:top8": "bun run scripts/novabyte-score.ts"
   },
