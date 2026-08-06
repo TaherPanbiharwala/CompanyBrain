@@ -21,7 +21,14 @@ const EnvSchema = z.object({
   DB_TRANSACTION_POOLER: z.coerce.number().default(1),
   // 'require' encrypts but does NOT verify the server cert; use 'verify-full' (with the Supabase
   // CA) in production. 'disable' to turn off (local only).
-  DB_SSL: z.string().default('require'),
+  //
+  // .trim().toLowerCase() because this value is compared VERBATIM in two places — sslOption() in
+  // db/client.ts, and the production warning just below — and both used to compare the raw env
+  // string. A pasted Railway variable carrying a trailing newline or space, or a hand-typed
+  // "Verify-Full", fell through both comparisons' switch/equality to the WEAK default: TLS still
+  // on, certificate silently unverified, with the dashboard showing exactly the value you meant to
+  // set. Normalizing once here means both call sites see the same string and cannot disagree.
+  DB_SSL: z.string().default('require').transform((v) => v.trim().toLowerCase()),
   // App pool sizing (postgres.js). Kept modest under the Supabase pooler's client-connection limit.
   DB_POOL_MAX: z.coerce.number().default(10),
   DB_IDLE_TIMEOUT: z.coerce.number().default(20),

@@ -10,6 +10,8 @@ import postgres from 'postgres';
 import { config } from '../config.ts';
 import { serializeGrants, type OperationContext } from '../core/context.ts';
 
+/** DB_SSL is normalized (trimmed, lower-cased) at config.ts's parse boundary, not here — see the
+ *  comment on its schema entry for why. This switch can therefore compare the value verbatim. */
 export function sslOption(): 'require' | 'prefer' | 'verify-full' | false {
   switch (config.DB_SSL) {
     case '':
