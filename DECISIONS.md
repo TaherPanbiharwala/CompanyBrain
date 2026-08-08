@@ -1192,3 +1192,50 @@ and nowhere else, which is the state this file exists to prevent.
   screen does not name the inviting workspace — that would make it an oracle for token validity —
   and the post-accept **Switch back** uses the existing activate route, because a real workspace
   picker needs a membership-listing endpoint whose `SECURITY DEFINER` is M5b's decision to make.
+
+---
+
+## D99 — Supabase's Data API stays OFF, on every project
+
+**Decision: `Enable Data API` and `Automatically expose new tables` are disabled on every Supabase
+project this system uses, and that is a security boundary rather than a preference.** Recorded
+2026-08-08, when choosing settings for the Singapore replacement project surfaced that the Seoul
+project has had both on since creation. `CONTEXT.md §6.13` has the measured evidence; this entry is
+the standing rule and its reasoning.
+
+**Why it is not merely unused surface.** The Data API stands up PostgREST in front of `public` with
+its own roles — `anon`, `authenticated`, `service_role` — none of which this codebase has ever
+connected as. Every path in `src/` goes through `postgres.js` as `cb_app`, `cb_auth` or `postgres`;
+there is no `supabase-js` dependency and no `SUPABASE_*` variable in `config.ts`. So enabling it adds
+a **third access path** to the same tables, parallel to the two the security model was designed
+around, and `service_role` traverses it with `rolbypassrls = true` — i.e. RLS does not apply to it at
+all. Every guarantee D5/D7/D22 rest on is a property of the `cb_app` path specifically; none of them
+survives a role that bypasses the policy layer outright.
+
+**Why the existing design survived it anyway, and why that is not a reason to relax.** `anon` and
+`authenticated` are `NOBYPASSRLS`, and the content policies are gated on
+`current_setting('app.workspace', true)` / `current_grants()` — GUCs only `withScopedTx` sets. An
+unset GUC yields `NULL`, and RLS requires `TRUE`, so those two roles see nothing despite holding full
+table grants. That is the fail-closed rule in `0007_acl_rls.sql:28-34` doing work in a place it was
+never aimed at. The lesson is the value of fail-closed defaults, **not** that the door can be left
+open: `service_role` was never constrained by it.
+
+**The rule, stated so it survives the next project creation:**
+
+1. Data API off at project creation, before any data lands. It is a checkbox at creation time and a
+   migration-and-key-rotation afterwards.
+2. `Automatically expose new tables` off, permanently — so that if the Data API is ever deliberately
+   enabled, the starting state is "nothing exposed" rather than "everything exposed unless someone
+   remembers".
+3. `Enable automatic RLS` off. Migrations already enable RLS explicitly per table and `doctor.ts`
+   asserts it two ways; the event trigger it installs would be redundant, and invisible to our own
+   tooling.
+4. If the Data API is ever genuinely needed, it is a **decision entry**, not a toggle — and it must
+   arrive with `doctor` checks asserting `anon`/`authenticated` hold no privilege on any `public`
+   table and that no role but `postgres` has `rolbypassrls`.
+
+**What this says about `doctor`'s blind spot.** Its grant census is exhaustive about the roles this
+repo creates and silent about roles the platform creates. `expected-grants.json` and
+`expected-column-grants.json` pin `cb_app`/`cb_auth` exactly and would fail loudly on any drift — but
+three platform roles holding full DML on every table produced no finding, because nothing asks. A
+fixture that enumerates only what you built cannot notice what your host added.

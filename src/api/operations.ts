@@ -8,7 +8,15 @@ import { ROLES_TUPLE, type Role } from './roles.ts';
 import { withScopedTx } from '../db/client.ts';
 import { OperationError } from './errors.ts';
 import { importPage } from '../ingest/import.ts';
-import { listPages, deletePage, replacePage, getPage } from '../ingest/lifecycle.ts';
+import {
+  listPages,
+  deletePage,
+  deletePages,
+  rescopePages,
+  replacePage,
+  getPage,
+  MAX_BATCH_PAGES,
+} from '../ingest/lifecycle.ts';
 import { hybridSearch } from '../search/hybrid.ts';
 import { importFile, MAX_FILE_BYTES } from '../ingest/file.ts';
 import { PACK, PACK_KINDS, DEFAULT_PACK_KIND } from '../core/pack.ts';
@@ -44,6 +52,12 @@ export interface Operation {
   requiredRole?: Role; // default 'member'
   mutating?: boolean; // read vs write (log + future routing)
   hidden?: boolean; // excluded from MCP tools/list + REST discovery (diagnostics like echo)
+  /** JSON-Schema keys merged over the generated inputSchema, for constraints zod cannot express on a
+   *  ZodObject. `.refine()` returns a ZodEffects, which has no `.strict()` or `.shape` — both of
+   *  which dispatch and redaction require — so a mutually-exclusive param set is enforced in the
+   *  handler and DECLARED here. Without it the published schema is looser than the handler, and an
+   *  agent plans against the loose one. See buildToolDefs. */
+  jsonSchemaExtra?: Record<string, unknown>;
   handler: (ctx: OperationContext, params: any) => Promise<unknown>;
 }
 
@@ -55,6 +69,7 @@ export function defineOp<P extends z.ZodObject<z.ZodRawShape>>(op: {
   requiredRole?: Role;
   mutating?: boolean;
   hidden?: boolean;
+  jsonSchemaExtra?: Record<string, unknown>;
   handler: (ctx: OperationContext, params: z.infer<P>) => Promise<unknown>;
 }): Operation {
   return op as unknown as Operation;
@@ -118,8 +133,8 @@ const ingest = defineOp({
   description:
     'Ingest a page: chunk the body, embed each chunk, and write page + chunks atomically. ' +
     "Writes to shared workspace memory by default; pass scope:'private' to restrict it to yourself. " +
-    'Use replace_page to change the text afterwards and delete_page to remove it; the scope, however, ' +
-    'is fixed at ingest — there is no re-scope operation.',
+    'Use replace_page to change the text afterwards, rescope_pages to change who can see it, and ' +
+    'delete_page to remove it.',
   // Every bound here turns a 500 into a diagnosable 400. Unbounded `z.string()` meant an over-long
   // slug raised Postgres 54000 ("index row size exceeds btree maximum") from the UNIQUE index, and a
   // huge body drove an unbounded number of paid embedding calls — both surfacing as a generic
@@ -158,8 +173,8 @@ const ingest = defineOp({
       .describe(
         "Who can read this page. 'workspace' (used when omitted): every member of the current " +
           "workspace. 'private': only the calling principal — enforced by the database, not " +
-          'advisory. Fixed once set: replace_page keeps the scope and there is no re-scope operation, ' +
-          'so choose it now or delete and re-ingest.',
+          'advisory. replace_page keeps whatever scope the page already has; rescope_pages is the op ' +
+          'that changes it afterwards.',
       ),
   }),
   requiredRole: 'member',
@@ -184,8 +199,14 @@ const ask = defineOp({
 });
 
 // ── Lifecycle (M3) ────────────────────────────────────────────────────────
-// These three make ingest reversible. `ingest`'s own description (above) has been updated to point
-// at replace_page and delete_page; the re-scope path deliberately stays closed (D68).
+// These make ingest reversible. `ingest`'s own description (above) points at replace_page,
+// delete_page and rescope_pages.
+//
+// D68 closed the re-scope path deliberately, and rescope_pages reopens it under a NARROWER rule than
+// D68 refused: scope still cannot be passed as an acl (aclForScope remains the only stamper), and
+// making a page private is restricted to its author — because aclForScope derives the private grant
+// from the CALLER, so an admin doing it would stamp their own grant on someone else's page and lock
+// the author out. 0007's WITH CHECK would refuse it anyway; the app refuses first, with a message.
 
 // The two destructive ops share this addressing. pageId is unambiguous; slug is a convenience that
 // can legitimately match two rows since migration 0007 (a shared page and your private page may
@@ -237,16 +258,76 @@ const get_page = defineOp({
   handler: async (ctx, params) => getPage(ctx, params),
 });
 
+// One destructive page op, three arms — NOT a second `delete_pages` op sitting one character away
+// from this one in the same tools/list. Two near-identical names, both mutating and both
+// irreversible, is a footgun for exactly the caller least able to recover from it.
 const delete_page = defineOp({
   name: 'delete_page',
   description:
     'Delete a page and everything derived from it: its chunks, and the original uploaded file if it ' +
     'came from one. Irreversible, with no undo and no trash. You may delete pages you authored; ' +
-    'admins may delete any page they can read.',
-  params: z.object(PAGE_REF),
+    'admins may delete any page they can read. Pass exactly one of pageId, slug, or pageIds. ' +
+    'With pageId or slug it returns {pageId, slug, sourceRemoved}. With pageIds it deletes up to ' +
+    String(MAX_BATCH_PAGES) + ' at once and returns {deleted, sourcesRemoved, outcomes} instead — ' +
+    'a per-page outcome list where each entry carries a machine-readable `code` (ok, not_visible, ' +
+    'not_author, refused) plus prose, so pages you cannot delete are reported and the rest still go.',
+  // NO .refine() here. The registry's type is ZodObject and .refine() returns ZodEffects, which does
+  // not satisfy it — the same trap docs/enabling-team-scope.md's preface records as breaking module
+  // load. The XOR is enforced in the handler, which is where requireOneRef already enforces the
+  // pageId/slug half of it.
+  params: z.object({
+    ...PAGE_REF,
+    pageIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(MAX_BATCH_PAGES)
+      .optional()
+      .describe('Delete many at once. Pass this INSTEAD of pageId or slug, never alongside them.'),
+  }),
   requiredRole: 'member',
   mutating: true,
-  handler: async (ctx, params) => deletePage(ctx, params),
+  // The XOR the handler enforces, stated in the published schema so an agent does not have to
+  // discover it by receiving a 400. oneOf's branches each require exactly one addressing field and
+  // forbid the other two, which is precisely what requireOneRef and the guard below implement.
+  jsonSchemaExtra: {
+    oneOf: [
+      { required: ['pageId'], not: { anyOf: [{ required: ['slug'] }, { required: ['pageIds'] }] } },
+      { required: ['slug'], not: { anyOf: [{ required: ['pageId'] }, { required: ['pageIds'] }] } },
+      { required: ['pageIds'], not: { anyOf: [{ required: ['pageId'] }, { required: ['slug'] }] } },
+    ],
+  },
+  handler: async (ctx, params) => {
+    if (!params.pageIds) return deletePage(ctx, params);
+    if (params.pageId || params.slug) {
+      throw new OperationError(
+        'invalid_params',
+        'pass pageIds on its own, not alongside pageId or slug',
+        'Use pageIds for a batch, or pageId/slug for exactly one page.',
+      );
+    }
+    return deletePages(ctx, params.pageIds);
+  },
+});
+
+const rescope_pages = defineOp({
+  name: 'rescope_pages',
+  description:
+    'Move pages between private and workspace scope. This is the only way to change a page\'s ' +
+    'visibility after ingest — scope is otherwise fixed forever. Cheap: no re-chunking and no ' +
+    're-embedding, because permissions are derived from scope rather than stored separately. ' +
+    'You may re-scope pages you authored; admins may re-scope any page they can read, EXCEPT that ' +
+    'making a page private is restricted to its author (an admin doing it would lock the author out ' +
+    'of their own page). Up to ' + String(MAX_BATCH_PAGES) + ' at once, returning a per-page outcome ' +
+    'list: every entry carries a machine-readable `code` (ok, not_visible, not_author, ' +
+    'already_at_scope, slug_taken) plus prose. Pages already at the target scope report ok:true — ' +
+    'the call is idempotent. Nothing that is skipped stops the rest.',
+  params: z.object({
+    pageIds: z.array(z.string().uuid()).min(1).max(MAX_BATCH_PAGES),
+    scope: z.enum(PAGE_SCOPES),
+  }),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) => rescopePages(ctx, params.pageIds, params.scope),
 });
 
 const replace_page = defineOp({
@@ -432,6 +513,7 @@ const declared: Operation[] = [
   ask,
   list_pages,
   delete_page,
+  rescope_pages,
   replace_page,
   ingest_file,
   get_page,

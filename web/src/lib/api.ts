@@ -244,6 +244,16 @@ export interface SearchResult {
   results: ChunkHit[];
 }
 
+/** One page's fate in a batch op (`delete_page` with pageIds, `rescope_pages`). These ops partition
+ *  rather than abort, so the interesting half of the response is the rows that did NOT move and the
+ *  prose reason why — a batch where 3 of 250 belong to a colleague must still shift the other 247. */
+export interface BatchPageOutcome {
+  pageId: string;
+  slug?: string;
+  ok: boolean;
+  reason?: string;
+}
+
 export interface PageSummary {
   id: string;
   slug: string;

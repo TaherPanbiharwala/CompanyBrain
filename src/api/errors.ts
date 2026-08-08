@@ -91,12 +91,27 @@ export class OperationError extends Error {
   readonly code: OpErrorCode;
   readonly suggestion?: string;
   readonly docs?: string;
-  constructor(code: OpErrorCode, message: string, suggestion?: string, docs?: string) {
+  /** Seconds the caller should wait before retrying. Set it only where the THROWER knows the number
+   *  — dispatch cannot know how long an extraction slot takes, and guessing on its behalf is how you
+   *  get a retry-after that is confidently wrong.
+   *
+   *  Deliberately NOT in toWire(): it is transport metadata that becomes a `retry-after` HEADER, not
+   *  body content. DispatchResult.retryAfter is its home, and server.ts:240 forwards it. (Adding it
+   *  to the wire shape would also fail test/errors.test.ts, which asserts toWire() with toEqual.) */
+  readonly retryAfter?: number;
+  constructor(
+    code: OpErrorCode,
+    message: string,
+    suggestion?: string,
+    docs?: string,
+    retryAfter?: number,
+  ) {
     super(message);
     this.name = 'OperationError';
     this.code = code;
     this.suggestion = suggestion;
     this.docs = docs;
+    this.retryAfter = retryAfter;
   }
   get status(): number {
     return statusFor(this.code);

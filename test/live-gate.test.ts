@@ -196,6 +196,11 @@ const REQUIRED_LIVE_SUITES = [
   'api',
   'hybrid',
   'ingest',
+  // The batch page ops (delete_page's pageIds arm, rescope_pages). Registered deliberately rather
+  // than incidentally: these are the only ops that mutate ACLs after ingest, and leak-canary.test.ts
+  // allowlists rescope_pages on the strength of this suite existing — so letting it go quiet would
+  // hollow out the canary's exemption as well as its own coverage.
+  'lifecycle-batch',
   // The three below are M3-era and were added when this list merged into master. The reverse check
   // at the bottom of this test is what caught their absence — the list was written against a tree
   // where they did not exist yet, and would otherwise have quietly pinned 9 of 12.

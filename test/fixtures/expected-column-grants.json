@@ -68,6 +68,24 @@
   {
     "grantee": "cb_app",
     "table_name": "content_chunks",
+    "column_name": "content_tsv",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "content_tsv",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "content_tsv",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
     "column_name": "created_at",
     "privilege_type": "INSERT"
   },

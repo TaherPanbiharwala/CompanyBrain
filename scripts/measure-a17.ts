@@ -12,8 +12,16 @@
 //
 // Model calls are FAKED by default (--fake, the default) so a baseline costs nothing and is not at
 // the mercy of provider latency. Pass --real to include a genuine chat() call.
+//
+// WHICH CORPUS: `--workspace <name-substring | uuid>` pins it; without one this measures the largest
+// tenant and says so, by name, on the first line. Both matter — a latency number is only comparable
+// to another number taken against the same corpus, and this script once switched corpora in silence.
+//
+//   bun run measure:a17 --workspace "A17 Spike"
+//   bun run measure:a17 --workspace "multihop eval (plain)"
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { adminSql, closePools, withScopedTx } from '../src/db/client.ts';
+import { describeTarget, resolveWorkspaceTarget, workspaceFlag } from './workspace-target.ts';
 import { hybridSearch } from '../src/search/hybrid.ts';
 import { installFakeAiFetch } from '../test/helpers/fake-ai.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
@@ -43,32 +51,22 @@ async function main(): Promise<void> {
   const real = process.argv.includes('--real');
   const sql = adminSql();
 
-  // rls-exempt: corpus sizing on the owner pool, deliberately. This picks the BIGGEST tenant to
-  // benchmark against, which is a question the app role cannot answer by construction — a scoped
-  // read only ever sees one workspace. It reads counts, never content, and never runs in the
-  // request path.
-  const rows = await sql<{ workspace_id: string; owner_principal: string; pages: number; chunks: number }[]>`
-    select p.workspace_id,
-           min(p.owner_principal)          as owner_principal,
-           count(distinct p.id)::int       as pages,
-           count(c.id)::int                as chunks
-    from pages p left join content_chunks c on c.page_id = p.id
-    group by p.workspace_id
-    order by count(c.id) desc
-    limit 1`;
-  const target = rows[0];
-  if (!target) throw new Error('no corpus found — run `bun run load:a17` first');
+  // Target resolution lives in scripts/workspace-target.ts, and the reason is this script's own
+  // history: it used to take `order by count(c.id) desc limit 1` and print only the workspace UUID,
+  // so when the MultiHop-RAG corpus was loaded it silently stopped measuring A17 and kept the name
+  // `measure:a17`. The helper always reports the NAME and accepts --workspace to pin it.
+  const target = await resolveWorkspaceTarget(sql, workspaceFlag());
 
-  const principal = target.owner_principal;
+  const principal = target.ownerPrincipal;
   const ctx = buildContext({
     principal,
-    workspaceId: target.workspace_id,
+    workspaceId: target.id,
     role: 'owner',
-    grants: resolveGrants(principal, target.workspace_id),
+    grants: resolveGrants(principal, target.id),
     remote: false,
   });
 
-  console.log(`corpus: ${target.pages} pages / ${target.chunks} chunks in workspace ${target.workspace_id}`);
+  console.log(describeTarget(target));
 
   const rtt = stats(await measureRtt());
   console.log(`\nlink: one pooler round trip = ${rtt.median.toFixed(0)}ms median (${rtt.min.toFixed(0)}–${rtt.max.toFixed(0)}ms)`);

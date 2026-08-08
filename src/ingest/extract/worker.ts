@@ -10,10 +10,14 @@
 // tenant document bytes would sit in a world-readable /tmp outliving the request, for pages whose
 // whole point may be scope:'private'.
 
-// FIRST STATEMENT, before any import can run: stdout is the payload channel and nothing else may
-// write to it. Any dependency doing console.log — mammoth and pdf.js both warn — would interleave
-// with the JSON and make a perfectly-extracted file fail to parse, indistinguishable from an
-// OOM-truncated write.
+// stdout is the payload channel and nothing else may write to it. Any dependency doing console.log
+// — mammoth and pdf.js both warn — would interleave with the JSON and make a perfectly-extracted
+// file fail to parse, indistinguishable from an OOM-truncated write.
+//
+// This block used to claim it ran "before any import can run". It did not: ESM evaluates static
+// dependencies depth-first BEFORE the module body, so every static import below already had its
+// chance to log. That is now true rather than aspirational, because the three parsers that actually
+// warn are imported lazily inside main() — nothing heavy is loaded until after this rebind.
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 console.log = (...a: unknown[]) => void process.stderr.write(a.map(String).join(' ') + '\n');
 console.info = console.log;
@@ -27,9 +31,15 @@ process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
 }) as typeof process.stdout.write;
 
 import type { ExtractFormat } from '../blocks.ts';
-import { extractPdf } from './pdf.ts';
-import { extractDocx } from './docx.ts';
-import { extractXlsx } from './xlsx.ts';
+
+// The three third-party parsers (unpdf, mammoth, SheetJS) are imported LAZILY, inside main()'s
+// branch. Statically they cost every extraction: `Bun.spawn` in index.ts is unconditional, so a
+// 2 KB markdown file spawned a process that loaded all three document parsers before reading a
+// byte — and extraction is gated at MAX_CONCURRENT=3 for EVERY format, so that load sat directly on
+// the system's tightest bottleneck.
+//
+// text.ts stays static: it is in-repo, has no third-party dependency, and serves four of the seven
+// formats (csv, json, html, markdown/text). Making it lazy would buy nothing and cost a branch.
 import { extractPlain, extractHtml, extractCsv, extractJson } from './text.ts';
 
 async function readStdin(): Promise<Uint8Array> {
@@ -52,11 +62,11 @@ async function main(): Promise<void> {
   const bytes = await readStdin();
   const extracted =
     format === 'pdf'
-      ? await extractPdf(bytes)
+      ? await (await import('./pdf.ts')).extractPdf(bytes)
       : format === 'docx'
-        ? await extractDocx(bytes)
+        ? await (await import('./docx.ts')).extractDocx(bytes)
         : format === 'xlsx'
-          ? extractXlsx(bytes)
+          ? (await import('./xlsx.ts')).extractXlsx(bytes)
           : format === 'csv'
             ? extractCsv(bytes)
             : format === 'json'

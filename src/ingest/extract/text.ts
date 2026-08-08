@@ -11,40 +11,127 @@ import { htmlToBlocks, htmlTitle } from './html.ts';
 
 const decode = (b: Uint8Array): string => new TextDecoder('utf-8', { fatal: false }).decode(b);
 
+/** Carve a markdown document into fenced-code and prose runs, in order, keeping absolute offsets.
+ *
+ *  Fences must come out BEFORE the blank-line paragraph split, for two independent reasons — either
+ *  one alone would be enough:
+ *    1. A fence may legally contain a blank line, and the `\n{2,}` split would tear it in half.
+ *    2. The paragraph path collapses newlines, and inside a fence they are the content.
+ *
+ *  Measured on a real corpus before this existed: a three-option shell block came out as
+ *  `npm run dev yarn dev pnpm dev` — one string that reads as one command and is not — and a
+ *  directory tree came out as a single line. No error, no `degraded` flag, and every count said
+ *  clean, which is the signature of the silent-corruption class this codebase has been bitten by
+ *  twice already (the CSV column shift and the over-cap chunk). */
+function splitFences(raw: string): { code: boolean; text: string; from: number }[] {
+  const out: { code: boolean; text: string; from: number }[] = [];
+  const lines = raw.split('\n');
+  let buf: string[] = [];
+  let bufFrom = 0;
+  let pos = 0;
+  let fence: { marker: string; from: number; lines: string[] } | null = null;
+
+  const flushProse = () => {
+    if (buf.length > 0) out.push({ code: false, text: buf.join('\n'), from: bufFrom });
+    buf = [];
+  };
+
+  for (const line of lines) {
+    const lineFrom = pos;
+    pos += line.length + 1; // +1 for the '\n' consumed by split
+
+    if (fence) {
+      // A closing fence is the same character, at least as long, and carries no info string.
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1]![0] === fence.marker[0] && close[1]!.length >= fence.marker.length) {
+        out.push({ code: true, text: fence.lines.join('\n'), from: fence.from });
+        fence = null;
+      } else {
+        fence.lines.push(line);
+      }
+      continue;
+    }
+
+    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (open) {
+      flushProse();
+      // `pos`, not `lineFrom`: pos has already advanced past the opening fence line, so it is the
+      // offset of the first CONTENT character. Using lineFrom pointed the locator at the ``` line
+      // while `text` held only the content, so `slice(from, from + text.length)` ran off the end and
+      // every code-block citation pointed a few characters upstream. Nothing errors when this is
+      // wrong — the extracted text is still correct — which is why it needs an assertion, not a
+      // reader. See the locator invariant test in test/extract.test.ts.
+      fence = { marker: open[1]!, from: pos, lines: [] };
+      continue;
+    }
+    if (buf.length === 0) bufFrom = lineFrom;
+    buf.push(line);
+  }
+
+  // An UNCLOSED fence keeps its content rather than dropping it. A truncated file is exactly when
+  // you most want to see what was there, and silently discarding the tail would be the same class of
+  // invisible loss this function exists to fix.
+  if (fence) out.push({ code: true, text: fence.lines.join('\n'), from: fence.from });
+  flushProse();
+  return out;
+}
+
 /** ATX (`# x`) and setext (`x\n===`) headings; everything else is a paragraph or a list item.
  *  Character offsets are the only locator plain text can honestly supply. */
 export function extractPlain(bytes: Uint8Array, format: 'text' | 'markdown'): Extracted {
   const raw = decode(bytes).replace(/\r\n/g, '\n');
   const blocks: Block[] = [];
-  let offset = 0;
 
-  for (const para of raw.split(/\n{2,}/)) {
-    const start = raw.indexOf(para, offset);
-    const from = start >= 0 ? start : offset;
-    const to = from + para.length;
-    offset = to;
+  // Only markdown gets fence handling. A .txt file that happens to contain backticks is not
+  // claiming they delimit anything, and inventing structure from punctuation would be a guess.
+  const segments =
+    format === 'markdown' ? splitFences(raw) : [{ code: false, text: raw, from: 0 }];
 
-    const t = para.trim();
-    if (!t) continue;
-    const loc = { kind: 'offset', from, to } as const;
-
-    const atx = /^(#{1,6})\s+(.*)$/.exec(t);
-    if (atx) {
-      blocks.push({ text: atx[2]!.trim(), kind: 'heading', level: atx[1]!.length, locator: loc });
+  for (const seg of segments) {
+    if (seg.code) {
+      // Trailing whitespace only. Leading indentation is content inside a fence — stripping it is
+      // how a YAML or Python block silently stops meaning what it said.
+      const code = seg.text.replace(/\s+$/, '');
+      if (code.trim()) {
+        blocks.push({
+          text: code,
+          kind: 'code',
+          locator: { kind: 'offset', from: seg.from, to: seg.from + seg.text.length },
+        });
+      }
       continue;
     }
-    const setext = /^(.+)\n(=+|-+)\s*$/.exec(t);
-    if (setext) {
-      blocks.push({ text: setext[1]!.trim(), kind: 'heading', level: setext[2]![0] === '=' ? 1 : 2, locator: loc });
-      continue;
+
+    let offset = 0;
+    for (const para of seg.text.split(/\n{2,}/)) {
+      const start = seg.text.indexOf(para, offset);
+      const rel = start >= 0 ? start : offset;
+      offset = rel + para.length;
+      const from = seg.from + rel;
+      const to = from + para.length;
+
+      const t = para.trim();
+      if (!t) continue;
+      const loc = { kind: 'offset', from, to } as const;
+
+      const atx = /^(#{1,6})\s+(.*)$/.exec(t);
+      if (atx) {
+        blocks.push({ text: atx[2]!.trim(), kind: 'heading', level: atx[1]!.length, locator: loc });
+        continue;
+      }
+      const setext = /^(.+)\n(=+|-+)\s*$/.exec(t);
+      if (setext) {
+        blocks.push({ text: setext[1]!.trim(), kind: 'heading', level: setext[2]![0] === '=' ? 1 : 2, locator: loc });
+        continue;
+      }
+      if (/^\s*([-*+]|\d+\.)\s+/.test(t)) {
+        // A run of list items is one block: splitting a list mid-item loses the item's meaning, and
+        // items are short enough that the run rarely exceeds a chunk on its own.
+        blocks.push({ text: t, kind: 'list', locator: loc });
+        continue;
+      }
+      blocks.push({ text: t.replace(/\n/g, ' '), kind: 'paragraph', locator: loc });
     }
-    if (/^\s*([-*+]|\d+\.)\s+/.test(t)) {
-      // A run of list items is one block: splitting a list mid-item loses the item's meaning, and
-      // items are short enough that the run rarely exceeds a chunk on its own.
-      blocks.push({ text: t, kind: 'list', locator: loc });
-      continue;
-    }
-    blocks.push({ text: t.replace(/\n/g, ' '), kind: 'paragraph', locator: loc });
   }
 
   return {

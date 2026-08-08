@@ -294,15 +294,42 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   add(`pgvector >= 0.8 (D14 — the floor that makes hnsw.iterative_scan real)`,
     ver !== '' && ((vMaj ?? 0) > 0 || (vMin ?? 0) >= 8), `installed ${ver || '(missing)'}`);
 
-  // idx_chunks_fts backs the keyword arm. 0006 warns that an expression mismatch "does not error,
-  // it silently falls back to a sequential scan" — and nothing checked it. Match on the indexed
-  // expression, not just the name, since a same-named index over a different expression is the
-  // failure being guarded against.
+  // The keyword arm reads content_chunks.content_tsv, a STORED generated column (0013). Assert the
+  // GENERATION EXPRESSION, not merely that the column exists: a column of the right name holding a
+  // different tsvector — a different regconfig, a different source column — changes what the arm
+  // matches with no error anywhere. This is the same failure 0006 warned about for the expression
+  // index, moved to where the expression now lives.
+  //
+  // rls-exempt: catalog only. This reads pg_attribute/pg_attrdef and names content_chunks solely as
+  // a regclass literal — it touches no row of the table, and doctor runs on the owner pool by
+  // design. (The scoped-tx guard matches the table NAME, which is the right side to err on.)
+  const tsvCol = await sql<{ gen: string | null }[]>`
+    select pg_get_expr(d.adbin, d.adrelid) as gen
+    from pg_attribute a
+    left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+    where a.attrelid = 'public.content_chunks'::regclass
+      and a.attname = 'content_tsv' and a.attgenerated = 's'`;
+  add('content_chunks.content_tsv is STORED GENERATED to_tsvector(english, content)',
+    (tsvCol[0]?.gen ?? '').includes("to_tsvector('english'::regconfig, content)"),
+    tsvCol[0]?.gen ?? '(missing — run bun run migrate; migration 0013 adds it)');
+
+  // …and the GIN index over it. Match on the indexed expression, not just the name, since a
+  // same-named index over a different column is the failure being guarded against.
   const fts = await sql<{ indexdef: string }[]>`
-    select indexdef from pg_indexes where schemaname='public' and indexname='idx_chunks_fts'`;
-  add('idx_chunks_fts exists and indexes to_tsvector(english, content)',
-    (fts[0]?.indexdef ?? '').includes("to_tsvector('english'::regconfig, content)"),
-    fts[0]?.indexdef ?? '(missing)');
+    select indexdef from pg_indexes where schemaname='public' and indexname='idx_chunks_tsv'`;
+  add('idx_chunks_tsv is a GIN index over content_tsv',
+    (fts[0]?.indexdef ?? '').includes('USING gin') && (fts[0]?.indexdef ?? '').includes('content_tsv'),
+    fts[0]?.indexdef ?? '(missing — run bun run migrate; migration 0013 creates it)');
+
+  // idx_chunks_fts must be GONE, not merely superseded. It indexed the equivalent expression, was
+  // never chosen by the planner (0013 records the plan), and left in place it costs a full
+  // to_tsvector on every chunk INSERT that the generated column already pays.
+  const deadFtsIdx = await sql<{ n: number }[]>`
+    select count(*)::int as n from pg_indexes
+    where schemaname='public' and indexname='idx_chunks_fts'`;
+  add('idx_chunks_fts (superseded by idx_chunks_tsv) is dropped',
+    (deadFtsIdx[0]?.n ?? 0) === 0,
+    `${deadFtsIdx[0]?.n ?? 0} found`);
 
   // The title arm's index, asserted on its EXPRESSION for the reason the M3 review found: 0009
   // shipped a btree on `lower(title)` while the arm filters with `to_tsvector(...) @@ tsquery`. The

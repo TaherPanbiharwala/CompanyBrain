@@ -12,6 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as XLSX from 'xlsx';
 import { extractFile, extractorFor, EXTRACTOR_VERSIONS } from '../src/ingest/extract/index.ts';
+// Imported directly rather than through extractFile: the locator invariant below is a property of
+// the parser, and going through the subprocess would make a parser bug look like a transport bug.
+import { extractPlain } from '../src/ingest/extract/text.ts';
 import { extractXlsx } from '../src/ingest/extract/xlsx.ts';
 import { detect } from '../src/ingest/extract/detect.ts';
 import { htmlToBlocks } from '../src/ingest/extract/html.ts';
@@ -358,5 +361,59 @@ describe('an empty cell holds its column (the sixth corruption class)', () => {
     expect(out.unitsExtracted).toBe(2);
     expect(out.unitsSkipped).toBe(0);
     expect(isDegraded(out)).toBe(false);
+  });
+});
+
+// The locator invariant, added after a real regression: when fenced code blocks gained their own
+// block kind, the code path recorded `from` as the offset of the opening ``` LINE while `text` held
+// only the content between the fences. `slice(from, from + text.length)` therefore ran off the end
+// and every code-block citation pointed a few characters upstream.
+//
+// Nothing errored. The extracted TEXT was correct, chunking was correct, retrieval was correct —
+// only the pointer a human follows back to the source was wrong, which is the same silent class as
+// the CSV column shift. It survived a full green suite because no assertion had ever tied a block's
+// text to the span its locator claims. This is that assertion.
+describe('offset locators point at the text they claim', () => {
+  const DOCS: Record<string, string> = {
+    'prose, fences and a list': '# Title\n\nFirst paragraph with enough text to matter.\n\n```bash\nnpm run dev\nyarn dev\n```\n\nSecond paragraph.\n\n- item one\n- item two\n\nEnd.\n',
+    'fence as the very first thing': '```js\nconst a = 1;\n```\n\nAfter.\n',
+    'unclosed fence keeps its content': 'Intro text here.\n\n```\nnever closed\n',
+    'tilde fences': 'Before.\n\n~~~python\nx = 1\n~~~\n\nAfter.\n',
+    'blank line INSIDE a fence (would be torn by a naive paragraph split)': 'Intro.\n\n```\na\n\nb\n```\n\nEnd.\n',
+    'CRLF line endings': '# H\r\n\r\n```\r\nx\r\n```\r\n\r\nTail.\r\n',
+  };
+
+  const squash = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+  for (const [name, doc] of Object.entries(DOCS)) {
+    it(name, () => {
+      // extractPlain normalises CRLF before it assigns offsets, so the source the offsets index
+      // into is the normalised form, not the raw bytes.
+      const source = doc.replace(/\r\n/g, '\n');
+      const { blocks } = extractPlain(new TextEncoder().encode(doc), 'markdown');
+      expect(blocks.length).toBeGreaterThan(0); // anti-vacuity: zero blocks must not pass
+      for (const b of blocks) {
+        const loc = b.locator as { kind: 'offset'; from: number; to: number };
+        expect(loc.kind).toBe('offset');
+        expect(loc.to).toBeGreaterThan(loc.from);
+        expect(loc.to).toBeLessThanOrEqual(source.length);
+        // The block's text must be recoverable from the span its locator names. Whitespace is
+        // squashed because the paragraph path legitimately collapses newlines; the ORIGIN must
+        // still be right.
+        expect(squash(source.slice(loc.from, loc.to))).toContain(squash(b.text).slice(0, 25));
+      }
+    });
+  }
+
+  it('code blocks keep their newlines and are typed as code, not paragraph', () => {
+    const { blocks } = extractPlain(
+      new TextEncoder().encode('Intro.\n\n```bash\nnpm run dev\nyarn dev\n```\n'),
+      'markdown',
+    );
+    const code = blocks.find((b) => b.kind === 'code');
+    expect(code).toBeDefined();
+    // The regression this replaces: "npm run dev yarn dev" — two commands fused into one string
+    // that reads as a single command and is not.
+    expect(code!.text).toBe('npm run dev\nyarn dev');
   });
 });
