@@ -24,6 +24,16 @@ import { PAGE_SCOPES, DEFAULT_PAGE_SCOPE } from '../core/context.ts';
  *  two together. */
 export const MAX_BODY_CHARS = 200_000;
 
+/** The slug rule, EXPORTED rather than left inline in the zod literal below.
+ *
+ *  Same reasoning as GRANT_TAG_RE (src/core/context.ts): a rule with more than one consumer is held
+ *  together by a test or not at all. src/eval/slug.ts generates slugs for eval corpora and must
+ *  satisfy exactly this gate, but it is a pure module that cannot import this one without dragging
+ *  the whole op/dispatch chain into a test that is supposed to need no database. So it keeps its own
+ *  copy and test/eval-harness.test.ts pins the two against each other. */
+export const SLUG_MAX_LEN = 200;
+export const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
 
 /** A registered operation (type-erased so a heterogeneous registry stays homogeneous). Define via
  *  defineOp so per-op params stay type-safe at the definition site. */
@@ -118,7 +128,7 @@ const ingest = defineOp({
   params: z.object({
     // Lowercase kebab-ish. It is a URL-facing identifier and a UNIQUE btree key, so both the charset
     // and the length matter; 200 is far under the ~2704-byte index-row limit.
-    slug: z.string().min(1).max(200).regex(/^[a-z0-9][a-z0-9._-]*$/, 'slug must be lowercase alphanumeric with . _ or -'),
+    slug: z.string().min(1).max(SLUG_MAX_LEN).regex(SLUG_RE, 'slug must be lowercase alphanumeric with . _ or -'),
     title: z.string().min(1).max(300),
     body: z.string().min(1).max(MAX_BODY_CHARS),
     tags: z.array(z.string().min(1).max(64)).max(50).optional(),

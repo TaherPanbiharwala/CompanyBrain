@@ -23,7 +23,10 @@
     "gen:test-files": "bun run scripts/gen-test-files.ts",
     "ingest-file": "bun run scripts/ingest-file.ts",
     "eval:novabyte": "bun run scripts/novabyte-eval.ts",
-    "score:top8": "bun run scripts/novabyte-score.ts"
+    "score:top8": "bun run scripts/novabyte-score.ts",
+    "seed:eval": "bun run scripts/seed-eval-workspace.ts",
+    "load:eval": "bun run scripts/load-eval-corpus.ts",
+    "eval:rag": "bun run scripts/run-rag-eval.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

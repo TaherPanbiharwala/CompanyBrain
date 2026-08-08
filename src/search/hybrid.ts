@@ -51,7 +51,10 @@ interface FusedRow {
   score: number; // ::float8, so postgres.js gives a number rather than numeric-as-string
 }
 
-const DEFAULT_TOP_K = 8;
+/** EXPORTED so the eval harness can record the production default in its run manifest. A report
+ *  whose numbers cannot be tied back to the topK they were produced at is not comparable with the
+ *  next one — CONTEXT.md §6.7 records a committed report that described a superseded engine. */
+export const DEFAULT_TOP_K = 8;
 
 /** VECTOR-arm candidates fetched before fusion. The keyword arm is bounded by KW_OR_SLOTS and the
  *  title arm by TITLE_LIMIT; this constant no longer applies to them. */
