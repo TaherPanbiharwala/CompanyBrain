@@ -664,6 +664,56 @@ and `_private.md → "_private"` — both rejected by the op regex. Its comment 
 op's charset "so the CLI and the API cannot disagree." They do. (`--scope`/`--kind` are genuinely
 safe — both are membership-checked against closed lists.)
 
+### 6.13 [critical — live on the Seoul project; fix is dashboard-side, not in this repo] Supabase's Data API is a second, RLS-bypassing door into every table
+
+Found 2026-08-08 while choosing security options for a replacement Supabase project, by querying the
+live database rather than reading the dashboard. **This repo has never used Supabase's client SDK —
+zero references to `supabase-js`, `SUPABASE_URL`, `SUPABASE_ANON_KEY` or `/rest/v1/` anywhere in
+`src/`, `web/`, `scripts/` or `package.json`.** Every connection this codebase makes is a direct
+Postgres one through `postgres.js` as `cb_app`/`cb_auth`/`postgres`. The Data API was therefore never
+a designed surface — it was on by default, and nothing in the repo knew it existed.
+
+What the live Seoul project actually shows:
+
+- `anon`, `authenticated` and `service_role` all exist, and each holds
+  `SELECT/INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER` on **every** table in `public` —
+  `pages`, `content_chunks`, `sessions`, `principals`, `acl_grants`, `page_sources`, `quarantine`,
+  the lot. That is the "Automatically expose new tables" default, applied to a schema built entirely
+  by `migrate.ts`, which never granted any of it.
+- **`service_role` has `rolbypassrls = true`.** Its key is an unrestricted master key to every
+  workspace, every principal and every session, and no policy in `0007_acl_rls.sql` constrains it.
+- The REST gateway is **live**: `https://<ref>.supabase.co/rest/v1/pages` answers with PostgREST's
+  own `401 {"message":"Invalid API key"}`, i.e. it is serving and rejecting a bad key — so a real key
+  is accepted.
+
+Two facts bound the blast radius, and both are worth recording because they are structural, not luck:
+
+1. **`anon` and `authenticated` are `rolbypassrls = false`, and every content policy is
+   GUC-gated.** `content_chunks_ws` / `pages_ws` read `current_setting('app.workspace', true)` and
+   `current_grants()`, which **only** `withScopedTx` ever sets. A PostgREST connection never sets
+   them, `NULLIF` yields `NULL`, `acl && NULL` is `NULL` not `TRUE`, and RLS requires `TRUE`. The
+   fail-closed discipline `0007_acl_rls.sql:28-34` describes protects a path nobody wrote it for.
+   Note the policies are scoped to `PUBLIC`, not to `cb_app` — so they *do* apply to these roles;
+   it is the GUC gate, not the role list, doing the work.
+2. **None of the three roles has `rolcanlogin`.** They cannot open a raw Postgres connection at all.
+   The REST gateway is the only door, which is why turning it off is a *complete* fix rather than a
+   partial one.
+
+**Fix (dashboard, both projects — there is no code change to make):** Project Settings → Data API →
+disable **Enable Data API** and **Automatically expose new tables**. Rotate the JWT secret on the
+Seoul project, since its `service_role` key has been live and unaudited for the project's whole
+lifetime (no evidence of use, and none is obtainable from inside this repo). Leave **Enable
+automatic RLS** off: migrations already `ENABLE ROW LEVEL SECURITY` explicitly on every table and
+`doctor.ts` asserts both "every public table has RLS ENABLED" and "no table is RLS-enabled with zero
+policies", so the event trigger it installs is redundant and untracked by our own tooling.
+
+**Why `doctor` did not catch this, which is the durable lesson.** Its 75 checks are thorough about
+`cb_app`/`cb_auth` — `expected-grants.json` and `expected-column-grants.json` pin their privileges
+exactly — but the census only ever asks about the roles this repo creates. A role the *platform*
+adds, holding grants the platform issued, is outside every fixture. Worth a check if the Data API is
+ever deliberately enabled: assert `anon`/`authenticated` hold no privilege on any `public` table, and
+that no role other than `postgres` has `rolbypassrls`.
+
 ---
 
 ## 7. `DECISIONS.md` — entries later overturned
