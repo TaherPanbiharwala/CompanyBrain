@@ -3,6 +3,7 @@
 //
 // Tenant isolation: RLS is the SOLE scoper on every arm (no explicit workspace_id predicate),
 // matching the established get_workspace/list_members convention (review AM12).
+import type postgres from 'postgres';
 import type { OperationContext } from '../core/context.ts';
 import { withScopedTx } from '../db/client.ts';
 import { embed, withRouterScope, rerank, isRerankEnabled, expandQuery, isExpansionEnabled } from '../ai/router.ts';
@@ -239,11 +240,106 @@ export async function hybridSearch(
   // so the blend collapses to pure RRF over the surviving arms.
   const hasVector = vectorLiteral !== null;
 
-  // ONE statement, not four. MEASURED (D65): the cost here is per-STATEMENT — every round trip on
-  // this link is ~110ms, and the ::vector cast of a 1536-element literal is a second one by itself.
-  // Promise.all over the arms buys nothing, because a transaction holds one connection and
-  // postgres.js runs its statements in order on it.
-  const rows = await withScopedTx(ctx, (tx) => tx<FusedRow[]>`
+  const rows = await withScopedTx(ctx, (tx) => hybridQuery(tx, { query, orQuery, vectorLiteral, hasVector, fetchK }));
+
+  let hits: ChunkHit[] = rows.map((r) => ({
+    chunkId: r.chunk_id,
+    pageId: r.page_id,
+    slug: r.slug,
+    title: r.title,
+    ord: r.ord,
+    content: r.content,
+    locator: r.locator,
+    citation: formatLocator(r.locator ?? undefined) ?? null,
+    scope: r.scope,
+    score: r.score,
+  }));
+
+  // ── Rerank, OUTSIDE the transaction (D6) ─────────────────────────────────
+  //
+  // Placement is the point: withScopedTx above has already committed, so this provider call holds no
+  // pooled connection. A reranker inside the transaction would pin a tx-pooler backend for the
+  // length of a third-party HTTP request, which is the exact resource D6 exists to protect.
+  //
+  // A failure degrades to the fused order rather than failing the request. That is a weaker promise
+  // than the keyword_only degrade above, and deliberately so — losing the reranker costs ordering
+  // quality within a candidate set that fusion already chose, where losing the embedder costs a
+  // whole retrieval arm. Only the second is worth telling the reader about.
+  if (isRerankEnabled() && hits.length > 1) {
+    try {
+      const scores = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
+        rerank(query, hits.map((h) => ({ id: h.chunkId, text: h.content }))),
+      );
+      const byId = new Map(hits.map((h) => [h.chunkId, h]));
+      const reordered = scores.map((s) => byId.get(s.id)).filter((h): h is ChunkHit => h !== undefined);
+      // Only trust a complete answer. A provider that returned a subset would silently DROP the
+      // chunks it omitted — a recall cut disguised as a reordering, which is the one thing the
+      // autocut sweep established this codebase should not do quietly.
+      if (reordered.length === hits.length) hits = reordered;
+    } catch {
+      // Keep the fused order. Logged by the router; not surfaced as a degradation.
+    }
+  }
+  hits = hits.slice(0, topK);
+
+  const { kept, dropped } = autocut(hits);
+  if (dropped > 0) {
+    // One structured line, matching defaultLogSink's shape. Counts only — no query text and no
+    // content (D28). Unconditional rather than debug-gated: a control that quietly shrinks the
+    // evidence behind an answer has to leave a trace, or "the model did not know that" and "we did
+    // not give it that" become the same observation.
+    console.log(JSON.stringify({
+      level: 'info',
+      kind: 'retrieval_autocut',
+      workspace: ctx.workspaceId,
+      returned: kept.length,
+      dropped,
+      ratio: AUTOCUT_RATIO,
+    }));
+  }
+  return { hits: kept, degraded };
+}
+
+/** The parameters the one statement below is built from. Named, because the diagnostic script has to
+ *  be able to construct exactly what a real search constructs. */
+export interface HybridQueryParams {
+  /** The user's question, verbatim. Feeds `plainto_tsquery` for the AND tier. */
+  query: string;
+  /** The OR-joined term list from `keywordQueryText` (question + any expansions). */
+  orQuery: string;
+  /** The query embedding as a pgvector literal, or null when the embedder was unavailable. */
+  vectorLiteral: string | null;
+  hasVector: boolean;
+  fetchK: number;
+}
+
+/**
+ * The retrieval statement, as a postgres.js FRAGMENT rather than an inline template.
+ *
+ * ONE statement, not four. MEASURED (D65): the cost here is per-STATEMENT — every round trip on
+ * this link is ~110ms, and the ::vector cast of a 1536-element literal is a second one by itself.
+ * Promise.all over the arms buys nothing, because a transaction holds one connection and
+ * postgres.js runs its statements in order on it.
+ *
+ * WHY IT IS A FUNCTION: `scripts/explain-search.ts` interpolates it into `explain (analyze, buffers)
+ * ${...}`, so the plan that script prints is the plan the shipped query produces — not the plan of a
+ * copy that was accurate on the day it was pasted. A copy is exactly how idx_pages_title_prefix
+ * shipped dead (0011): the query and the thing that claimed to describe it drifted, and nothing
+ * errored. Returning the fragment from one place removes the second copy entirely.
+ *
+ * THE PARAMETER IS NAMED `tx` ON PURPOSE, and renaming it is not cosmetic. `postgres.TransactionSql`
+ * is the real guarantee — the only way to obtain one is `.begin()`, and withScopedTx is the only
+ * caller that opens one here — but test/scoped-tx-guard.test.ts classifies a content query by
+ * walking back to the template opener and reading the HANDLE NAME. Calling it `sql` makes every
+ * content-table line in this statement read as unscoped, and the guard fails, correctly by its own
+ * rule. The name and the type must agree.
+ */
+export function hybridQuery(
+  tx: postgres.TransactionSql,
+  p: HybridQueryParams,
+): postgres.PendingQuery<FusedRow[]> {
+  const { query, orQuery, vectorLiteral, hasVector, fetchK } = p;
+  return tx<FusedRow[]>`
     with
     -- ── KEYWORD ARM ────────────────────────────────────────────────────────
     -- Two tiers over ONE scan. The OR query decides membership (so the arm is non-empty), and the
@@ -259,14 +355,22 @@ export async function hybridSearch(
     -- relevant chunks bottom out at ts_rank_cd 0.1, which is also the 10th percentile of ALL matched
     -- rows, so every threshold that removes noise also removes true positives. Recorded rather than
     -- shipped as a no-op constant.
+    --
+    -- c.content_tsv is the STORED generated column from migration 0013, not to_tsvector(...). It
+    -- holds exactly what that expression computes, so the arm matches and ranks an identical set —
+    -- but it is computed at write time rather than three times per visible chunk per question.
+    -- MEASURED: this CTE was 3,712ms of a 3,812ms statement on a 2,829-chunk workspace, because the
+    -- planner never chose the expression index and applied the match as a filter over the whole
+    -- workspace. Reverting these three references to to_tsvector('english', c.content) restores that
+    -- cost silently — the results would be identical and only the clock would say so.
     kw_pool as (
       select c.id,
              c.page_id,
-             (to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})) as and_tier,
-             ts_rank_cd(to_tsvector('english', c.content), websearch_to_tsquery('english', ${orQuery})) as rank
+             (c.content_tsv @@ plainto_tsquery('english', ${query})) as and_tier,
+             ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', ${orQuery})) as rank
       from content_chunks c
       where ${orQuery} <> ''
-        and to_tsvector('english', c.content) @@ websearch_to_tsquery('english', ${orQuery})
+        and c.content_tsv @@ websearch_to_tsquery('english', ${orQuery})
     ),
     kw_split as (
       -- Ranked WITHIN each tier, which is what lets the two leave as separate arms below. Each list
@@ -395,8 +499,39 @@ export async function hybridSearch(
     -- where a row these joins discard had ALREADY consumed one of the topK slots — so a chunk whose
     -- page is not visible (drift; test/leak-canary.test.ts proves that state is representable)
     -- silently cost a result rather than being skipped.
+    --
+    -- LATERAL + an "offset 0" fence, not plain inner joins. This is a MEASURED plan fix, and the ugly token is
+    -- load-bearing — read this before tidying it away.
+    --
+    -- Written as "from shortlist f join content_chunks c on c.id = f.id join pages p on …", the
+    -- planner is free to choose its join order and chose the worst one available: it built
+    -- pages ⋈ content_chunks FIRST — every chunk of the whole workspace, 2,829 rows, re-probing
+    -- idx_chunks_acl once per page — and only then matched that against the shortlist with a
+    -- Join Filter, discarding 96,152 of 96,186 rows. 232ms to produce 34.
+    --
+    -- It does that because it cannot estimate this CTE chain: every node from kw_pool down to
+    -- shortlist is estimated at 1-13 rows, so "join the two big tables first, then filter" looks
+    -- free. That estimate will not improve on its own — "acl && (SELECT current_grants())" is
+    -- estimated at 59 rows where the truth is 2,829, because the value is an InitPlan the planner
+    -- cannot see, and its correlation with the workspace_id predicate is total (aclForScope stamps
+    -- ws:<workspace_id>, so the two predicates select the SAME rows while the planner multiplies
+    -- their selectivities as though they were independent). Every plan in this statement that goes
+    -- wrong goes wrong for that one reason.
+    --
+    -- LATERAL ALONE DOES NOT FIX IT, and that was measured too rather than assumed: Postgres pulls a
+    -- simple lateral subquery up into an ordinary join, restoring the same freedom and the same
+    -- 367ms plan. "offset 0" is the documented optimisation fence that blocks the pull-up — a no-op
+    -- semantically (offset 0 rows), which is precisely why it is safe, and it is the reason the
+    -- LATERAL survives to mean what it says. With the fence the shortlist is necessarily the outer
+    -- relation and each of its (at most 100) rows is one primary-key lookup:
+    --
+    --   before  Nested Loop … Rows Removed by Join Filter: 96152      232ms
+    --   after   Index Scan using content_chunks_pkey … loops=34       0.3ms   (+ Memoize on pages)
+    --
+    -- Same rows out, same order out. The work in is now bounded by a constant this file sets rather
+    -- than by how large the tenant grew.
     candidates as (
-      select c.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator, p.scope,
+      select f.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator, p.scope,
              f.score as rrf,
              -- Cosine SIMILARITY (1 - distance), so bigger is better on both terms of the blend.
              -- coalesce because a chunk reached through the keyword or title arm may have no
@@ -404,8 +539,17 @@ export async function hybridSearch(
              -- unpredictably rather than last.
              coalesce(1 - (c.embedding <=> ${vectorLiteral}::vector), 0) as cos_sim
       from shortlist f
-      join content_chunks c on c.id = f.id
-      join pages p on p.id = c.page_id
+      -- CROSS JOIN LATERAL, not LEFT JOIN LATERAL: a subquery returning no rows must DROP the
+      -- candidate, which is exactly what the inner joins above did. A left join would keep the row
+      -- with null slug/scope and hand the caller a citation to a page it may not read.
+      cross join lateral (
+        select cc.page_id, cc.ord, cc.content, cc.locator, cc.embedding
+        from content_chunks cc where cc.id = f.id offset 0
+      ) c
+      cross join lateral (
+        select pp.slug, pp.title, pp.scope
+        from pages pp where pp.id = c.page_id offset 0
+      ) p
     ),
     -- ── EXACT-DUPLICATE COLLAPSE ───────────────────────────────────────────
     -- Byte-identical chunk text can legitimately appear on several pages: a boilerplate clause, a
@@ -438,62 +582,5 @@ export async function hybridSearch(
     from deduped
     where dup_rk = 1
     order by score desc, chunk_id
-    limit ${fetchK}`);
-
-  let hits: ChunkHit[] = rows.map((r) => ({
-    chunkId: r.chunk_id,
-    pageId: r.page_id,
-    slug: r.slug,
-    title: r.title,
-    ord: r.ord,
-    content: r.content,
-    locator: r.locator,
-    citation: formatLocator(r.locator ?? undefined) ?? null,
-    scope: r.scope,
-    score: r.score,
-  }));
-
-  // ── Rerank, OUTSIDE the transaction (D6) ─────────────────────────────────
-  //
-  // Placement is the point: withScopedTx above has already committed, so this provider call holds no
-  // pooled connection. A reranker inside the transaction would pin a tx-pooler backend for the
-  // length of a third-party HTTP request, which is the exact resource D6 exists to protect.
-  //
-  // A failure degrades to the fused order rather than failing the request. That is a weaker promise
-  // than the keyword_only degrade above, and deliberately so — losing the reranker costs ordering
-  // quality within a candidate set that fusion already chose, where losing the embedder costs a
-  // whole retrieval arm. Only the second is worth telling the reader about.
-  if (isRerankEnabled() && hits.length > 1) {
-    try {
-      const scores = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
-        rerank(query, hits.map((h) => ({ id: h.chunkId, text: h.content }))),
-      );
-      const byId = new Map(hits.map((h) => [h.chunkId, h]));
-      const reordered = scores.map((s) => byId.get(s.id)).filter((h): h is ChunkHit => h !== undefined);
-      // Only trust a complete answer. A provider that returned a subset would silently DROP the
-      // chunks it omitted — a recall cut disguised as a reordering, which is the one thing the
-      // autocut sweep established this codebase should not do quietly.
-      if (reordered.length === hits.length) hits = reordered;
-    } catch {
-      // Keep the fused order. Logged by the router; not surfaced as a degradation.
-    }
-  }
-  hits = hits.slice(0, topK);
-
-  const { kept, dropped } = autocut(hits);
-  if (dropped > 0) {
-    // One structured line, matching defaultLogSink's shape. Counts only — no query text and no
-    // content (D28). Unconditional rather than debug-gated: a control that quietly shrinks the
-    // evidence behind an answer has to leave a trace, or "the model did not know that" and "we did
-    // not give it that" become the same observation.
-    console.log(JSON.stringify({
-      level: 'info',
-      kind: 'retrieval_autocut',
-      workspace: ctx.workspaceId,
-      returned: kept.length,
-      dropped,
-      ratio: AUTOCUT_RATIO,
-    }));
-  }
-  return { hits: kept, degraded };
+    limit ${fetchK}`;
 }

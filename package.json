@@ -23,6 +23,7 @@
     "load:a17": "bun run scripts/load-a17-corpus.ts",
     "eval:a17": "bun run scripts/run-a17-eval.ts",
     "measure:a17": "bun run scripts/measure-a17.ts",
+    "explain:search": "bun run scripts/explain-search.ts",
     "dump:top8": "bun run scripts/dump-top8.ts",
     "gen:test-files": "bun run scripts/gen-test-files.ts",
     "ingest-file": "bun run scripts/ingest-file.ts",
