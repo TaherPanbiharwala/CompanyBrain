@@ -379,11 +379,10 @@ const ingest_file = defineOp({
       .min(1)
       .max(Math.ceil((MAX_FILE_BYTES * 4) / 3) + 1024)
       .describe(`Base64-encoded file bytes. The DECODED file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`),
-    slug: z
-      .string()
-      .min(1)
-      .max(200)
-      .regex(/^[a-z0-9][a-z0-9._-]*$/, 'slug must be lowercase alphanumeric with . _ or -'),
+    // Same constants as `ingest` above, not a second hand-written copy. The two ops share one slug
+    // rule and this file previously stated it twice — the exact drift SLUG_RE's own comment exists
+    // to prevent, and test/eval-harness.test.ts pins only the exported form.
+    slug: z.string().min(1).max(SLUG_MAX_LEN).regex(SLUG_RE, 'slug must be lowercase alphanumeric with . _ or -'),
     title: z.string().min(1).max(300).optional().describe("Defaults to the document's own title, then the filename."),
     tags: z.array(z.string().min(1).max(64)).max(50).optional(),
     kind: z.enum(PACK_KINDS).default(DEFAULT_PACK_KIND),

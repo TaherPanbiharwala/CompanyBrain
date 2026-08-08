@@ -10,16 +10,23 @@
 // that suite sharper rather than weaker: a confident memory-driven answer to a question the corpus
 // cannot answer is precisely the defect being hunted.
 //
-// NO NUMBER FROM THIS HARNESS MAY JUSTIFY A TUNING CHANGE to src/search/hybrid.ts, chunking, or the
-// prompt. Every question here is multi-hop; real traffic is mostly single-hop, where raising topK
-// adds distractors and costs tokens. The benchmark would score that regression as an improvement.
+// WHAT A NUMBER FROM HERE MAY JUSTIFY. An earlier version of this comment said no tuning change
+// could ever be justified by this harness, on the premise that real traffic is mostly single-hop
+// while every question here is multi-hop. That premise was assumed, never evidenced, and the founder
+// has since stated the opposite: real work does pull from several documents at once. So tuning
+// against this benchmark is legitimate — but promotion into production defaults still requires a
+// second corpus the model has not memorized, because answer correctness is unmeasurable here and a
+// config can raise document recall while lowering answer quality.
 import { writeFileSync, appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closePools, withScopedTx } from '../src/db/client.ts';
 import { config } from '../src/config.ts';
-import { hybridSearch, AUTOCUT_RATIO, DEFAULT_TOP_K, MAX_PER_PAGE } from '../src/search/hybrid.ts';
+import {
+  hybridSearch, AUTOCUT_RATIO, DEFAULT_TOP_K, MAX_PER_PAGE,
+  ARM_LIMIT, KW_AND_SLOTS, KW_OR_SLOTS, TITLE_LIMIT,
+} from '../src/search/hybrid.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
 import { isRerankEnabled, isExpansionEnabled } from '../src/ai/router.ts';
 import { scoreMultiHop, scoreCandidateRecall, type MultiHopScore } from '../src/search/eval-score.ts';
@@ -99,6 +106,10 @@ interface Manifest {
   poolK: number;
   reportKs: number[];
   maxPerPage: number;
+  /** All four recorded, because they bound the candidate pool and `candidateRecall` is meaningless
+   *  without knowing them. The manifest previously recorded none, so two reports run under different
+   *  arm caps were indistinguishable after the fact. */
+  armCaps: { armLimit: number; kwAndSlots: number; kwOrSlots: number; titleLimit: number; sum: number };
   autocutRatio: number;
   rerankModel: string;
   queryExpansion: number;
@@ -113,7 +124,13 @@ interface Manifest {
 
 // ── Row shape (one JSONL line per scored question) ──────────────────────────
 
+/** Bumped whenever a field below changes meaning. `--resume` refuses across a mismatch: resuming a
+ *  pre-v2 checkpoint would silently mix rows that have `rankedSlugs` with rows that do not, and the
+ *  replay would then score half the set while reporting a denominator that looks whole. */
+const ROW_SCHEMA_VERSION = 2;
+
 interface Row {
+  v: number;
   qid: string;
   variant: Variant;
   type: string | null;
@@ -122,6 +139,32 @@ interface Row {
   error: string | null;
   score: MultiHopScore | null;
   candidateRecall: number | null;
+  /**
+   * The PER-CHUNK slug list, in rank order, WITH REPEATS. Not the distinct-document list.
+   *
+   * This is what makes a per-page cap simulable offline, and the distinction is the whole point: a
+   * cap operates on MULTIPLICITY, so given only distinct documents every page already appears once
+   * and a cap of 2 is a no-op. `[A,B,C,D]` is equally consistent with `A,A,A,B,B,C,D,D` (cap 2 -> 5
+   * docs) and `A,B,C,D,A,B,C,D` (cap 2 -> no change), and nothing distinguishes them.
+   *
+   * Simulating from a cap-3 log is legitimate by composition: filter(filter(L,<=3),<=2) =
+   * filter(L,<=2), because the <=2 filter keeps the first two occurrences and both survive <=3.
+   *
+   * APPROXIMATE, and a simulator built on it must be oracle-tested against the engine: `page_rk` is
+   * computed over the RRF score while the returned order is the 0.7*rrf + 0.3*cos blend, so the
+   * third occurrence of a page here is not necessarily its `page_rk = 3`.
+   */
+  rankedSlugs: string[];
+  /** The documents this question required. Logged alongside `rankedSlugs` because a replay needs
+   *  BOTH: the ranked list says what a config would return, and this says whether that is correct.
+   *  With only `goldCount` a simulation can report how the result set changed but not whether it got
+   *  better, which is the only question worth asking. */
+  goldSlugs: string[];
+  /** Distinct documents across the whole returned pool — the ceiling ranking could reach. */
+  poolSize: number;
+  /** Wall clock for the retrieval call. Recorded because the 4.6s regression went unnoticed for
+   *  exactly as long as nothing measured it. Replay is for ranking; latency is live-only. */
+  latencyMs: number;
   /** --nulls only. */
   abstention?: AbstentionVerdict;
   jsonParseDegraded?: boolean;
@@ -134,33 +177,45 @@ async function scoreOne(
   variant: Variant,
 ): Promise<Row> {
   const base: Row = {
+    v: ROW_SCHEMA_VERSION,
     qid: q.id, variant, type: q.type ?? null, goldCount: q.goldDocIds.length,
     degraded: null, error: null, score: null, candidateRecall: null,
+    rankedSlugs: [], goldSlugs: [], poolSize: 0, latencyMs: 0,
   };
+  const started = Date.now();
   try {
     const { hits, degraded } = await hybridSearch(ctx, q.text, { topK: POOL_K });
+    // Per-chunk, with repeats — see the Row.rankedSlugs comment. scoreMultiHop dedups internally.
     const ranked = hits.map((h) => h.slug);
     const gold = goldSlugs(q);
     return {
       ...base,
+      latencyMs: Date.now() - started,
       degraded: degraded ?? null,
       score: scoreMultiHop(gold, ranked, REPORT_KS),
       candidateRecall: scoreCandidateRecall(gold, ranked),
+      rankedSlugs: ranked,
+      goldSlugs: [...gold],
+      poolSize: new Set(ranked).size,
     };
   } catch (err) {
-    return { ...base, error: (err as Error).message };
+    return { ...base, latencyMs: Date.now() - started, error: (err as Error).message };
   }
 }
 
 async function abstentionOne(ctx: OperationContext, q: EvalQuestion, variant: Variant): Promise<Row> {
   const base: Row = {
+    v: ROW_SCHEMA_VERSION,
     qid: q.id, variant, type: q.type ?? null, goldCount: 0,
     degraded: null, error: null, score: null, candidateRecall: null,
+    rankedSlugs: [], goldSlugs: [], poolSize: 0, latencyMs: 0,
   };
+  const started = Date.now();
   try {
     const { answer, citations, degraded, parseDegraded } = await answerQuestion(ctx, q.text);
     return {
       ...base,
+      latencyMs: Date.now() - started,
       degraded: degraded ?? null,
       abstention: classifyAbstention(answer, citations),
       // Reported from the parser itself, not inferred. The degrade path DROPS the citation array, so
@@ -170,7 +225,7 @@ async function abstentionOne(ctx: OperationContext, q: EvalQuestion, variant: Va
       answer: answer.slice(0, 500),
     };
   } catch (err) {
-    return { ...base, error: (err as Error).message };
+    return { ...base, latencyMs: Date.now() - started, error: (err as Error).message };
   }
 }
 
@@ -236,6 +291,20 @@ async function main(): Promise<void> {
       `AUTOCUT_RATIO is ${AUTOCUT_RATIO}, not 0. This harness slices ONE k=${POOL_K} retrieval to ` +
         `produce recall at k=${REPORT_KS.join('/')}, which autocut invalidates — it runs after the ` +
         `topK slice, so the sliced numbers would describe result sets no real query returns.`,
+    );
+  }
+  // POOL_K is only "the whole pre-fusion pool" because the four arm caps happen to sum to exactly 60.
+  // Raise any of them — which is one of the levers this harness exists to evaluate — and the pool
+  // silently truncates, making `candidateRecall` an undetected underestimate. That number is the sole
+  // basis for telling a ranking failure apart from arm starvation, so a quiet underestimate would
+  // send the whole diagnosis the wrong way.
+  const armSum = ARM_LIMIT + KW_AND_SLOTS + KW_OR_SLOTS + TITLE_LIMIT;
+  if (armSum > POOL_K) {
+    throw new Error(
+      `arm caps sum to ${armSum} but POOL_K is ${POOL_K}, so the retrieval pool this harness reads ` +
+        `is truncated and candidateRecall would silently understate. Raise POOL_K to at least ` +
+        `${armSum} (ARM_LIMIT=${ARM_LIMIT}, KW_AND_SLOTS=${KW_AND_SLOTS}, ` +
+        `KW_OR_SLOTS=${KW_OR_SLOTS}, TITLE_LIMIT=${TITLE_LIMIT}).`,
     );
   }
   if (isRerankEnabled()) {
@@ -341,6 +410,10 @@ async function main(): Promise<void> {
     poolK: POOL_K,
     reportKs: REPORT_KS,
     maxPerPage: MAX_PER_PAGE,
+    armCaps: {
+      armLimit: ARM_LIMIT, kwAndSlots: KW_AND_SLOTS,
+      kwOrSlots: KW_OR_SLOTS, titleLimit: TITLE_LIMIT, sum: armSum,
+    },
     autocutRatio: AUTOCUT_RATIO,
     rerankModel: config.RERANK_MODEL || '(off)',
     queryExpansion: config.QUERY_EXPANSION,
@@ -386,6 +459,16 @@ async function main(): Promise<void> {
     for (const line of readFileSync(outPath, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       const r = JSON.parse(line) as Row;
+      // Refuse across a schema change rather than silently mixing shapes. A pre-v2 checkpoint has no
+      // `rankedSlugs`, so resuming onto it would score half the set while reporting a denominator
+      // that looks whole — the failure is invisible in the output.
+      if ((r.v ?? 1) !== ROW_SCHEMA_VERSION) {
+        throw new Error(
+          `checkpoint ${resumeId} was written at row schema v${r.v ?? 1}, this build writes ` +
+            `v${ROW_SCHEMA_VERSION}. Resuming would mix row shapes and report a denominator that ` +
+            `looks whole while half the rows lack the newer fields. Start a fresh run.`,
+        );
+      }
       done.add(`${r.variant}:${r.qid}`);
       priorRows.push(r);
       if (r.degraded) manifest.degradedCount++;
@@ -440,6 +523,20 @@ async function main(): Promise<void> {
         if (row.degraded) manifest.degradedCount++;
         if (row.error) manifest.erroredCount++;
 
+        // Abort on a sustained error rate for the same reason as the degraded streak: a run that
+        // loses a quarter of its rows to timeouts still produces a report, and that report looks
+        // clean. Wait for a floor of 40 completions so a couple of early flakes cannot trip it.
+        const seen = rows.length + priorRows.length;
+        if (seen >= 40 && manifest.erroredCount / seen > 0.05) {
+          aborted = new Error(
+            `ABORTING: ${manifest.erroredCount} of ${seen} questions (` +
+              `${((100 * manifest.erroredCount) / seen).toFixed(1)}%) errored. Errors select against ` +
+              `slow, broad queries, so continuing produces a biased sample that reads as a clean ` +
+              `result. ${rows.length} rows written to ${outPath}.`,
+          );
+          return;
+        }
+
         recentDegraded.push(Boolean(row.degraded));
         if (recentDegraded.length > 10) recentDegraded.shift();
         if (recentDegraded.length === 10 && recentDegraded.every(Boolean)) {
@@ -480,6 +577,30 @@ async function main(): Promise<void> {
     );
   }
 
+  // Errored rows were excluded from every aggregate and reported NOWHERE. A previous run lost 18 of
+  // 63 rows (29%) to statement timeouts and printed a clean-looking report — and timeouts are not
+  // random, they select against exactly the slow, broad, high-fan-out queries, so the survivors are
+  // a biased sample. Say so as loudly as the degraded case.
+  if (manifest.erroredCount > 0) {
+    const pct = (100 * manifest.erroredCount) / Math.max(allRows.length, 1);
+    lines.push(
+      `> **WARNING: ${manifest.erroredCount} of ${allRows.length} questions (${pct.toFixed(1)}%) ERRORED`,
+      `> and are excluded below. Errors are not random — timeouts select against slow, broad queries —`,
+      `> so the remaining rows are a biased sample, not merely a smaller one.**`,
+      '',
+    );
+    const kinds = new Map<string, number>();
+    for (const r of allRows) {
+      if (!r.error) continue;
+      const k = r.error.slice(0, 60);
+      kinds.set(k, (kinds.get(k) ?? 0) + 1);
+    }
+    for (const [k, n] of [...kinds].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+      lines.push(`> - ${n}x \`${k}\``);
+    }
+    lines.push('');
+  }
+
   lines.push('## Run manifest', '', '```json', JSON.stringify(manifest, null, 2), '```', '');
 
   if (nulls) {
@@ -516,6 +637,36 @@ async function main(): Promise<void> {
         `ranking problem; with LOW candidate-recall it is arm-limit starvation, which is a free`,
         `DB-side fix and no amount of reranking would help.`, '');
 
+      // BY HOP COUNT — the breakdown the diagnosis actually rests on, and the one nothing keyed on
+      // before. It separates two failures an aggregate fuses into one number: a bucket that CLIMBS
+      // with k is budget-limited (more slots would help), while a bucket that stays FLAT while
+      // distinct-docs grows is a coverage failure — the document never enters the pool, and no
+      // amount of slot management reaches it. Reading only the aggregate is how a plan ends up
+      // prescribing a budget fix for a coverage problem.
+      const hops = [...new Set(allRows.filter((r) => r.variant === variant).map((r) => r.goldCount))]
+        .filter((n) => n > 0)
+        .sort((a, b) => a - b);
+      if (hops.length > 1) {
+        lines.push(`### ${variant} by hop count — all-evidence-recall, and distinct docs available`, '');
+        lines.push(table([
+          ['needs', 'n', ...REPORT_KS.map((k) => `@${k}`), `distinct docs @${REPORT_KS[REPORT_KS.length - 1]}`],
+          ...hops.map((g) => {
+            const sub = allRows.filter((r) => r.variant === variant && r.goldCount === g);
+            const a = aggregate(sub, REPORT_KS);
+            const last = a.perK[a.perK.length - 1]!;
+            return [
+              `${g} docs`, String(a.perK[0]?.n ?? 0),
+              ...a.perK.map((p) => pct(p.allEvidenceRecall)),
+              last.distinctDocs.toFixed(1),
+            ];
+          }),
+        ]), '');
+        lines.push(
+          `A bucket still climbing at k=${REPORT_KS[REPORT_KS.length - 1]} is budget-limited. A bucket`,
+          `flat across every k **while distinct docs exceeds what it needs** is a coverage failure —`,
+          `the document is never retrieved, and slot management cannot reach it.`, '');
+      }
+
       // Per-type breakdown: temporal and entity questions fail for different reasons and an
       // aggregate hides that. It is also the evidence path for whether intent weighting is worth it.
       const types = [...new Set(allRows.filter((r) => r.variant === variant).map((r) => r.type))].filter(Boolean);
@@ -550,8 +701,23 @@ async function main(): Promise<void> {
     }
   }
 
-  lines.push('---', '', '_No number here may justify a change to `src/search/hybrid.ts`, chunking, or',
-    'the prompt: every question is multi-hop, real traffic is mostly single-hop._', '');
+  // Latency: live-only, never replayable, and the reason it is here at all is that a 4.6s regression
+  // went unnoticed for exactly as long as nothing measured it.
+  const lat = allRows.map((r) => r.latencyMs).filter((n) => n > 0).sort((a, b) => a - b);
+  if (lat.length > 0) {
+    const q = (p: number) => lat[Math.min(lat.length - 1, Math.floor(p * lat.length))]!;
+    lines.push('## Retrieval latency', '');
+    lines.push(table([
+      ['p50', 'p95', 'p99', 'max', 'n'],
+      [`${q(0.5)}ms`, `${q(0.95)}ms`, `${q(0.99)}ms`, `${lat[lat.length - 1]}ms`, String(lat.length)],
+    ]), '');
+    lines.push('_Measured, not replayed. Any config that buys recall with wall clock shows the price here._', '');
+  }
+
+  lines.push('---', '',
+    '_This corpus is public news, and the model may already know its answers — so retrieval numbers',
+    'here are trustworthy and answer-correctness is not measured. A config may not be promoted into',
+    'production defaults on this dataset alone: it must also hold on a corpus the model has not seen._', '');
 
   writeFileSync(mdPath, `${lines.join('\n')}\n`);
   writeFileSync(join(EVAL_DIR, `${args.dataset}-latest.md`), `${lines.join('\n')}\n`);

@@ -59,18 +59,18 @@ export const DEFAULT_TOP_K = 8;
 
 /** VECTOR-arm candidates fetched before fusion. The keyword arm is bounded by KW_OR_SLOTS and the
  *  title arm by TITLE_LIMIT; this constant no longer applies to them. */
-const ARM_LIMIT = 20;
+export const ARM_LIMIT = 20;
 
 /** How many keyword rows that matched only the OR tier may enter fusion. See KEYWORD ARM below. */
-const KW_OR_SLOTS = 10;
+export const KW_OR_SLOTS = 10;
 
 /** How many AND-tier rows may enter fusion. Larger than KW_OR_SLOTS because containing every term
  *  of the question is strong evidence — but bounded, because on a short query EVERY match is
  *  AND-tier and "strong evidence" stops discriminating. */
-const KW_AND_SLOTS = 20;
+export const KW_AND_SLOTS = 20;
 
 /** Title-arm candidates. Small on purpose: a title match is a weak signal on its own. */
-const TITLE_LIMIT = 10;
+export const TITLE_LIMIT = 10;
 
 /** How many extra candidates to fetch when a reranker is on. A cross-encoder that only sees the
  *  final topK can reorder them and nothing else — the value of reranking is promoting something
