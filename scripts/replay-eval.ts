@@ -121,7 +121,7 @@ function analyticBound(rows: Row[], k: number, cap: number, maxPerPage = 3): {
 /** Exact cap-c filter over a per-chunk slug list. Composition makes replaying from a cap-3 log
  *  legitimate: filter(filter(L,<=3),<=2) = filter(L,<=2), since the tighter filter keeps the first
  *  two occurrences and both survive the looser one. */
-function applyCap(ranked: readonly string[], cap: number): string[] {
+export function applyCap(ranked: readonly string[], cap: number): string[] {
   const seen = new Map<string, number>();
   const out: string[] = [];
   for (const slug of ranked) {
@@ -236,9 +236,13 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  say(`replay failed: ${(err as Error).message}`);
-  process.exit(1);
+// `import.meta.main` so the pure helpers above can be imported by test/eval-harness.test.ts without
+// the script executing and demanding --from.
+if (import.meta.main) {
+  try {
+    main();
+  } catch (err) {
+    say(`replay failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
 }

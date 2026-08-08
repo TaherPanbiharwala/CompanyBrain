@@ -26,6 +26,7 @@ import {
 } from '../src/eval/core.ts';
 import { scoreMultiHop, scoreCandidateRecall } from '../src/search/eval-score.ts';
 import { adapterNames, resolveAdapter, DEFAULT_DATASET } from '../src/eval/adapters/index.ts';
+import { applyCap } from '../scripts/replay-eval.ts';
 import type { EvalQuestion, DatasetBundle } from '../src/eval/types.ts';
 
 // ── The rule-pinning test (see the comment on SLUG_MAX_LEN in src/eval/slug.ts) ──────────────
@@ -412,6 +413,53 @@ describe.if(HAVE_DATASET)('MultiHop adapter, against the real files', () => {
     const withAuthor = bundle.docs.filter((d) => d.metadata?.author !== undefined);
     expect(withAuthor.length).toBe(541);
     expect(withAuthor.every((d) => (d.metadata!.author as string).trim().length > 0)).toBe(true);
+  });
+});
+
+// ── Replay: the per-page cap simulator ───────────────────────────────────────────────────────
+//
+// This decides whether a tuning line stays open, so its arithmetic is pinned here rather than
+// trusted. The composition property is what makes replaying from a cap-3 log legitimate at all.
+
+describe('applyCap — the per-page cap replay', () => {
+  it('keeps the FIRST occurrences, in order', () => {
+    expect(applyCap(['a', 'a', 'a', 'b', 'b', 'c'], 2)).toEqual(['a', 'a', 'b', 'b', 'c']);
+  });
+
+  it('THE COMPOSITION PROPERTY: filter(filter(L,3),2) === filter(L,2)', () => {
+    // This is why a cap-3 log can be replayed at cap 2 without re-querying. If it failed, every
+    // simulated number would be wrong and nothing would say so.
+    const L = ['a', 'b', 'a', 'c', 'a', 'a', 'b', 'd', 'b', 'c'];
+    expect(applyCap(applyCap(L, 3), 2)).toEqual(applyCap(L, 2));
+  });
+
+  it('a cap at or above the log’s own cap is the identity', () => {
+    const L = ['a', 'a', 'b', 'c', 'c'];
+    expect(applyCap(L, 3)).toEqual(L);
+    expect(applyCap(L, 99)).toEqual(L);
+  });
+
+  it('cap 1 collapses to the distinct documents, in first-seen order', () => {
+    expect(applyCap(['a', 'b', 'a', 'c', 'b'], 1)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('WHY THE DISTINCT LIST CANNOT BE REPLAYED: two different logs, same distinct list', () => {
+    // The bug this test exists to prevent. Both collapse to [a,b,c,d]; under cap 2 one yields 5
+    // documents in the top 8 and the other is unchanged. A simulator fed the distinct list reports
+    // "no effect" for every configuration and looks like it worked.
+    const packed = ['a', 'a', 'a', 'b', 'b', 'c', 'd', 'd'];
+    const spread = ['a', 'b', 'c', 'd', 'a', 'b', 'c', 'd'];
+    expect([...new Set(packed)]).toEqual([...new Set(spread)]);
+    expect(applyCap(packed, 2).slice(0, 8)).not.toEqual(applyCap(spread, 2).slice(0, 8));
+  });
+
+  it('is a no-op on an already-distinct list — the failure mode, demonstrated', () => {
+    const distinctOnly = ['a', 'b', 'c', 'd'];
+    expect(applyCap(distinctOnly, 2)).toEqual(distinctOnly);
+  });
+
+  it('empty input stays empty', () => {
+    expect(applyCap([], 2)).toEqual([]);
   });
 });
 
