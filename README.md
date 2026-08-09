@@ -18,7 +18,8 @@ code — is what scopes the rows.
 Still to come in **M5b**: teams, the member/operator admin surfaces, conversations, and MCP over
 HTTP. See [`docs/screens.md`](docs/screens.md) for the screen inventory. Roadmap and the multi-lens reviews live in
 [`docs/plan.md`](docs/plan.md); decisions in [`DECISIONS.md`](DECISIONS.md); auth setup in
-[`docs/auth-setup.md`](docs/auth-setup.md).
+[`docs/auth-setup.md`](docs/auth-setup.md); retrieval/hallucination evaluation in
+[`docs/eval-rag.md`](docs/eval-rag.md).
 
 ## The one thing that must never break
 

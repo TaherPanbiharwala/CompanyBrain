@@ -1239,3 +1239,43 @@ repo creates and silent about roles the platform creates. `expected-grants.json`
 `expected-column-grants.json` pin `cb_app`/`cb_auth` exactly and would fail loudly on any drift — but
 three platform roles holding full DML on every table produced no finding, because nothing asks. A
 fixture that enumerates only what you built cannot notice what your host added.
+
+## D100 — Retrieval may be tuned from the MultiHop eval; answer quality may not (2026-08-09)
+
+`docs/eval-rag.md` shipped with a blanket rule: *no number from that harness may justify a change to
+`src/search/hybrid.ts`, chunking, or the prompt.* The reasoning was that every MultiHop question is
+multi-hop while real company-brain traffic is mostly single-hop, so raising retrieval breadth would
+add tokens and distractors to the common case and the benchmark would score that regression as an
+improvement.
+
+**The premise was assumed, not observed.** It came from a plan review and was never evidenced. The
+founder states the opposite: real work does pull from several documents at once. The blanket rule is
+retired and replaced with a narrower one that matches what the harness can actually see:
+
+> Retrieval numbers from this harness may justify a retrieval change. **No number from it may settle
+> an ANSWER-quality question** — that needs a corpus the model has not memorized.
+
+**Why the second half is not boilerplate.** `all-evidence-recall` counts DOCUMENTS. Measured on the
+full 2,255-question run, **63.3% of retrieved gold documents contribute more than one chunk** to
+today's top-8, so any change trading within-document depth for document breadth scores better here
+while the metric is blind to the cost. `MAX_PER_PAGE = 1` measures **+13.8pp** on this benchmark,
+which is mostly the metric rewarding the configuration that maximises document count by construction.
+That is a reason to distrust the number, not to ship it.
+
+**First change made under this decision: `MAX_PER_PAGE` 3 -> 2** (`src/search/hybrid.ts`).
+Simulated offline from the banked ranked lists of the full run and then confirmed live:
+`all-evidence-recall@8` 36.9% -> 40.3% (+3.3pp), **75 questions fixed, 0 broken**, the gain landing
++5.7pp on the 3-document bucket the same run identified as budget-limited.
+
+Two things recorded because the result reads cleaner than the decision was:
+
+1. It ships **below the 5pp threshold pre-registered before the run**. The founder chose the
+   fixed/broken split (75/0) over the aggregate. A deliberate override, not an oversight — noted so
+   that the next person does not read 3.3pp as having passed a bar it did not.
+2. It has **not** passed an answer-quality check. `eval:novabyte` is the intended gate and
+   `novabyte-score.ts` carries a live UP/DOWN inversion (`CONTEXT.md` §6.10) that must be fixed
+   before it can serve as one.
+
+**A17 cannot protect this class of change.** `dump:top8 --check` is unchanged at both cap values,
+because the A17 corpus is 12 pages / 14 chunks and almost no page has a third chunk to cap. The
+guard is real for ranking changes and blind to per-page caps until it runs on a corpus with depth.

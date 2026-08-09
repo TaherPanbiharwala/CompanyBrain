@@ -43,12 +43,21 @@ function score(path: string, label: string) {
 score(process.argv[2]!, 'OLD');
 score(process.argv[3]!, 'NEW');
 console.log();
+// findIndex returns -1 for "not found", and -1 sorts as the best possible rank in a plain numeric
+// comparison — the opposite of what it means. A relevant doc present in OLD (rank 2) but missing in
+// NEW (-1) was marked UP ("-1 < 2"); a doc missing in OLD but found in NEW was marked DOWN
+// ("2 < -1" is false). Both directions inverted whenever a doc was missing on either side. Map
+// "missing" to worse-than-any-real-rank before comparing; `pos()` below still prints -1 as MISS.
+const rankFor = (i: number) => (i < 0 ? Infinity : i);
+
 for (const q of qrels) {
   const oldS = parse(process.argv[2]!).get(q.id) ?? [];
   const newS = parse(process.argv[3]!).get(q.id) ?? [];
   const pos = (s: string[]) => q.relevantSlugs.map((r) => { const i = s.indexOf(r); return `${r}@${i < 0 ? 'MISS' : i + 1}`; }).join(' ');
   const oldFirst = oldS.findIndex((s) => q.relevantSlugs.includes(s));
   const newFirst = newS.findIndex((s) => q.relevantSlugs.includes(s));
-  const mark = newFirst === oldFirst ? '  =' : newFirst < oldFirst ? ' UP' : 'DOWN';
+  const oldRank = rankFor(oldFirst);
+  const newRank = rankFor(newFirst);
+  const mark = newRank === oldRank ? '  =' : newRank < oldRank ? ' UP' : 'DOWN';
   console.log(`${mark} ${q.id}  OLD[${pos(oldS)}]  NEW[${pos(newS)}]`);
 }

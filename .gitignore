@@ -10,3 +10,10 @@ coverage/
 .bun/
 *.local
 .tmp/
+
+# Eval runs. eval/ IS tracked (a17-qrels.json, top8-baseline.txt live there), so these are ignored
+# individually rather than by ignoring the directory:
+#   runs/  — one JSONL + one report per run. 2,556 rows x 60 slugs is megabytes, diffed as text.
+#   .eval-workspaces.json — local workspace ids from seed:eval; meaningless on another machine.
+eval/runs/
+eval/.eval-workspaces.json
