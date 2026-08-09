@@ -64,14 +64,31 @@ retrieval, and nothing in the output can tell the two apart.
 So answer correctness is not scored here at all. It belongs on a corpus no model has memorized — the
 NovaByte dataset — which is what [D15](../DECISIONS.md) actually asked for.
 
-### The constraint
+### The constraint, and what replaced it (2026-08-09)
 
-> **No number from this harness may justify a change to `src/search/hybrid.ts`, chunking, or the
-> prompt.**
+This document previously carried a blanket rule: *no number from this harness may justify a change to
+`src/search/hybrid.ts`, chunking, or the prompt* — on the reasoning that every question here is
+multi-hop while real traffic is mostly single-hop, so the benchmark would score a regression as an
+improvement.
 
-Every question here is multi-hop. Real company-brain traffic is mostly single-hop, where raising
-`topK` adds ~12K tokens and distractor-induced hallucination to every question. This benchmark would
-score that regression as an improvement.
+**The premise was assumed, never evidenced.** It originated in a plan review, not in observation. The
+founder has since stated the opposite: real work does pull from several documents at once. So the
+blanket rule is retired. What replaces it is narrower and matches what this harness can actually
+see:
+
+> **Retrieval numbers here may justify a retrieval change. No number here may justify one on its own
+> once ANSWER quality is at stake — that requires a corpus the model has not memorized.**
+
+Two live examples of why the second half matters:
+
+- **`all-evidence-recall` counts DOCUMENTS, not depth.** 63.3% of retrieved gold documents currently
+  contribute more than one chunk to the top-8. Any change that trades within-document depth for
+  document breadth scores *better* here while the metric is structurally blind to the cost.
+- **Concretely:** `MAX_PER_PAGE = 1` measures **+13.8pp** on this benchmark. That is largely the
+  metric rewarding the configuration that maximises document count by construction. `MAX_PER_PAGE = 2`
+  measures **+3.3pp** (75 questions fixed, 0 broken) and is what shipped — deliberately, and below
+  the 5pp threshold the run pre-registered, on the strength of the fixed/broken split rather than the
+  aggregate. Neither has passed an answer-quality check.
 
 ---
 

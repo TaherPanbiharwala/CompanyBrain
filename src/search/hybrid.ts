@@ -81,8 +81,33 @@ const RERANK_OVERFETCH = 4;
  *
  *  Load-bearing, not a nicety, and increasingly so: a 50-column spreadsheet row-chunked with its
  *  header repeated produces N near-identical embeddings, so without this one sheet can occupy every
- *  slot and crowd out the page that actually answers the question. */
-export const MAX_PER_PAGE = 3;
+ *  slot and crowd out the page that actually answers the question.
+ *
+ *  3 -> 2 on 2026-08-09, from the MultiHop-RAG retrieval eval (2,255 questions, 0 degraded, 0
+ *  errored; `eval/multihop-latest.md`). Replayed offline from the banked ranked lists rather than
+ *  guessed:
+ *
+ *      all-evidence-recall@8   36.9% -> 40.3%   (+3.3pp)
+ *      75 questions fixed, 0 broken
+ *      by hop count: 2-doc +2.2pp, 3-doc +5.7pp, 4-doc +1.6pp
+ *
+ *  The gain lands on the 3-document bucket, which the same run identified as the one genuinely
+ *  limited by slot budget rather than by retrieval reach. Nothing regressed at any hop count.
+ *
+ *  TWO CAVEATS THIS VALUE CARRIES, recorded because the numbers above look cleaner than the
+ *  decision was:
+ *
+ *  1. It ships BELOW the threshold pre-registered before the run ("a gain under 5pp does not justify
+ *     a change here"). 3.3pp < 5pp. The founder chose to ship on the strength of 75-fixed/0-broken
+ *     rather than the aggregate. That is a deliberate override, not an oversight.
+ *  2. It has NOT been checked against answer quality. `all-evidence-recall` counts DOCUMENTS, and
+ *     63.3% of retrieved gold documents currently contribute more than one chunk — so a tighter cap
+ *     trades within-document depth for document breadth, and this metric is blind to that trade by
+ *     construction. The same replay says cap=1 scores +13.8pp, which is mostly the metric rewarding
+ *     the configuration that maximises document count; that is the reason to distrust the larger
+ *     number, and the reason this one wants a NovaByte answer-quality check before it is treated as
+ *     settled. */
+export const MAX_PER_PAGE = 2;
 
 // Arm weights, positionally identical to the union order below. Exported so test/hybrid.test.ts
 // fuses with the SAME numbers the SQL uses — duplicating them there would let the two drift while
