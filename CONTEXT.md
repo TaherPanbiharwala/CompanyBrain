@@ -871,7 +871,9 @@ retrieval numbers above it are stale (§6.7).
 - **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4 and of
   M5's *phases*. M5's **surfaces** are now defined by `docs/screens.md` (added `8fc0be4`, extended in
   M5a): routes, screens, primary actions and reachable states, including the M5b split. Read both;
-  neither covers M6+.
+  neither covers M6+. `docs/pipeline-roadmap.md` (added post-M5a) covers M6+: a gbrain-comparative
+  gap analysis of the ingestion/enrichment pipeline, milestoned M6–M14. It is a map, not a committed
+  plan — M5b is still unstarted and competes with all of it for the same weeks.
 - **Out-of-diff code**, deliberately declined as re-derivation: `src/auth/{google,membership,
   normalize,blocklist,log,routes}.ts` and `src/api/{envelope,reqid,roles,tool-defs,call}.ts`
   (~740 lines, 0 changed in M3, all with test files). `session.ts` *was* read — refresh columns

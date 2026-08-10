@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Multi-tenant SaaS knowledge brain (fork-and-narrow of gbrain; see NOTICE + DECISIONS.md)",
-  "//engines": "NOTHING HERE RUNS ON NODE — every script is `bun run`, and vite executes under bun too. This exists only because build providers (Nixpacks, Railpack) see a package.json, install a Node anyway, and pick a DEFAULT when the repo names none. That default was 18, and nixpkgs has since removed 18 as end-of-life, so the build died in its setup phase before any command ran. Naming a supported version is the fix; removing the Node dependency entirely means a Dockerfile.",
+  "//engines": "NOTHING HERE RUNS ON NODE \u2014 every script is `bun run`, and vite executes under bun too. This exists only because build providers (Nixpacks, Railpack) see a package.json, install a Node anyway, and pick a DEFAULT when the repo names none. That default was 18, and nixpkgs has since removed 18 as end-of-life, so the build died in its setup phase before any command ran. Naming a supported version is the fix; removing the Node dependency entirely means a Dockerfile.",
   "engines": {
     "node": "22.x"
   },
@@ -29,7 +29,11 @@
     "ingest-file": "bun run scripts/ingest-file.ts",
     "extract-audit": "bun run scripts/extract-audit.ts",
     "eval:novabyte": "bun run scripts/novabyte-eval.ts",
-    "score:top8": "bun run scripts/novabyte-score.ts"
+    "score:top8": "bun run scripts/novabyte-score.ts",
+    "seed:eval": "bun run scripts/seed-eval-workspace.ts",
+    "load:eval": "bun run scripts/load-eval-corpus.ts",
+    "eval:rag": "bun run scripts/run-rag-eval.ts",
+    "replay-eval": "bun run scripts/replay-eval.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

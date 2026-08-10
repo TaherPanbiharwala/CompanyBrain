@@ -27,6 +27,17 @@ export interface AnswerResult {
   /** The chunks `citations` refers to, already resolved. Same order, no off-by-one to get wrong. */
   cited: ChunkHit[];
   sources: ChunkHit[];
+  /**
+   * True when the model's completion could not be parsed as the structured {answer, citations} JSON
+   * and the whole response was used as the answer instead.
+   *
+   * Surfaced rather than left as a `console.warn` because the degrade path DROPS the citation array,
+   * so `citations: []` means either "the model cited nothing" or "we could not read what it cited" —
+   * two very different things that a caller cannot otherwise tell apart. The abstention tier of the
+   * eval harness needs exactly that distinction: an unparseable completion scored as a clean
+   * abstention would inflate the hallucination-resistance number.
+   */
+  parseDegraded: boolean;
 }
 
 /**
@@ -65,7 +76,10 @@ export function scrubMarkers(answer: string, sourceCount: number): string {
   });
 }
 
-function parseAnswerJson(raw: string, sourceCount: number): { answer: string; citations: number[] } {
+function parseAnswerJson(
+  raw: string,
+  sourceCount: number,
+): { answer: string; citations: number[]; parseDegraded: boolean } {
   const clamp = (xs: unknown): number[] => {
     if (!Array.isArray(xs)) return [];
     const seen = new Set<number>();
@@ -88,7 +102,11 @@ function parseAnswerJson(raw: string, sourceCount: number): { answer: string; ci
       const obj: unknown = JSON.parse(candidate);
       if (obj && typeof obj === 'object' && typeof (obj as { answer?: unknown }).answer === 'string') {
         const citations = clamp((obj as { citations?: unknown }).citations);
-        return { answer: scrubMarkers((obj as { answer: string }).answer, sourceCount), citations };
+        return {
+          answer: scrubMarkers((obj as { answer: string }).answer, sourceCount),
+          citations,
+          parseDegraded: false,
+        };
       }
     } catch {
       // try the next candidate, then fall through to the degrade path below
@@ -103,7 +121,7 @@ function parseAnswerJson(raw: string, sourceCount: number): { answer: string; ci
   // format" and "ignore the question" are the same instruction — shipping `[99]` to the reader
   // verbatim. Both exits now honour the same rule: a marker pointing outside the evidence is not a
   // citation, it is a footnote to nothing.
-  return { answer: scrubMarkers(raw, sourceCount), citations: [] };
+  return { answer: scrubMarkers(raw, sourceCount), citations: [], parseDegraded: true };
 }
 
 export async function answerQuestion(ctx: OperationContext, question: string): Promise<AnswerResult> {
@@ -125,8 +143,8 @@ export async function answerQuestion(ctx: OperationContext, question: string): P
     }),
   );
 
-  const { answer, citations } = parseAnswerJson(raw, sources.length);
+  const { answer, citations, parseDegraded } = parseAnswerJson(raw, sources.length);
   // Safe by construction: clamp() guarantees 1 <= n <= sources.length.
   const cited = citations.map((n) => sources[n - 1]!);
-  return { answer, citations, cited, sources, degraded };
+  return { answer, citations, cited, sources, degraded, parseDegraded };
 }
