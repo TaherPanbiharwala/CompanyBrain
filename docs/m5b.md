@@ -80,7 +80,7 @@ each of which *lowers* the estimate and each verified against the policy fixture
    `0001` and keep `schema.sql`'s `{public}` policies with plain workspace-equality `WITH CHECK`. A
    tenant-confined team write is *already permitted by RLS* — only the table privilege is revoked
    (`src/db/migrate.ts:353-355`). That makes the write path exactly the `create_invite` shape
-   (`src/api/operations.ts:471-493`).
+   (`src/api/operations.ts:480-502`).
 3. **The "sixth `SECURITY DEFINER`" is a design preference, not a blocker.** `team_memberships_ws`'s
    qual carries no `current_grants()` term (confirmed in `test/fixtures/expected-policies.json`), so a
    two-phase read inside a self+ws-keyring `withScopedTx` works today with zero new SQL. The definer
@@ -93,7 +93,7 @@ Five sub-items, independently shippable in this order:
 |---|---|---|---|
 | a | **Write path** | M | `create_team` / `assign_member` / `list_teams` ops, admin-gated, `withScopedTx`, modelled on `create_invite`. Change `migrate.ts:354-355` from a blanket revoke to `revoke update, delete` while keeping INSERT — the `invites` precedent at `migrate.ts:361-362`. Re-derive `test/fixtures/expected-grants.json`. |
 | b | **Keyring read** | M | `resolveGrants`' `extra` parameter (`src/core/context.ts:77`) is dead at **11** call sites — 4 production (`auth/resolver.ts:122`, `api/call.ts:37`, `api/mcp.ts:24`, `api/dev-auth.ts:98`) and 7 in `scripts/`. Either extend `cb_internal.resolve_session` (`migrate.ts:420-440`) — note a `RETURNS TABLE` change needs DROP+CREATE, the exact hazard `migrate.ts:396-403` warns silently restores `PUBLIC EXECUTE` — or take the two-phase read. `scripts/novabyte-eval.ts:66` must follow or the harness meant to *prove* the fix still cannot see team pages. |
-| c | **`scope='team'` plumbing** | L | `PAGE_SCOPES` (`context.ts:95`) and `aclForScope` (`:107-109`); a new migration `0014` redoing `pages_scope_ck` (`0003:23`) **and adding a third partial slug index** — `0007_acl_rls.sql:135-138` replaced the single UNIQUE with two partial indexes predicated on `scope='workspace'`/`'private'`, so a third value would carry **no slug uniqueness at all**; a third `COLLISIONS` entry in `src/ingest/import.ts:78-86` (it matches on the *index name* to build its 409); a team branch in `lifecycle.ts:481-486`'s rescope pre-check; `doctor.ts:597-601`'s hardcoded two-scope IN list. Op schemas at `operations.ts:161`, `:316`, `:381` are `z.enum(PAGE_SCOPES)` and **cannot use `.refine()`** for a conditional `teamId` — the registry rejects anything that is not a bare `z.ZodObject` (`operations.ts:524-529`, trap recorded at `:264-267`). |
+| c | **`scope='team'` plumbing** | L | `PAGE_SCOPES` (`context.ts:95`) and `aclForScope` (`:107-109`); a new migration `0014` redoing `pages_scope_ck` (`0003:23`) **and adding a third partial slug index** — `0007_acl_rls.sql:135-138` replaced the single UNIQUE with two partial indexes predicated on `scope='workspace'`/`'private'`, so a third value would carry **no slug uniqueness at all**; a third `COLLISIONS` entry in `src/ingest/import.ts:78-86` (it matches on the *index name* to build its 409); a team branch in `lifecycle.ts:481-486`'s rescope pre-check; `doctor.ts:597-601`'s hardcoded two-scope IN list. Op schemas at `operations.ts:171`, `:326`, `:390` are `z.enum(PAGE_SCOPES)` and **cannot use `.refine()`** for a conditional `teamId` — the registry rejects anything that is not a bare `z.ZodObject` (`operations.ts:533-538`, trap recorded at `:274-277`). |
 | d | **UI** | M | A third option in the `ScopePicker` (`web/src/components/Upload.tsx:250-258` — a 2-col grid, so a real layout change, not a list append) plus a team selector, and an admin screen. Note the *read* side is already team-aware: `Home.tsx:238-250` filters `grants` for `team:` and renders "+ N teams", and `ScopeBadge.tsx:18-28` fails closed on unknown scopes so a team page is never mislabelled "Everyone". |
 | e | **Guardrails** | S | Four meta-tests go red the moment any of the above lands, and the vendored spec counts none of them: `test/acl-tag-format.test.ts:73-119` paren-scans every `resolveGrants(` and **fails on any third argument**, with an anti-vacuity floor of ≥8 sites; `doctor.ts:581-588` reports any well-formed `team:` tag as a defect; `doctor.ts:597-601` as above; `test/live-gate.test.ts:194-251` asserts in *both* directions, so a new team live-suite must be registered. Plus three fixtures (`expected-grants`, `expected-definers` — it pins `body_md5`, so any function-body edit fails doctor — and `expected-policies`). |
 
@@ -114,7 +114,7 @@ so **a second question destroys the first answer and its citations.**
 the rolling-summary compaction — a second paid model call per N turns, which must sit **outside**
 `withScopedTx` per D6; and the "grants re-checked on reuse" rule, which means re-resolving each stored
 citation's chunk through the caller's *current* keyring rather than trusting the persisted jsonb.
-`docs/screens.md:101` already specifies the UI consequence: stale/revoked citations become reachable
+`docs/screens.md:104` already specifies the UI consequence: stale/revoked citations become reachable
 only once this lands, and must render identically for deleted and access-revoked or the chip becomes
 an oracle.
 
@@ -164,15 +164,15 @@ change.
 
 | Item | Size | State and what is left |
 |---|---|---|
-| **Member roster UI** | S | `list_members` is **built** and admin-gated (`operations.ts:105-114`, registered `:501`); no React file calls it. A tab in `Home.tsx` behind the same `hasRole(who.role,'admin')` gate the Invite tab uses (`Home.tsx:84`). **One decision inside it:** the op returns raw `principal_id` UUIDs and no email or name, so either the select widens to join `principals` or the screen ships a UUID column. No removal path exists and none is cheap — `migrate.ts:352` revokes DML on `workspace_members`, so removing a member needs a definer, not a handler. |
-| **Page detail screen** | S | `get_page` is **built** (`operations.ts:239-249`) and agent-facing only. A fifth route in `App.tsx`'s hand-rolled `useRoute`, a component (full text + `ScopeBadge` + chunk count + the `truncated` notice), and clickable rows in `PageList.tsx`. States are already specified at `screens.md:138-142`, including one message for `not_found` vs not-visible so the screen is not an existence oracle. Beware D98.5: `navigate()` uses `replaceState` because its only caller today is the post-accept hop — the next screen inherits that silently. |
+| **Member roster UI** | S | `list_members` is **built** and admin-gated (`operations.ts:115-124`, registered `:510`); no React file calls it. A tab in `Home.tsx` behind the same `hasRole(who.role,'admin')` gate the Invite tab uses (`Home.tsx:84`). **One decision inside it:** the op returns raw `principal_id` UUIDs and no email or name, so either the select widens to join `principals` or the screen ships a UUID column. No removal path exists and none is cheap — `migrate.ts:352` revokes DML on `workspace_members`, so removing a member needs a definer, not a handler. |
+| **Page detail screen** | S | `get_page` is **built** (`operations.ts:249-259`) and agent-facing only. A fifth route in `App.tsx`'s hand-rolled `useRoute`, a component (full text + `ScopeBadge` + chunk count + the `truncated` notice), and clickable rows in `PageList.tsx`. States are already specified at `screens.md:160-164`, including one message for `not_found` vs not-visible so the screen is not an existence oracle. Beware D98.5: `navigate()` uses `replaceState` because its only caller today is the post-accept hop — the next screen inherits that silently. |
 | **Invite lifecycle** | M | The substrate is further along than it looks: `schema.sql:166` declares `status` defaulting to `'pending'` and `:179` documents all four states; `migrate.ts:362-363` revokes UPDATE then re-grants `update (status)` to `cb_app` *precisely so a revoke op can flip it*. Only one transition is implemented (`invites.ts:118-121` writes `'accepted'`); nothing ever writes `'revoked'` or `'expired'`, and `invites.ts:106` notes the accept statement is the **only** enforcement of `INVITE_TTL_DAYS` — nothing sweeps. `listPendingFor()` was deleted with a note saying it returns at M5 (`invites.ts:163-168`). Left: reinstate it, add `list_invites` + `revoke_invite`, derive expired-vs-pending at read time. |
 | **Workspace switcher** | M | *Switching* is built and wired — `POST /auth/workspaces/:id/activate` (`routes.ts:219`) is called from `AcceptInvite.tsx:151`. The **listing** half is missing: no route enumerates a principal's memberships, `whoami` returns a single `workspaceId`, and the Home header (`Home.tsx:56-71`) shows one name with no control. D98.7 defers the definer's design here deliberately. Follow D35's locked signature as precedent — it takes no principal argument specifically so it cannot become a membership oracle. |
 | **Workspace settings** (domain claim + ZDR) | M | Two deferred items land on one screen. **Domain claiming**: the endpoint *is* reachable (`routes.ts:199-216` reads `body.domain`), but the SPA deliberately never sends it (`CreateWorkspace.tsx:27-31`), so no web user can ever claim a domain — while `Invite.tsx:131-141` leads with a DomainNote advertising auto-join, an affordance the app gives no way to turn on. A later claim must read the *claiming* session's `login_hd` (`0001_m2_auth.sql:32`), not the creating one. **ZDR**: D12 and D91 both carry the correction — *"do not represent ZDR as available to a design partner."* `router.ts:277` acts on `scope.zdr` and all six call sites hardcode `false`; there is no column. Needs `zdr boolean` on `workspaces` + grant matrix + doctor fixture. |
 | **Answer: Conflicts / Gaps** (A1 remainder) | M | Three of A1's five elements shipped — numbered chips (`AnswerView.tsx:122-133`), source panel with scope badge (`:136-139`), and confidence, built *differently* from A1 as a three-state client-side derivation from evidence rather than a model self-report (`api.ts:298-310`). Conflicts and Gaps still do not exist and **no doc records a decision to drop them.** Left: either extend the output contract at `prompt.ts:31-32` and widen `parseAnswerJson` (`answer.ts:79-125`, which must stay degrade-never-throw) with the same clamp the citations get, plus the containers — **or** a DECISIONS entry saying A1 was consciously reduced, which is what actually happened. **Since this item was written, `AnswerResult` grew a sixth field, `parseDegraded: boolean`** (`answer.ts:30-40`, from the eval-harness merge) — distinguishing "the model cited nothing" from "the response could not be parsed at all", which the abstention tier of the new RAG eval needs. Not a Conflicts/Gaps field itself, but any extension here has to compose with it rather than re-solve the same distinction. |
 | **Session refresh rotation** | M | D34 cut it from M2 and says it returns at M5. `sessions.refresh_hash`/`refresh_expires_at` exist and are inert (`schema.sql:85,88`); there is no `/auth/refresh`. D34 also notes reuse detection was unimplementable as originally reviewed because only hashes are stored — **the design needs redoing, not just coding.** |
-| **Invite email delivery** | M | `plan.md:194` says "invite by email"; nothing in the repo sends mail (no SMTP/Resend/Postmark/nodemailer dependency or config anywhere) and the op says so itself (`operations.ts:475`: *"M2 sends no email; copy the URL"*). The invite *is* bound to the email — single-use token, hash-only storage, accept-on-matching-login — so "by email" holds as **matching** but not as **delivery**. Left: a provider, or an explicit amendment to `plan.md:194` recording copy-the-link as the shipped v0 behaviour. |
-| **Operator + tenant ops panel** (A19) | M–L | None of A19's four exists: no counts op, no last-ingest readout, no spend figure (blocked on §2.4), no HTTP surface for doctor (`package.json` maps it to a CLI over the admin pool). The hard constraint is in `screens.md:144-150`: doctor connects with **owner** credentials, so its output cannot sit behind a workspace-admin route — *"two audiences, not one"*, and the split must exist before either half is built. `web/src/index.css:42-45` already declares the operator palette and nothing consumes it. |
+| **Invite email delivery** | M | `plan.md:194` says "invite by email"; nothing in the repo sends mail (no SMTP/Resend/Postmark/nodemailer dependency or config anywhere) and the op says so itself (`operations.ts:484`: *"M2 sends no email; copy the URL"*). The invite *is* bound to the email — single-use token, hash-only storage, accept-on-matching-login — so "by email" holds as **matching** but not as **delivery**. Left: a provider, or an explicit amendment to `plan.md:194` recording copy-the-link as the shipped v0 behaviour. |
+| **Operator + tenant ops panel** (A19) | M–L | None of A19's four exists: no counts op, no last-ingest readout, no spend figure (blocked on §2.4), no HTTP surface for doctor (`package.json` maps it to a CLI over the admin pool). The hard constraint is in `screens.md:172-176`: doctor connects with **owner** credentials, so its output cannot sit behind a workspace-admin route — *"two audiences, not one"*, and the split must exist before either half is built. `web/src/index.css:42-45` already declares the operator palette and nothing consumes it. |
 
 ---
 
@@ -183,13 +183,13 @@ These four are the only remaining items that touch the gate. Together they are w
 1. **The scope picker's copy is now false.** `Upload.tsx:275-277` tells the user the scope *"cannot be
    changed later — you would have to delete the page and add it again"*, and the docstring at
    `:233-235` repeats it. Both were true when written in `a9d43f1` and stopped being true in
-   `07aee51`: `rescope_pages` is registered (`operations.ts:506`), the `ingest` op's own description
-   advertises it (`operations.ts:126-127`), and `PageList` calls it from the UI (`PageList.tsx:70`,
+   `07aee51`: `rescope_pages` is registered (`operations.ts:515`), the `ingest` op's own description
+   advertises it (`operations.ts:136`), and `PageList` calls it from the UI (`PageList.tsx:70`,
    buttons at `:101-116`). This is the one hesitation point in the upload flow and it is lying.
    **Delete three sentences.**
 2. **Cold-start's second half.** The empty-brain drop zone shipped (`Home.tsx:145-162`) as a
    *deliberate revision* of A3 — sample questions belong after the first document, generated from it
-   (`Home.tsx:140-143`, `screens.md:93`). That relocated version was never built. Worse, after a
+   (`Home.tsx:140-143`, `screens.md:96`). That relocated version was never built. Worse, after a
    successful upload `Home.tsx:114-121` sets `isEmpty(false)` but **does not switch the tab**, so the
    user is left on 'add' with "Add another" as the only affordance and no path back to Ask. The
    minimum fix is a hand-off in `UploadResult` that calls `setTab('ask')` and prefills the textarea;
@@ -258,7 +258,7 @@ The locked sequence, in this order — all six steps are the founder's to perfor
 | **doctor is blind to platform roles** | S | D99's own prescription, unimplemented: assert `anon`/`authenticated` hold no privilege on any `public` table, and that no role but `postgres` has `rolbypassrls`. Both are single catalog queries in the existing `booleanChecks` shape (~15 lines), and they convert a dashboard toggle from unverifiable into an assertion. *"A fixture that enumerates only what you built cannot notice what your host added."* The dashboard action itself (Data API off, auto-expose off, rotate the Seoul JWT secret) is founder-side and there is no repo-side evidence it has been applied. |
 | **No DOM render test runner** | M | `package.json:21` is bare `bun test`; grepping `package.json` and `bun.lock` for jsdom / happy-dom / @testing-library / vitest / playwright returns **zero**. All three web suites say so in their own headers and are string scans over `web/src`. A component can render the wrong thing with a fully green suite. Note the scans should **not** be deleted if a runner lands — `web-render-safety`'s value is catching a decision at the moment it is made, which no render test can. |
 | **`docker-compose.yml`** | S | Named in M0's file list (`plan.md:150`), never created. The consequence is a live setup gap: a Supabase account plus three pooler strings before anything is verifiable. Enforced floors for the file: PG ≥ 15 (`migrate.ts` throws below) and pgvector ≥ 0.8 (`doctor.ts:294`). `config.ts` supports `DB_SSL=disable` and no doc mentions it. |
-| **A5's voice guide** | S | Tokens shipped and name their own amendment (`web/src/index.css:1-60`); the one-page voice guide was never written. The discipline already exists implicitly and consistently in the component docstrings — `screens.md:70`, `:123`, `:125` all argue the same rule about never distinguishing failure modes that would make a screen an oracle. Writing it down is transcription, not design. |
+| **A5's voice guide** | S | Tokens shipped and name their own amendment (`web/src/index.css:1-60`); the one-page voice guide was never written. The discipline already exists implicitly and consistently in the component docstrings — `screens.md:74`, `:126`, `:128` all argue the same rule about never distinguishing failure modes that would make a screen an oracle. Writing it down is transcription, not design. |
 
 ---
 
@@ -267,7 +267,7 @@ The locked sequence, in this order — all six steps are the founder's to perfor
 Reported here so nobody re-opens them. Each was checked, not assumed.
 
 - **A2 (UI states)** — degraded banner, retry-after countdown, partial-extraction reporting all ship;
-  `screens.md:100-101` correctly argues permission-denied is unreachable on `ask` and stale-citation is
+  `screens.md:103-104` correctly argues permission-denied is unreachable on `ask` and stale-citation is
   unreachable until conversations exist.
 - **A4 (scope naming)** — `Upload.tsx:255-256` ships exactly "Only me" / "Everyone at {Workspace}",
   shaped to grow to teams. (Its irreversibility copy is stale — §3.1 — but A4 itself is done.)
@@ -316,19 +316,19 @@ its accept-invite primary, and its "rows are not interactive" claim). The rest a
 rather than fixed, because they live in files whose voice and structure make a drive-by edit worse
 than a pointer:
 
-- **`CONTEXT.md:333-337`** says "Ten call sites, not one" and lists ten. The real count over
+- **`CONTEXT.md:344-348`** says "Ten call sites, not one" and lists ten. The real count over
   `{src,scripts}` is **eleven** — it misses `scripts/explain-search.ts:73` — and it cites
   `scripts/measure-a17.ts:67` where the call is at `:65`. Eleven is the number that matters because
   `test/acl-tag-format.test.ts:87` globs exactly `{src,scripts}/**/*.ts`.
-- **`CONTEXT.md:329-332`** ("needs a sixth `SECURITY DEFINER`") and **`:326-328`** (the three tables
+- **`CONTEXT.md:340-343`** ("needs a sixth `SECURITY DEFINER`") and **`:337-339`** (the three tables
   are equally write-blocked) — both overstated; see §2.1.
 - **`CONTEXT.md:100`** says the live CI job reads seven secrets. It reads **ten**.
 - **`docs/plan.md:290` and `:320`** score the confidence signal and citation IA as open gaps. Both
   shipped in M5a.
-- **`README.md:106-107`** still says "no remote machine credential until M3". M3, M4 and M5a have all
+- **`README.md:111-112`** still says "no remote machine credential until M3". M3, M4 and M5a have all
   shipped and there still is none — the fact is true, the milestone is stale.
-- **The doctor check count is disputed and unmeasured.** `README.md:54` and `:158` say 73;
-  `CONTEXT.md:711` says 75. Neither was re-measured here because it needs a live database. One
+- **The doctor check count is disputed and unmeasured.** `README.md:59` and `:163` say 73;
+  `CONTEXT.md:721` says 75. Neither was re-measured here because it needs a live database. One
   `bun run doctor` settles it — do that before quoting either number.
 - **`docs/deploy.md:75-76`** claims an unset `NODE_ENV` "skips that whole block" of secret checks.
   False since `6410c8d`: `isDevEnv` requires an explicit `NODE_ENV` (`config.ts:135-137`,
