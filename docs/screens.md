@@ -56,7 +56,10 @@ Reachable: idle · submitting · error (`domain_not_verified`, `already_exists`,
 
 ## Accept invite
 
-Primary: redeem, automatically. The token arrives in the URL **fragment**, which never reaches a
+Primary: redeem, on an explicit click — **never automatically**. (This line used to say "redeem,
+automatically", which was the pre-D98.7 behaviour and contradicted this file's own state table below;
+`AcceptInvite.tsx:109` sets a `confirm` status and the accept fires only from the button at `:200-206`.)
+The token arrives in the URL **fragment**, which never reaches a
 server — that is why `invites.ts` builds the link that way, keeping the token out of access logs,
 proxy logs and the Referer header.
 
@@ -95,14 +98,14 @@ not carry.
 | **Answer with zero citations** | yes | **Distinct container.** `parseAnswerJson` turns unparseable model output into the whole answer with `citations: []`, and `scrubMarkers` removes any visual trace — so confident prose with no sources would otherwise look identical to a cited answer |
 | `degraded: 'keyword_only'` | yes | Banner **above** the answer: vector search unavailable, results may be incomplete |
 | Upload partially extracted | yes | Inline on the page row with real numbers. A 40-page PDF where 37 pages were scans looks exactly like a clean 3-page ingest otherwise |
-| Duplicate upload | yes | `already_exists` → explain, and name the two ways out (different slug, or replace). **NOT "open the existing page"**: `PageList` rows are not interactive and no page-detail screen exists, so that treatment had nowhere to go. Revisit when a detail view lands — `get_page` already returns the document |
+| Duplicate upload | yes | `already_exists` → explain, and name the two ways out (different slug, or replace). **NOT "open the existing page"**: `PageList` rows are not *navigable* — they carry selection checkboxes but no link — and no page-detail screen exists, so that treatment had nowhere to go. Revisit when a detail view lands — `get_page` already returns the document |
 | Rate limited | yes | Countdown from `retry-after` |
 | Permission denied | **no** on ask/search — RLS filters silently. **yes** on `delete_page`/`replace_page` | — |
 | Stale/revoked citation | **not in Phase 1** — within one response `answer.ts` resolves `cited` server-side, so a citation cannot dangle. Real once conversations persist | Struck-through chip, identical for deleted and access-revoked, or it becomes an oracle |
 
 ## Invite (admin only) — `/`, the "Invite" tab
 
-Shipped in M5a; `web/src/screens/Invite.tsx`, rendered as a Home tab.
+Shipped in M5a; `web/src/components/Invite.tsx`, rendered as a Home tab.
 
 **Hidden entirely from members rather than shown and 403'd.** The op is admin-only, so rendering a
 control that always fails would be a worse lie than not rendering it.
@@ -126,10 +129,29 @@ The inviting workspace's **name is deliberately not shown before acceptance** �
 before redeeming it would let anyone probe a token and learn whether it is valid and whose it is. The
 copy says what accepting *does* instead.
 
+## Pages — the batch-management bar
+
+Landed in `07aee51`, after this inventory was last revised, and undocumented here until 2026-08-10.
+Rows in `PageList` carry a selection checkbox (`PageList.tsx:23-25`) feeding a batch bar with three
+actions — delete, make private, share with workspace (`:95-134`) — backed by `delete_page`'s
+`pageIds` arm and `rescope_pages`. Before it existed the app had **no delete affordance at all**
+(recovering from a bad upload meant one `curl` per page) and scope was fixed at ingest forever.
+
+| State | Reachable | Treatment |
+|---|---|---|
+| Nothing selected | yes | Bar hidden; rows are plain |
+| Selection active | yes | Bar names the count and the three actions |
+| Delete confirm | yes | A `confirm()` at `PageList.tsx:61`. Irreversible, no trash, and the stored original file is the last copy — the confirm is the cheapest thing between a misclick and unrecoverable loss |
+| Partial success | yes | *"N pages were left alone"* (`:137-150`). Deliberate: 3 pages you did not author must not stop the other 247, and a generic error would send the user back to retry the whole batch |
+
+Note the upload scope picker still tells users their choice "cannot be changed later"
+(`Upload.tsx:275-277`). That was true when written and this surface made it false — see
+[`docs/m5b.md`](m5b.md) §3.1.
+
 ## Page detail — not built, and `get_page` is why it is now cheap
 
 `get_page` (M5a) returns a page's full text by id or slug, bounded and with a `truncated` flag. It is
-**agent-facing only today**: nothing in `web/` calls it, and `PageList` rows are not interactive.
+**agent-facing only today**: nothing in `web/` calls it, and `PageList` rows are not navigable.
 
 That leaves one gap open that the op's own rationale names — *a UI could show that a document existed
 and never show the document*. The backend work is done; what remains is a route, a screen, and making
@@ -142,6 +164,10 @@ the list rows clickable. Fold it into M5b alongside members and teams.
 | `chunkCount: 0` | Already flagged in `PageList`: the page exists but is unsearchable |
 
 ## Not yet designed
+
+Scope, evidence and ranking for everything below live in [`docs/m5b.md`](m5b.md); note the backend
+halves of two of them are already shipped (`list_members` and `get_page` are registered ops with no
+web caller), which this section used to imply otherwise.
 
 Members, teams and the operator surface land in M5b. They are **two audiences, not
 one**: a tenant admin manages their workspace; a fleet operator reads `doctor`. `doctor` connects

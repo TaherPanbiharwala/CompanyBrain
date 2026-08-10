@@ -318,6 +318,17 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
 
 ## 5. Open work — ranked
 
+> **`docs/m5b.md` (added 2026-08-10, verified at `2a4b091`) supersedes this section for *scope*.** It
+> is the full remaining-work register — every M5b item with `file:line` evidence, ranked by whether it
+> blocks the M5 gate ("a founder friend self-serves end-to-end") rather than by the roadmap's prose.
+> What stays here is the *reasoning* below, which it does not duplicate. Three corrections it makes to
+> this section, each verified against the policy fixtures: §5.1's call-site count is **eleven**, not
+> ten (it misses `scripts/explain-search.ts:73`); the "sixth `SECURITY DEFINER`" is a design
+> preference rather than a hard requirement, because `team_memberships_ws`'s qual carries no
+> `current_grants()` term; and the three tables are **not** equally write-blocked — only `acl_grants`
+> is `WITH CHECK (false)`, while `teams`/`team_memberships` keep workspace-equality policies and lack
+> just the table privilege. Also: §6.2's live CI job reads **ten** secrets, not seven.
+
 ### 5.1 Team scope — under-scoped by roughly an order of magnitude
 
 `HANDOVER.md` frames it as five touch points with `resolver.ts:122` as "the one most likely to be
