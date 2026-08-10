@@ -16,9 +16,12 @@ request resolves its tenant from a verified membership row, and Postgres RLS —
 code — is what scopes the rows.
 
 Still to come in **M5b**: teams, the member/operator admin surfaces, conversations, and MCP over
-HTTP. See [`docs/screens.md`](docs/screens.md) for the screen inventory. Roadmap and the multi-lens reviews live in
-[`docs/plan.md`](docs/plan.md) for M0–M5b; [`docs/pipeline-roadmap.md`](docs/pipeline-roadmap.md) for
-M6+ (ingestion enrichment, retrieval intelligence, gbrain-comparative gap analysis). Decisions in
+HTTP. **[`docs/m5b.md`](docs/m5b.md) is the verified remaining-work register** — every open item with
+its `file:line` evidence, ranked by whether it actually blocks the M5 gate, plus the corrections it
+found in the other docs. Read it before `docs/plan.md`, whose M5 section is the least reliable of the
+four on status. See [`docs/screens.md`](docs/screens.md) for the screen inventory. Roadmap and the
+multi-lens reviews live in [`docs/plan.md`](docs/plan.md) for M0–M5b; [`docs/pipeline-roadmap.md`](docs/pipeline-roadmap.md)
+for M6+ (ingestion enrichment, retrieval intelligence, gbrain-comparative gap analysis). Decisions in
 [`DECISIONS.md`](DECISIONS.md); auth setup in [`docs/auth-setup.md`](docs/auth-setup.md);
 retrieval/hallucination evaluation in [`docs/eval-rag.md`](docs/eval-rag.md).
 
