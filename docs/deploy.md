@@ -5,6 +5,10 @@ entirely through the Railway dashboard, which means it lived in one place — a 
 be reproduced, reviewed, or recovered from the repository. `railway.json` now captures the build and
 run shape; the secrets stay in the dashboard, where they belong.
 
+**This is the Railway surface only.** CI has its own, separate set of secrets with different values —
+see [`ci-setup.md`](./ci-setup.md). Do not reuse one for the other; `SESSION_SECRET` in particular
+should differ, and CI should point at its own Supabase project rather than production.
+
 ## What is in the repo vs. what is in the dashboard
 
 | | Where | Why |

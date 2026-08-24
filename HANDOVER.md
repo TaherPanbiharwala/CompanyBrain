@@ -48,10 +48,14 @@ bun run test  (DB env unset on cmdline)    585 pass / 17 skip / 50 fail — the 
                                             not a code regression; env-unsetting does not achieve a
                                             genuinely offline run because Bun reloads from .env
 bun run doctor / migrate / any live test   FAILS on §0 — cannot be trusted, at all, right now
-CI (`live` job, GitHub Actions)            RED on every push since the workflow existed — 0 secrets
-                                            configured (`gh secret list` empty), dies at
-                                            "Apply migrations" in ~40s. `offline` job passes.
-repo visibility                            PRIVATE (confirmed via `gh repo view`)
+CI (`live` job, GitHub Actions)            RED on every push since the workflow existed, on THREE
+                                            independent grounds: 0 secrets configured (dies at
+                                            "Apply migrations"); GitHub is not scheduling the job at
+                                            all on recent runs (empty runner_name, cancelled at 15m);
+                                            repo is private, so even green it can't be a required
+                                            check. `offline` job passes. See D102 / docs/ci-setup.md.
+repo visibility                            PRIVATE (confirmed via `gh repo view`) — D102 names
+                                            publishing it as the fix for two of the three grounds above
 ```
 
 Do not quote a doctor check count (73? 75?) from memory or from another doc without re-running it —
@@ -61,7 +65,7 @@ see `CONTEXT.md` §6.13/§9 for why it's disputed and currently unmeasurable.
 
 ## 2. What happened since the last handover (M3), in one paragraph each
 
-Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D101) and `CONTEXT.md`
+Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D103) and `CONTEXT.md`
 (the living snapshot). This section exists so you don't have to read either cover-to-cover just to
 get oriented; it does not replace them for anything you're about to act on.
 
@@ -93,6 +97,18 @@ live engine to the decimal. Full reasoning: D100. A separate, real bug in the *o
 fixed in the same window — D101 — which is what makes an answer-quality check on retrieval changes
 possible for the first time.
 
+**A separate, concurrent session actually root-caused why the leak canary never runs, past the
+missing secrets.** GitHub was not even scheduling the `live` job (a run with a real `offline` pass
+sitting next to a `live` job that never acquired a runner and got cancelled at 15 minutes — the
+exhausted-Actions-minutes signature on a private repo), and the repo being private means it can't
+make `live` a required check regardless of secrets, because branch protection needs a paid plan or a
+public repo on GitHub's free tier. `docs/ci-setup.md` is the resulting secret checklist (shapes only,
+never values); `D102` is the six-step decision — publish the repo, stand up a separate CI Supabase
+project first, then set the ten secrets. None of the six steps has been executed yet. The same
+session also wrote up where Codex actually stands (`D103`): `codex login status` has said
+"authenticated" throughout six review passes while every real call 401s — a false-positive that's
+worth knowing before trusting the status check alone.
+
 **A from-scratch audit of what M5b actually needs produced `docs/m5b.md`.** Six parallel area audits,
 each followed by a pass whose only job was to find implementations the auditor had missed — six
 claims were corrected that way, all in the direction of "more is built than the roadmap says." Read
@@ -120,7 +136,14 @@ damage:**
   fix it *forward*: add a new entry and put a one-line pointer in the old one ("Closed by D101" /
   "Reversed by D66" — see the pattern used throughout). `CONTEXT.md` §7 is a whole section of
   entries that *didn't* get a forward pointer when they should have, and the cost of following one to
-  a dead end is a wasted afternoon. Next available number: **D102**.
+  a dead end is a wasted afternoon. Next available number: **D104**.
+  **This is not hypothetical — it happened while this handoff was being written.** A concurrent
+  session, in a separate worktree, independently allocated D101 (for an unrelated CI/leak-canary
+  decision) and D102 (for a Codex-auth decision) from the same base this session's D101 came from.
+  Resolved by merge: this session's D101 kept its number (already committed first), theirs became
+  D102/D103, with a footnote at D101 in `DECISIONS.md` recording why. If you're about to allocate a
+  decision number, `git fetch origin` first — a stale local view of "the last entry" is exactly how
+  this happens.
 - **`CONTEXT.md` is a living snapshot**, meant to be corrected and re-derived in place, not appended
   to. It says explicitly at the top which SHA it was last checked against — if `master` has moved
   since, treat every specific number/line-citation as a claim to verify, not a fact to quote.

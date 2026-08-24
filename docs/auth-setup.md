@@ -338,8 +338,17 @@ missing connection string would let the entire cross-tenant canary report green 
 nothing.
 
 ```bash
-CB_REQUIRE_LIVE_TESTS=1 bun test
+CB_REQUIRE_LIVE_TESTS=1 bun run test
 ```
 
 With that set, a live suite that *would* have skipped **fails** instead. `test/live-gate.test.ts`
 additionally scans the suite files, so a live suite added later cannot quietly opt out of the flag.
+
+`bun run test`, not bare `bun test` — the npm script supplies `--timeout 30000`, and the RLS
+`WITH CHECK` live test exceeds Bun's 5-second default.
+
+**Running it in GitHub Actions is a separate setup — see [`ci-setup.md`](./ci-setup.md).** The
+command above is the local invocation; the `live` job needs ten repository secrets, and as of this
+writing it has never executed a single test on a runner. That file covers what each secret looks
+like, the two ways a wrong value fails somewhere other than where you set it, and the two blockers
+that sit upstream of the secrets entirely.

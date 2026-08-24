@@ -1304,3 +1304,114 @@ answer-quality gate — the comparison the gate depends on was silently invertin
 every question where document coverage changed on either side. That gate is now usable. It is still
 **unused**: no config has been run through it since the fix, and doing so is the natural next step
 before promoting `MAX_PER_PAGE = 1`'s +13.8pp (D100) or any other swept configuration.
+
+> **A second session, in a separate worktree, independently allocated D101 for the entry below (and
+> D102 for the one after it) from this same base — the exact "monotonic counter in an append-only
+> file collides by construction the moment work forks" hazard `CONTEXT.md` §1 already documents,
+> recurring within the same day it was written down. Renumbered to D102/D103 on merge; nothing in
+> their content changed. This footnote is left in place as the second occurrence, for whoever reads
+> §1 next and wonders whether the lesson actually recurs.**
+
+## D102 — Fix the leak canary by removing what makes it unfixable, in a fixed order (2026-08-09)
+
+The `live` CI job — the D16 leak canary — has never executed a single test. Every master run dies at
+*Apply migrations* with `DATABASE_ADMIN_URL is not set`, because `gh secret list` was empty. The task
+that started this decision was framed as "set the seven missing secrets, ~30 minutes." Three premises
+in that framing were checked and found wrong, and two blockers existed that no document in the repo
+knew about — verified against `gh`, not inherited from any prior write-up:
+
+1. **It is ten secrets, not seven.** `CONTEXT.md` had drifted to three different wrong counts across
+   three sections before this pass reconciled them (§0 said seven, §3 said a different seven, §6.2
+   said six).
+2. **GitHub was not scheduling the job at all.** Run `31125506724`: `offline` acquired a runner and
+   passed; `live` got `runner_name=""`, ran zero steps, and was cancelled at 15m2s. A later master
+   push produced **no workflow run whatsoever**. On a private repo this is the signature of an
+   exhausted Actions balance or a `$0` spending limit.
+3. **The canary could not have gated a merge even fully configured.** `branches/master/protection`
+   returns `403 "Upgrade to GitHub Pro or make this repository public"` — required status checks do
+   not exist on a private free-tier repo, and `ci.yml:80` is master-push-only in any case. The ceiling
+   was a red X on a commit already merged. Six consecutive master runs had been red since 2026-07-30
+   and nothing noticed.
+
+**The decision, and why it is one decision rather than three independent ones:** publishing the repo
+resolves (2) and (3) together — public repos get unmetered Actions minutes and free branch
+protection. That makes `live` able to run on pull requests and be a required check, which is what
+turns D16's "runs in CI forever, never skipped" from a claim into an enforced property for the first
+time since it was written. Doing that safely requires a **separate CI Supabase project**, decided as
+a *precondition* of setting any secret rather than a follow-up: `ci.yml:80` permits
+`workflow_dispatch` on any ref, and the shared project's `postgres` owner credential is exactly what
+should never sit behind that trigger surface. `ci.yml:71-77` already named a second database as the
+real fix before this decision existed; this makes it one.
+
+**The locked sequence — six steps, founder-executed, none a code task, order load-bearing on two of
+them:**
+
+1. Rotate the Supabase database and both role passwords. Independent of everything else, but first:
+   a review subagent leaked three connection strings — including the shared project's owner
+   password — into its own tool output during the review that produced this decision. Nothing was
+   published; the values are in a session transcript.
+2. Review `CONTEXT.md` §6 before flipping visibility. It enumerates security findings by SHA and not
+   all are closed (§6.3, §6.4 at time of writing). Publishing a catalogue of one's own open findings
+   is exposure distinct from leaked secrets. **This is the one step with no undo.**
+3. Make the repo public. Git history was verified credential-free first — all 49 commits at the time
+   of the review scanned for connection-string and API-key shapes; the only matches were the three
+   angle-bracket placeholders in `.env.example`. `.env` was never committed.
+4. Stand up the CI Supabase project, then `bun run migrate && bun run migrate && bun run doctor`
+   against it (twice — `doctor.ts:9`'s own stated precondition), then `bun run seed:a17` for the
+   `CB_MCP_*` membership pair the `mcp` live suite needs.
+5. Set the ten repo secrets from the new project. Documented at `docs/ci-setup.md`: value shapes
+   only, never values: the two connection-string password-matching traps (`migrate.ts` assigns
+   `CB_APP_DB_PASSWORD`/`CB_AUTH_DB_PASSWORD` to live roles rather than merely reading them, and a
+   mismatch fails one step later than the one that caused it), and that `gh secret set` accepts empty
+   stdin and exits 0 — an empty secret is worse than a missing one, because `gh secret list` then
+   shows all ten names while nothing works.
+6. Restore `branches: ['**']` at `ci.yml:80` and add `live` as a required status check. D16 becomes
+   literally true here, not before.
+
+**What this decision does not cover.** Steps 1–6 are unexecuted as of this entry — this is the
+decision and its reasoning, not a record that it happened. `docs/ci-setup.md` (the checklist) and
+`CONTEXT.md` §0 item 2 / §3 / §4 / §6.2 (the corrected drift) landed in the same pass as this entry.
+`docs/m5b.md` §4.1 independently transcribed this same sequence on 2026-08-10, one day after it was
+decided, because at that time it existed only in an ephemeral plan file with no committed record —
+stated in that file as the reason for transcribing it. This entry is that missing record.
+
+**Why a checklist and not a script, when the alternative was seriously considered.** A review pass
+argued for a script (`bun run secrets:push`) that would set all ten values by reading a local `.env`,
+on the grounds that all ten already existed there and hand-transcription only exists as a hazard on
+the re-derivation path. That argument is correct for the **shared** project — and wrong for the
+**one this decision actually targets**. A fresh CI Supabase project has none of the ten values yet;
+they must be created and derived from its dashboard regardless of format. The founder reaffirmed the
+checklist after the objection was raised specifically on those grounds, which is the right call given
+step 4 precedes step 5.
+
+## D103 — Codex is expected back in the workflow; the auth check that matters is a real call (2026-08-10)
+
+Every review pass since Pass 2 — six now, including the `/autoplan` pass that produced D102 — has run
+single-model. `codex login status` has reported "Logged in using ChatGPT" throughout, which is not
+evidence of a working session: every actual API call across all six passes 401s with
+`refresh_token_invalidated`. The status check and the capability it claims to report have been
+silently decoupled this whole time, which is worth recording on its own — a future session trusting
+`codex login status` alone will repeat the same false-positive.
+
+**The founder has stated an intent to bring Codex into part of this project going forward.** This
+entry does not claim the auth issue is resolved — nothing in this session demonstrated that, and the
+last direct check (this pass, `codex exec` against a live prompt) still 401s the same way. What it
+records is the operating change once it does work:
+
+1. **Verify with a real call, not `login status`.** `codex exec` against a trivial prompt, checked for
+   an actual model response rather than an "authenticated" banner, before any review pass is trusted
+   to be dual-voice.
+2. **Dual-voice review resumes where it was designed to run** — `/autoplan`'s CEO/Eng/DX phases and
+   `/review`'s specialist pass both have a Codex voice already wired in; nothing needs building, only
+   unblocking.
+3. **The fresh-context-adversarial-agent substitute stays**, independent of whether Codex works. It
+   is not a Codex replacement that becomes obsolete the day auth is fixed — every pass since Pass 2
+   has used it and it has caught real defects each time (`CONTEXT.md` §9 records this). Independence
+   of *context* and independence of *model* are different guarantees; having one is not a reason to
+   drop the practice that gets the other back for free.
+4. **This entry, not a fresh one, is where the outcome gets recorded.** When a session confirms Codex
+   works with a real call, update this entry rather than opening a new one — the fact belongs next to
+   the six-pass history it changes the ending of.
+
+Related: `CONTEXT.md` §9's cross-model-dissent bullet carries the same history in narrower form and
+cross-references this entry.
