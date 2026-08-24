@@ -114,6 +114,9 @@ section. Full rationale + the multi-lens `/autoplan` review live in the plan doc
 - **D17 — Every production bug adds a `doctor.ts` check.**
 - **D18 — Per-workspace fail-closed spend cap by M5** (not M8); port gbrain's `withBudgetTracker`.
   (per `/autoplan` A15) (2026-07-23)
+  **Reversed by D104 (2026-08-24):** spend accounting stays at M8. Founder ruling, made against a
+  four-way disagreement across `docs/plan.md`, this entry and `CONTEXT.md`'s own milestone table —
+  read D104, not this entry, for the current milestone.
 - **D19 — Agent surface (MCP) is in v0:** a thin stdio `tools/list`+`tools/call` transport reusing
   the M1 dispatch spine + a zod→JSON-Schema step. (per `/autoplan` UC4) (2026-07-23)
 - **D20 — Honest schedule:** v0 (M0-M5) re-baselined to ~11-13 weeks solo; week-3 re-plan
@@ -1429,3 +1432,40 @@ outside an explicit request is exactly the kind of unrequested-change the founde
 not a session). Dual-voice review (#2) is still not usable — no model call has yet succeeded — but the
 next session attempting it should try a CLI upgrade before re-diagnosing auth, and should update this
 entry again rather than opening a new one, per #4.
+
+## D104 — Two open founder calls, settled: spend accounting stays at M8, team scope stays out of v0 (2026-08-24)
+
+Both had been sitting as explicitly-flagged open decisions across multiple documents — `docs/m5b.md`
+§6 listed each by name as "a founder decision, not a code gap" — and both are now closed by direct
+founder ruling, not by further investigation. Recorded here because a decision made in conversation
+and not written down is exactly the failure mode this file exists to prevent (see D102's own framing:
+the CI sequence sat unexecuted *and* unrecorded for a day before it got an entry).
+
+**1. Spend accounting lives at M8. This reverses D18's "by M5 (not M8)."**
+
+The disagreement was real and four-way: `docs/plan.md:209` (Invariant 6) said M8; `docs/plan.md:382`
+(amendment A15, adopted the *same day* as the plan that names M8) said pull it to M5; D18 recorded the
+A15 position; `CONTEXT.md`'s own milestone table carried the dispute forward without resolving it,
+noting it had "survived two milestones unresolved." Three of four sources said M5 and the ruling is
+M8 anyway — the count was never the deciding factor, the founder's call is.
+
+**Consequence for what exists today: none.** M4's rate meter (D94, `dispatchOp` rung 0) is a
+per-principal request throttle, not spend accounting, and this decision doesn't touch it — it can
+keep running at M5 exactly as built. What this closes is the *ledger* work: no usage table, no
+per-workspace quota, no cost-attributed `logUsage` write belongs on the v0 path. `docs/m5b.md`'s
+"per-workspace-spend-cap-and-ledger" and "spend-accounting-milestone-decision" items are both resolved
+by this entry — read them as historical framing of the dispute, not as remaining open items.
+
+**2. Team scope is not in v0.** `docs/plan.md:194` lists "manual team create/assign" under M5's
+web/admin bullet, but no `DECISIONS.md` entry ever locked that — it was roadmap prose, not a decision,
+and the M5 *done-when* (`docs/plan.md:235`: login → upload → invite → ask → cited answer) never
+required it. `docs/m5b.md` §2.1 sized the full path — write path, keyring union, `scope='team'`
+plumbing, UI, guardrails — as the single largest remaining chunk in the repo (XL) for a capability
+nothing on the self-serve path exercises, and §6.1 named the question explicitly rather than assume
+an answer. The founder's ruling: correct not to build it speculatively.
+
+**Consequence: the `teams`/`team_memberships`/`acl_grants` substrate stays exactly as dead as it is
+today** — schema, RLS and grants exist, zero readers, and that is now the intended state rather than
+an in-progress gap. `docs/m5b.md` §2.1 and §6.1, and `CONTEXT.md` §5.1, are corrected to say so. Revisit
+only when a design partner asks for it by name — the same standard `docs/pipeline-roadmap.md` already
+applies to cutting M13.

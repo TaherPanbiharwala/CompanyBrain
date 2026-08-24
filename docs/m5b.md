@@ -68,7 +68,12 @@ a test. **Size: S.**
 
 ## 2. Tier 1 — the M5b register (named by the roadmap, not required by the gate)
 
-### 2.1 Teams, end-to-end — **XL**, and the single largest remaining chunk
+### 2.1 Teams, end-to-end — **XL**, and the single largest remaining chunk — **not in v0**
+
+**Settled 2026-08-24 (`DECISIONS.md` D104): team scope is explicitly out of v0.** §6.1's question below
+is answered — correct not to build this speculatively. Everything in this subsection stays as the full
+scope for whenever it's revisited (design-partner-requested, not before), not as queued work. The
+substrate staying dead is now the intended state.
 
 The substrate exists and is completely inert. Three corrections to how `CONTEXT.md` §5.1 describes it,
 each of which *lowers* the estimate and each verified against the policy fixtures:
@@ -98,9 +103,10 @@ Five sub-items, independently shippable in this order:
 | e | **Guardrails** | S | Four meta-tests go red the moment any of the above lands, and the vendored spec counts none of them: `test/acl-tag-format.test.ts:73-119` paren-scans every `resolveGrants(` and **fails on any third argument**, with an anti-vacuity floor of ≥8 sites; `doctor.ts:581-588` reports any well-formed `team:` tag as a defect; `doctor.ts:597-601` as above; `test/live-gate.test.ts:194-251` asserts in *both* directions, so a new team live-suite must be registered. Plus three fixtures (`expected-grants`, `expected-definers` — it pins `body_md5`, so any function-body edit fails doctor — and `expected-policies`). |
 
 `docs/enabling-team-scope.md` is vendored and names five touch points; the real count is ~10, and its
-own preface admits four of the six ways it is stale. **If the answer to §6.1 is "not yet", the cheap
-middle path is (a) + (b) alone** — both self-contained, and together they make the NovaByte harness
-honest (it drops 36 of 105 pages and 54 of 68 visibility cases today).
+own preface admits four of the six ways it is stale. If this is ever revisited before a full build,
+**the cheap middle path is (a) + (b) alone** — both self-contained, and together they make the
+NovaByte harness honest (it drops 36 of 105 pages and 54 of 68 visibility cases today) — but that is
+not scheduled work under D104.
 
 ### 2.2 Conversations / memory — **L**, entirely greenfield
 
@@ -139,9 +145,11 @@ tenants; and `/mcp` must be added to `bodyLimitFor` (`src/api/server.ts:86`) or 
 uploads 413 at the app-wide 100kb cap. The zod→JSON-Schema step `plan.md:429` asks for is already
 done (`src/api/tool-defs.ts`).
 
-### 2.4 Per-workspace spend cap + ledger — **M**
+### 2.4 Per-workspace spend cap + ledger — **M** — **settled at M8, not v0** (D104)
 
-What M4 shipped is a **rate meter, not a spend cap**, and `src/api/dispatch.ts:124-126` says so in
+**Settled 2026-08-24: spend accounting stays at M8**, reversing D18's "by M5." Nothing below is v0
+work; kept as the full scope for when M8 arrives. What M4 shipped is a **rate meter, not a spend
+cap**, and `src/api/dispatch.ts:124-126` says so in
 code. `apiLimiter` is 120 req/min keyed on the **principal** (`src/auth/ratelimit.ts:89`), so N members
 = N×120/min against one shared `OPENROUTER_API_KEY`; it prices nothing (120 one-word asks cost the same
 as 120 that each embed a 5 MB document); and its buckets are a per-process `Map`, so it survives
@@ -284,15 +292,14 @@ Reported here so nobody re-opens them. Each was checked, not assumed.
 
 ## 6. Open decisions — the answer changes what gets built
 
-1. **Is team scope in v0 at all?** The roadmap's text says yes (`plan.md:194`); the gate does not need
-   it; `README.md:18` already tells readers it is M5b. It is plausibly the single largest remaining
-   chunk, for a capability nothing on the self-serve path exercises. HANDOVER ranks it #1, but on
-   **eval-coverage** grounds (36 of 105 NovaByte pages, 54 of 68 visibility cases), which is a
-   proof-of-correctness goal rather than a demo goal. *The cheap middle: ship §2.1(a)+(b) only.*
-2. **Where does spend accounting live?** A four-way disagreement, all read directly: `plan.md:209`
-   says M8, `plan.md:382` (A15, adopted the same day) says M5, D18 says M5, and `CONTEXT.md` rules for
-   M5 in §5.3 while its own milestone table at `:226` says M8. **A one-line ruling, then edits to
-   whichever three locations lose.** It has now survived two milestones and three documents.
+1. ~~Is team scope in v0 at all?~~ — **SETTLED 2026-08-24 (D104): no.** The roadmap's text said yes
+   (`plan.md:194`), but the gate never needed it, and HANDOVER's #1 ranking was on **eval-coverage**
+   grounds (36 of 105 NovaByte pages, 54 of 68 visibility cases) — a proof-of-correctness goal, not a
+   demo one. §2.1 stays as the full scope for whenever this is revisited, not as queued work.
+2. ~~Where does spend accounting live?~~ — **SETTLED 2026-08-24 (D104): M8.** Reverses D18's "by M5."
+   Was a four-way disagreement (`plan.md:209` said M8, `plan.md:382`/A15 said M5, D18 said M5,
+   `CONTEXT.md` disputed itself) that had survived two milestones and three documents; §2.4 stays as
+   the full scope for when M8 arrives.
 3. **"Readable" ≠ "publishable."** `answerQuestion` has no `audience` parameter and nothing filters
    retrieval to an ACL superset, so a request to draft a company-wide FAQ can pull the asker's private
    material into text meant for everyone. Nothing is *broken* — every row returned is one the asker

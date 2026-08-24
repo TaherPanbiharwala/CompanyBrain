@@ -65,7 +65,7 @@ see `CONTEXT.md` §6.13/§9 for why it's disputed and currently unmeasurable.
 
 ## 2. What happened since the last handover (M3), in one paragraph each
 
-Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D103) and `CONTEXT.md`
+Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D104) and `CONTEXT.md`
 (the living snapshot). This section exists so you don't have to read either cover-to-cover just to
 get oriented; it does not replace them for anything you're about to act on.
 
@@ -120,6 +120,14 @@ the plausible next step and deliberately wasn't attempted unprompted (upgrading 
 an explicit request is a founder call). `D103` is updated in place with this — read it there, not just
 here, for the exact model IDs and error strings tried.
 
+**Two founder decisions closed same-day, both settling multi-document disagreements (D104).** Spend
+accounting stays at M8 — a four-way dispute across `docs/plan.md`, D18 and `CONTEXT.md`'s own table
+that had survived two milestones, now settled by direct ruling reversing D18. And team scope is
+explicitly **not in v0** — the single largest remaining item in the repo (`docs/m5b.md` §2.1, XL),
+correctly left unbuilt rather than assumed-next because it's biggest. Neither substrate changed; §5
+below and `docs/m5b.md`/`CONTEXT.md` are all corrected to reflect the ruling rather than pose the
+question.
+
 **A from-scratch audit of what M5b actually needs produced `docs/m5b.md`.** Six parallel area audits,
 each followed by a pass whose only job was to find implementations the auditor had missed — six
 claims were corrected that way, all in the direction of "more is built than the roadmap says." Read
@@ -147,7 +155,7 @@ damage:**
   fix it *forward*: add a new entry and put a one-line pointer in the old one ("Closed by D101" /
   "Reversed by D66" — see the pattern used throughout). `CONTEXT.md` §7 is a whole section of
   entries that *didn't* get a forward pointer when they should have, and the cost of following one to
-  a dead end is a wasted afternoon. Next available number: **D104**.
+  a dead end is a wasted afternoon. Next available number: **D105**.
   **This is not hypothetical — it happened while this handoff was being written.** A concurrent
   session, in a separate worktree, independently allocated D101 (for an unrelated CI/leak-canary
   decision) and D102 (for a Codex-auth decision) from the same base this session's D101 came from.
@@ -236,12 +244,13 @@ last check and neither has a purely-technical resolution:
    without a fresh check. Confirm live before trusting either "still broken" or "must be fixed by
    now" — neither is verified.
 
-The single largest **buildable** item, per `docs/m5b.md`: team scope, end-to-end (§2.1 there, sized
-XL). The substrate exists and is completely inert — no write path, and a keyring read that needs
-either a sixth `SECURITY DEFINER` or a two-phase read (the latter works today with zero new SQL,
-`docs/m5b.md` §2.1 has the exact reasoning). Whether it's in scope at all before a design partner asks
-for it is itself an open question `docs/m5b.md` §6.1 names explicitly — don't assume it's next just
-because it's biggest.
+**Team scope is not next, and it's settled, not open.** It's the single largest item in the repo by
+size (`docs/m5b.md` §2.1, XL) — no write path, a keyring read needing either a sixth `SECURITY
+DEFINER` or a two-phase read (the latter works today with zero new SQL) — but `docs/m5b.md` §6.1's
+question was answered 2026-08-24 (`DECISIONS.md` D104): **not in v0.** Don't pick it up because it's
+biggest; it's explicitly deferred until a design partner asks for it by name. Same date, same entry:
+spend accounting is settled at M8 (D104 reverses D18's "by M5") — no ledger/cap work belongs on this
+path either.
 
 The cheapest real wins, all independently shippable, all named with exact `file:line` in
 `docs/m5b.md` §3: a stale line of copy in the upload flow claiming re-scoping isn't possible (it

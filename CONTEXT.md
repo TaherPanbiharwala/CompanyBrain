@@ -109,7 +109,8 @@ verified by deleting each guard's subject, and merged. M4's own gate — "an unf
 nothing and doctor is green" — is now met on evidence that survived adversarial review, not just
 assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
 
-**If you do only four things:**
+**If you do only three things** (down from four — item 3 below closed 2026-08-24, see the note at its
+old slot):
 
 0. **Do not trust any live command until you check the database connects.** As of 2026-08-09, `bun
    run doctor` (and therefore `migrate`, any live test, `dump:top8`, `eval:rag`) fails against the
@@ -121,7 +122,8 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    `docs/enabling-team-scope.md`, with a preface listing six ways it is stale against the current tree
    (`0007` is taken so the real migration is `0013`; touch point 3's keyring read runs before
    `withScopedTx` and silently returns zero rows; touch point 4's `.refine()` breaks module load).
-   Read the preface before the body. Team scope itself is still unbuilt — see §5.1.
+   Read the preface before the body. Team scope itself is deliberately deferred past v0 (D104) — see
+   §5.1 for the full scope, kept for whenever it's revisited, not as a queued task.
 2. **Make the leak canary actually run, or it stays decorative** (§6.2). ~~Configure the seven repo
    secrets~~ — **the count was wrong and the secrets were never the whole story.** The `live` job
    reads **ten** secrets, not seven (this file had drifted to three different wrong counts across
@@ -146,9 +148,9 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    restore `branches: ['**']` and make `live` a required check. D16 becomes literally true at that
    point, not before. The six-step execution sequence is at D102 and independently transcribed at
    `docs/m5b.md` §4.1; none of the six steps has been performed as of this pass.
-3. **Decide where spend accounting lives** (§5.3). M4 shipped a rate meter, not a cap — there is
-   still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
-   M8. Those disagree, and the decision is yours.
+~~3. Decide where spend accounting lives~~ — **CLOSED 2026-08-24 (D104): M8.** Reverses D18's "by
+   M5". M4's rate meter (D94) is unaffected — it was never spend accounting, just a request throttle.
+   No ledger/quota work belongs on the v0 path; see §5.3.
 
 Then: the README is stale in five or six ways (§5.4 — re-count it, `a9d43f1` fixed the Status
 paragraph and added `build:web` to the quickstart while §5.4 was still listing both as defects, and
@@ -284,7 +286,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 | M3 | The brain loop — multi-format ingest, page lifecycle, four-arm hybrid search |
 | M4 | Enforcement + doctor — **done**. RLS itself landed early at M3 (D66); M4 closed the remaining gate (the perf/scale suite, the cross-transport rate meter, doctor's migrations-current + acl-coverage checks) and survived a seven-pass review (D93–D97) |
 | M5 | Split M5a/M5b. **M5a done and merged** (`a9d43f1`) — Vite+React SPA at `/` (14 files under `web/src`), `src/web.ts`, CSP+HSTS, ask/upload/pages/invite surfaces; 3 web suites (`web-mount`, `web-invite-flow`, `web-render-safety`) plus `body-limits` and `answer-confidence`. Deployed to Railway. M5b (teams, members, operator panel, conversations, MCP-over-HTTP) not started; see `docs/screens.md` |
-| M8? | Spend/usage accounting — not started; **disputed, not settled**: `docs/plan.md:209` says M8, `docs/plan.md:382` (A15) says M5, D18 says M5, this file's own §0/§5.3 rule for M5 — three of four sources say M5 and this table said M8 anyway. `docs/m5b.md` §6 item 2 confirms it has now survived two milestones unresolved. A one-line founder ruling closes it; until then this row is a record of the disagreement, not a fifth vote. |
+| M8 | Spend/usage accounting — not started; **settled 2026-08-24 (D104)**. Was disputed four ways (`docs/plan.md:209` said M8, `docs/plan.md:382`/A15 said M5, D18 said M5, this table said M8 anyway) and had survived two milestones unresolved (`docs/m5b.md` §6). Founder ruling: M8, reversing D18. No ledger/quota work belongs on the v0 path; see §5.3. |
 
 **Two controls you would otherwise "clean up":**
 - **`current_grants()` is `STABLE`, never `IMMUTABLE`** — a security control, not an oversight. An
@@ -416,7 +418,13 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
 > is `WITH CHECK (false)`, while `teams`/`team_memberships` keep workspace-equality policies and lack
 > just the table privilege. Also: §6.2's live CI job reads **ten** secrets, not seven.
 
-### 5.1 Team scope — under-scoped by roughly an order of magnitude
+### 5.1 Team scope — under-scoped by roughly an order of magnitude, and **not in v0** (D104)
+
+**Settled 2026-08-24: team scope is explicitly out of v0.** `docs/m5b.md` §6.1 posed this as an open
+question rather than assume an answer, and the founder's ruling closes it — correct not to build this
+speculatively. Everything below stays as a record of the real scope, for whenever it *is* revisited
+(design-partner-requested, not before), not as a queued task. The `teams`/`team_memberships`/
+`acl_grants` substrate staying dead is now the **intended** state, not an in-progress gap.
 
 `HANDOVER.md` frames it as five touch points with `resolver.ts:122` as "the one most likely to be
 missed." Everything below that is missing:
@@ -476,23 +484,23 @@ shape: an optional `audience` that filters retrieval to chunks whose ACL is a su
 structurally, not by asking the model to be careful. **Open founder decisions, not yet answered
 anywhere:** is this M3 scope or later, and does it belong on `ask` or a future `draft`/`publish` op?
 
-### 5.3 Rate limiting — **CLOSED at M4**. Spend accounting — still open (M5)
+### 5.3 Rate limiting — **CLOSED at M4**. Spend accounting — **settled at M8** (D104)
 
 ~~`apiLimiter` fires only at `server.ts:85`~~ — the per-principal budget now runs at **rung 0 of
 `dispatchOp`** (D94), so REST and MCP are metered by one instance and a transport added later is
 metered *by omission* rather than by someone remembering. **The CLI is reached but not effectively
 metered:** `FixedWindowLimiter`'s buckets are a per-process Map and `call.ts` is one-shot, so a shell
 loop starts a fresh bucket every time. Accepted, not fixed — it runs on a developer's own machine
-against their own principal, and a shared store belongs with the M5 ledger. The opt-out is an explicit
+against their own principal, and a shared store belongs with the M8 ledger. The opt-out is an explicit
 `DispatchOpts` field taking a reason string, reachable only from in-process TypeScript.
 `test/dispatch-limit.test.ts` source-scans `mcp.ts`/`call.ts`/`server.ts` to stop it drifting back to
 REST-only. Note `ctx.remote` was considered as the discriminator and **rejected** — it is inverted
 (`resolver.ts:123` is `remote:false` for a real browser session), so exempting `!remote` would
 unmeter production; don't re-propose it.
 
-**Still open:** this is a rate meter, not a spend cap. No ledger, per-workspace quota or usage
-accounting exists anywhere in `src/` — D18 puts caps at M5, which is the entry to follow, not
-`docs/plan.md`'s M8.
+**Settled, not open:** this is a rate meter, not a spend cap. No ledger, per-workspace quota or usage
+accounting exists anywhere in `src/`, and none belongs before M8 — **D104** (2026-08-24) reverses D18
+and settles the milestone dispute `docs/plan.md`, D18 and this file's own table used to disagree on.
 
 ### 5.4 Documentation
 
