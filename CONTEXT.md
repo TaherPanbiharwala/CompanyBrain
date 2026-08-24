@@ -20,17 +20,33 @@ trust it, with the corrections in §7. `HANDOVER.md` narrates the session that b
 with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
 actually *is*, and where those three get out of sync with the code or each other.
 
-Written against `master` = **`2ac308a`**, then updated for **M4**, then for **M5a**. `master` is now
-**`a9d43f1`** ("M5a: the web app, plus every fix from its pre-landing review"), six commits past
-`72a06b6` (`4ea57d7`, `8f02d4b`, `4d4ff2c`, `8fc0be4`, `9d63033`, `a9d43f1`). **Those six carry a real
-code diff** — 47 files, +5,165/−126 across `src/`, `test/` and the new `web/` tree (new `src/web.ts`,
-rewritten `src/api/server.ts`, `src/auth/csrf.ts`, `src/ingest/lifecycle.ts`, `src/index.ts`, the
-whole `web/` SPA, five new test files) — so this file's own standing rule has fired: **§6 and §10 were
-measured against `0b614ef`/`72a06b6` and have been re-derived here against `a9d43f1`, in the same pass
-that produced this edit.** Every file:line citation in §6 and §10 below has been re-checked; a handful
-that were already wrong when written (pointing at the wrong lines even at `72a06b6`) are also
-corrected. §10 is timestamped observation and decays fastest regardless — re-run it, don't trust it,
-the next time master moves.
+Written against `master` = **`2ac308a`**, then updated for **M4**, then for **M5a**, then re-derived
+here for **the CI/leak-canary fix and everything that landed alongside it**. `master` is now
+**`f05cde5`**, fifteen commits past `a9d43f1` — the first three of them (`9d63033`, `800c50d`,
+`07aee51`) predate this pass and were already folded in; the other twelve are new since: `73e262f`
+through `3b76c49` (Railway's Nixpacks/Node-18 outage and its fix), `f33272b` (`DB_SSL` normalized to
+stop a stray value silently downgrading TLS), `4bfd891` (migration `0013`, a `tsvector` GIN index the
+keyword arm now hard-depends on — `hybrid.ts:387-401`), `2a4b091` (D99, Supabase's Data API closed as
+a third RLS-bypassing door), and then a **dataset-agnostic RAG eval harness** (`1a18803` onward,
+merged as PRs #1–#3) with its own decision, **D100** — MultiHop-RAG as a second corpus, `MAX_PER_PAGE`
+3→2, and a hard rule that retrieval numbers from it may tune retrieval but may never settle an
+answer-quality question. Two new registers exist as a direct result: **`docs/m5b.md`** — a verified,
+`file:line`-cited remaining-work register that now supersedes §5 for *scope* (this file keeps the
+*reasoning*) — and **`docs/pipeline-roadmap.md`** (M6–M14, gbrain-comparative). Read `docs/m5b.md`
+before re-deriving anything in §5; it was produced by six parallel audits plus an adversarial
+refutation pass specifically to stop that re-derivation from being necessary, and it found three
+things §5.1 had wrong, now corrected there.
+
+**This pass's own contribution**, folded in throughout rather than appended: the `live` CI job's ten
+secrets (not seven — four places in this file had drifted to four different counts, `docs/m5b.md` §7
+caught it independently before this pass reconciled it) plus the two blockers upstream of them
+(GitHub was not scheduling the job at all; a private free-tier repo cannot make it a required check)
+— write-up in full at `docs/ci-setup.md`, decision sequence recorded as **D101**. Every file:line
+citation in §5 and §6 has been spot-checked against `f05cde5`; §10 was **not** re-measured (no live
+database in this worktree) and is now stale on top of already being stale — treat every row in it as
+historical. The founder has stated an intent to bring **Codex** into the workflow for part of this
+project; §9's cross-model-dissent gap and **D102** record the current state and what changes when it
+lands.
 
 ---
 
@@ -95,11 +111,27 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    (`0007` is taken so the real migration is `0013`; touch point 3's keyring read runs before
    `withScopedTx` and silently returns zero rows; touch point 4's `.refine()` breaks module load).
    Read the preface before the body. Team scope itself is still unbuilt — see §5.1.
-2. **Configure the GitHub repo secrets, or the leak canary is decorative** (§6.2). The remote now
-   exists and the workflow was correctly gated before it — the risk that used to sit here is closed.
-   But the seven secrets the `live` job reads were never set in GitHub Settings, so it fails on every
-   merge to master while `offline` passes. D16 calls the canary sacred; today it runs only when a
-   human types the command locally.
+2. **Make the leak canary actually run, or it stays decorative** (§6.2). ~~Configure the seven repo
+   secrets~~ — **the count was wrong and the secrets were never the whole story.** The `live` job
+   reads **ten** secrets, not seven, and `gh secret list` is empty, so every master run dies at step
+   5 (*Apply migrations*) with `DATABASE_ADMIN_URL is not set` — `migrate.ts:610`. The canary has
+   executed **zero** tests in CI, ever. **Written up in full at `docs/ci-setup.md`** (shapes, both
+   traps, and the verification that actually proves execution).
+
+   Two things found that no document here knew about, and both outrank the secrets:
+   - **GitHub is not scheduling the job.** Run `31125506724`: `offline` got runner
+     `GitHub Actions 1000000083` and passed; `live` got `runner_name=""`, ran zero steps, and was
+     cancelled at 15m2s. A later master push produced **no run at all**. On a private repo that is
+     the exhausted-minutes / `$0`-spending-limit signature.
+   - **The canary cannot gate a merge.** `branches/master/protection` returns `403 "Upgrade to GitHub
+     Pro or make this repository public"`. Required status checks do not exist on a private free-tier
+     repo, and `ci.yml:80` is master-push-only anyway — so the ceiling is a red X on an already-merged
+     commit. Six consecutive master runs have been red since 2026-07-30 and nothing noticed.
+
+   Decided: publish the repo (fixes both), stand up a **separate CI Supabase project** before any
+   secret is set, then restore `branches: ['**']` at `ci.yml:80` and make `live` a required check —
+   which is the state `ci.yml:71-77` was written to anticipate. D16 becomes true at that point and
+   not before.
 3. **Decide where spend accounting lives** (§5.3). M4 shipped a rate meter, not a cap — there is
    still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
    M8. Those disagree, and the decision is yours.
@@ -113,19 +145,20 @@ decision waiting on you, not an implementation task.
 
 ## 1. Repo state — one trunk, and what the fork cost
 
-**`master` at `a9d43f1` contains everything.** All branches — the original seven, the M4 line
-(`claude/context-md-review-73f2ab`, merged 2026-07-30 as a fast-forward, no new merge commit), and the
-six M5 commits on top of `72a06b6` (Phase −1, Phase 0, M5a) — are ancestors of it (`git branch
---no-merged master` is empty), every worktree is clean, and there are no stashes. The repo now has a
-remote: `origin` → `github.com:TaherPanbiharwala/CompanyBrain.git`. The milestones built: M0, M1, A17,
-M2, M3, M4, **M5a**.
+**`master` at `f05cde5` contains everything.** All branches are ancestors of it (`git branch
+--no-merged master` is empty), every worktree is clean, and there are no stashes. `origin` →
+`github.com:TaherPanbiharwala/CompanyBrain.git`, and the repo has its first three real **pull
+requests** (#1, #2, #3 — the MultiHop eval harness, reviewed and merged through GitHub rather than
+fast-forwarded, the first time that has happened in this repo's history). The milestones built: M0,
+M1, A17, M2, M3, M4, **M5a**; M5b is unstarted (`docs/m5b.md` is its register). The eval harness is
+its own thing, orthogonal to the M-numbers — see the header.
 
 | | |
 |---|---|
 | ops in `operations.ts` | **14** (`rescope_pages` added; `delete_page` gained a `pageIds` batch arm) |
-| migrations | **`0001`–`0012`**; `0008`/`0010` are `.disabled` reverts, **10 applied** |
-| `DECISIONS.md` | **101 entries, D0–D97**, no duplicate IDs |
-| `doctor` | **73 checks** |
+| migrations | **`0001`–`0013`**; `0008`/`0010` are `.disabled` reverts, **11 applied** |
+| `DECISIONS.md` | **103 entries, D0–D102**, no duplicate IDs (verified 0–100 gap-free; D101/D102 added this pass) |
+| `doctor` | **73 checks as last measured** — `docs/m5b.md` §7 flags this against `README.md`'s 73/163 lines disputed by nothing, but CONTEXT.md's own §10 says 75; neither has been re-measured live since. One `bun run doctor` settles it. |
 
 ### Why this section still exists
 
@@ -223,7 +256,7 @@ validation, and shape-only logging applied by `dispatch.ts` automatically.
 | M3 | The brain loop — multi-format ingest, page lifecycle, four-arm hybrid search |
 | M4 | Enforcement + doctor — **done**. RLS itself landed early at M3 (D66); M4 closed the remaining gate (the perf/scale suite, the cross-transport rate meter, doctor's migrations-current + acl-coverage checks) and survived a seven-pass review (D93–D97) |
 | M5 | Split M5a/M5b. **M5a done and merged** (`a9d43f1`) — Vite+React SPA at `/` (14 files under `web/src`), `src/web.ts`, CSP+HSTS, ask/upload/pages/invite surfaces; 3 web suites (`web-mount`, `web-invite-flow`, `web-render-safety`) plus `body-limits` and `answer-confidence`. Deployed to Railway. M5b (teams, members, operator panel, conversations, MCP-over-HTTP) not started; see `docs/screens.md` |
-| M8 | Spend/usage accounting — not started; see §5.3 |
+| M8? | Spend/usage accounting — not started; **disputed, not settled**: `docs/plan.md:209` says M8, `docs/plan.md:382` (A15) says M5, D18 says M5, this file's own §0/§5.3 rule for M5 — three of four sources say M5 and this table said M8 anyway. `docs/m5b.md` §6 item 2 confirms it has now survived two milestones unresolved. A one-line founder ruling closes it; until then this row is a record of the disagreement, not a fifth vote. |
 
 **Two controls you would otherwise "clean up":**
 - **`current_grants()` is `STABLE`, never `IMMUTABLE`** — a security control, not an oversight. An
@@ -258,6 +291,8 @@ src/ingest/      file.ts (the waist) lifecycle.ts blocks.ts sanity.ts embed.ts c
 src/search/      hybrid.ts rrf.ts eval-score.ts
 src/answer/      answer.ts prompt.ts
 src/ai/          router.ts (one door for every model call) vector.ts
+src/eval/        core.ts (dataset-agnostic runner) types.ts slug.ts adapters/ (multihop.ts today,
+                 index.ts is the registry — a second dataset adapter is the extension point)
 src/web.ts       serves the SPA: security headers, static mount, SPA fallback, in-process Vite dev
 
 web/             the M5a frontend (Vite + React 19 + Tailwind 4, same-origin, no CORS anywhere)
@@ -269,16 +304,32 @@ web/             the M5a frontend (Vite + React 19 + Tailwind 4, same-origin, no
   dist/          gitignored; `bun run build:web` writes it and a non-loopback boot REQUIRES it
 ```
 
+`docs/` — `m5b.md` (the verified remaining-work register, supersedes §5 for scope), `eval-rag.md`
+(the MultiHop harness: quick start, cost/time table, why wall-clock not money is the binding
+constraint), `pipeline-roadmap.md` (M6–M14), `ci-setup.md` (the ten CI secrets, added this pass),
+`screens.md`, `plan.md` (M0–M5b definitions, least reliable of the four on current status), `deploy.md`,
+`auth-setup.md`. `scripts/` gained `eval-common.ts`, `seed-eval-workspace.ts`, `load-eval-corpus.ts`,
+`run-rag-eval.ts`, `replay-eval.ts` alongside the existing `seed-a17`/`novabyte-*` scripts — two
+harnesses, not one, and neither used to be in `README.md` (fixed on master since).
+
 `.github/workflows/ci.yml` — **exists; `HANDOVER.md` never mentions it.** Two jobs: `offline`
 (typecheck + `bun run build:web` + unit + the two meta-tests) and `live` (the D16 leak canary,
 **master-only** since M5a Phase −1). The `build:web` step is not cosmetic: the SPA-serving
 assertions in `test/web-mount.test.ts` are gated on `web/dist` existing, so without it they skipped
 on every CI run, silently. **`live` is currently RED on every master push** — `gh secret list` is
-empty, so none of `DATABASE_URL` / `DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `CB_APP_DB_PASSWORD`
-/ `CB_AUTH_DB_PASSWORD` / `SESSION_SECRET` / `CB_MCP_*` exist in GitHub Settings, and the job dies at
-`Apply migrations` in ~6s. `offline` passes. The D16 "canary runs in CI forever" guarantee is
-therefore still not real: the file exists, the credentials do not. Configuring the repo secrets —
-or standing up the second CI database §9 already asks for — is the open action. Bun pinned
+empty, so none of the **ten** secrets it reads exist in GitHub Settings: `DATABASE_URL` /
+`DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `CB_APP_DB_PASSWORD` / `CB_AUTH_DB_PASSWORD` /
+`SESSION_SECRET` / `CB_MCP_PRINCIPAL` / `CB_MCP_WORKSPACE` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY`.
+The job dies at `Apply migrations` with `DATABASE_ADMIN_URL is not set` (`migrate.ts:610`); steps 6-7
+skip. `offline` passes. The D16 "canary runs in CI forever" guarantee is therefore still not real:
+the file exists, the credentials do not. **Do not derive the list by hand again — `docs/ci-setup.md`
+holds it, and every prose copy of it in this file had drifted to a different count.**
+
+**The secrets are no longer the binding constraint, though.** The most recent master run did not
+reach them: `live` never acquired a runner (`runner_name=""`, zero steps, cancelled at 15m2s) while
+`offline` in the same run got `GitHub Actions 1000000083` and passed, and a later master push created
+no workflow run at all. And `branches/master/protection` 403s on a private free-tier repo, so `live`
+could not be a required check even when green. §0 item 2 records the decisions taken on both. Bun pinned
 to `1.3.14` in this file only — no `engines`/`.tool-versions` elsewhere. Dependencies are pinned
 separately: `bun.lock` plus two exact specs in `package.json` (`@modelcontextprotocol/sdk` and
 `xlsx`, the latter from `cdn.sheetjs.com`, not npm — see §4).
@@ -312,7 +363,14 @@ good failure runbook). Past `bun run dev`, a newcomer following only `README.md`
   `CB_CLI_WORKSPACE`, `DATASET`.
 - **GitHub repo secrets were never configured.** `gh secret list` is empty, so the only automated
   proof of tenant isolation — the `live` job's leak canary — has never executed on a runner; see
-  §3 and §6.2.
+  §3 and §6.2. The ten names and their shapes are in `docs/ci-setup.md`; do not re-derive them here.
+- **Actions is not scheduling the `live` job**, which sits upstream of the secrets — a job that never
+  acquires a runner never reads them. Check Settings → Billing → Actions first; the signal that it is
+  cleared is a `live` job with a non-empty `runner_name`, not a green check.
+- **No CI database.** CI would migrate the one Supabase project that development, the eval harness and
+  the demo all share, using owner credentials. §9 has asked for a second project since pass 1; it is
+  now a precondition of setting the secrets rather than a follow-up, because `ci.yml:80` accepts
+  `workflow_dispatch` on *any* ref and that is where the owner credential would go.
 
 ---
 
@@ -337,15 +395,27 @@ missed." Everything below that is missing:
 - **No write path.** No op creates a team or assigns a member, and `narrowGrants` (`migrate.ts:337`)
   explicitly revokes `cb_app`'s INSERT/UPDATE/DELETE on all three of `acl_grants` (`migrate.ts:353`),
   `teams` (`:354`) and `team_memberships` (`:355`). A correct keyring would have nothing to read.
-- **Chicken-and-egg on the read path.** The keyring must be built *before* `withScopedTx` opens
-  (grants are GUCs set at transaction start), but `acl_grants` is itself RLS-protected on
-  `workspace_id = app.workspace`. Resolving team grants needs a **sixth `SECURITY DEFINER`** in
-  `cb_internal` plus a doctor fixture change. Not in the five touch points.
-- **Ten call sites, not one.** `resolveGrants` is called at `auth/resolver.ts:122`, `api/call.ts:37`,
-  `api/mcp.ts:24`, `api/dev-auth.ts:98`, and in six `scripts/` files — `load-a17-corpus.ts:34`,
-  `ingest-file.ts:80`, `novabyte-eval.ts:66`, `measure-a17.ts:67`, `run-a17-eval.ts:27`,
-  `dump-top8.ts:47` — including the NovaByte harness that is supposed to *prove* the fix. Patching
-  only `resolver.ts` leaves team pages invisible on CLI and MCP.
+- **Chicken-and-egg on the read path — smaller than this file previously said.** The keyring must
+  be built *before* `withScopedTx` opens (grants are GUCs set at transaction start), but `acl_grants`
+  is itself RLS-protected on `workspace_id = app.workspace`. This section called that "a sixth
+  `SECURITY DEFINER`, not in the five touch points" — overstated. `docs/m5b.md` §2.1 verified against
+  `test/fixtures/expected-policies.json` that `team_memberships_ws`'s qual carries no
+  `current_grants()` term, so a two-phase read inside a self+ws-keyring `withScopedTx` works **today,
+  with zero new SQL**. The definer is still the better call long-term (it preserves the one-DB-call
+  invariant at `resolver.ts:5-9`), but it is a design preference now, not a blocker. Also overstated:
+  the three tables are **not** equally write-blocked. Only `acl_grants_ws` is
+  `TO cb_app … WITH CHECK (false)` (`0001_m2_auth.sql:89-92`) — `teams_ws` and `team_memberships_ws`
+  were never re-created by `0001` and keep `schema.sql`'s plain workspace-equality `WITH CHECK`, so a
+  tenant-confined write is *already permitted by RLS*; only the table privilege is revoked
+  (`migrate.ts:353-355`). That makes the write path the same shape as `create_invite`
+  (`operations.ts:480-502`), not a new mechanism.
+- **Eleven call sites, not ten.** `resolveGrants` is called at `auth/resolver.ts:122`, `api/call.ts:37`,
+  `api/mcp.ts:24`, `api/dev-auth.ts:98`, and in seven `scripts/` files — `load-a17-corpus.ts:34`,
+  `ingest-file.ts:80`, `novabyte-eval.ts:66`, `measure-a17.ts:65`, `run-a17-eval.ts:27`,
+  `dump-top8.ts:47`, and `explain-search.ts:73`, missed here previously — including the NovaByte
+  harness that is supposed to *prove* the fix. Eleven is the number `test/acl-tag-format.test.ts:87`
+  actually globs (`{src,scripts}/**/*.ts`) and enforces with an anti-vacuity floor. Patching only
+  `resolver.ts` leaves team pages invisible on CLI and MCP.
 - **`0007`'s slug indexes assume two scopes.** A third needs a third partial index, and `import.ts`
   matches on the *index name* to build its 409.
 - **The spec is vendored — this is DONE.** `docs/enabling-team-scope.md` is tracked in the repo as of
@@ -455,7 +525,7 @@ Related: `DECISIONS.md` D29/D33 (§7) record that this same gate was *already* w
 different way — the allowlist-vs-blocklist confusion. Treat any change near it as high risk; it has
 now been broken and re-fixed on **three** independent occasions.
 
-### 6.2 [closed — gated by `4ea57d7`; CI live job red on missing repo secrets] CI will migrate a shared DB from every branch
+### 6.2 [closed — gated by `4ea57d7`; live job red, and blocked upstream of its secrets] CI will migrate a shared DB from every branch
 
 `ci.yml:14-15` still runs `on: push: branches: ['**']`, but that now only reaches the `offline` job
 (typecheck + `build:web` + unit suite — no secrets, no database). `bun run migrate` moved to `:104`
@@ -471,10 +541,19 @@ ever raced — which is exactly what the fleet-wide concurrency group now preven
 "arms itself on `git remote add`" framing has expired. The arming happened, and `4ea57d7` defused it
 first: the `live` job — the only job that touches the database — is gated as described above, so no
 two live runs migrate the shared Supabase project concurrently. Feature branches now run `offline`
-only, which is pure compute. Live state today: `offline` is green; `live` FAILS because
-`DATABASE_URL` / `DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `SESSION_SECRET` / `CB_MCP_*` were
-never added under GitHub Settings → Secrets. That is a config task, not a defect — see §0 item 2 and
-§3.
+only, which is pure compute. Live state today: `offline` is green; `live` FAILS because none of the
+**ten** secrets it reads were ever added under GitHub Settings → Secrets (the list is in
+`docs/ci-setup.md` — this paragraph previously named six of them, §3 named a different seven, and §0
+said seven, which is how a re-derivation was needed to get the number right).
+
+**Two things this section did not know, both upstream of the config task.** First, the most recent
+master run never got that far: `live` acquired no runner at all (`runner_name=""`, zero steps,
+cancelled at 15m2s) while `offline` in the same run ran to green, and a later master push produced no
+workflow run whatsoever. Second, `branches/master/protection` returns `403 "Upgrade to GitHub Pro or
+make this repository public"` — so even a fully-configured green `live` could not block a merge, and
+`:80` keeps it post-merge regardless. So "config task, not a defect" was right about the secrets and
+wrong about the outcome: configuring them alone would not have produced a working canary. §0 item 2
+records what was decided.
 
 ### 6.3 [moderate] The upload route requires no CSRF token — because none exists, by design
 
@@ -610,15 +689,18 @@ that passed every upstream check. Note `xlsx.ts:144,154` also leaves the **colum
 (`range.e.c`, attacker-declared via `!ref`) entirely unclamped** while rows, sheets and merge ranges
 are all clamped — that is the input that reaches this path.
 
-### 6.10 [moderate] The NovaByte harness — real defects, mostly latent, one live
+### 6.10 [moderate — one item **FIXED** `9a7ceb0`] The NovaByte harness — real defects, mostly latent
 
 Verified against the actual dataset at `~/Desktop/novabyte-test-dataset`. Pass 1's stronger claims
 were **refuted**; what survives:
 
-- **LIVE.** `novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is missing on either
-  side, because `findIndex` returns `-1`. A question that fell from rank 3 to *nowhere* prints
-  ` UP`; one that went from nowhere to rank 1 prints `DOWN`. The aggregate MRR is correct (guarded
-  by `if (firstRel >= 0)`), so summary and detail contradict each other silently.
+- **FIXED in `9a7ceb0`.** ~~`novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is
+  missing on either side, because `findIndex` returns `-1`.~~ The commit maps "not found" to
+  `Infinity` before comparing rather than leaving `-1` to sort as the best possible rank, and its own
+  message names this file as the record it was fixing against — confirmed both broken directions by
+  reverting and re-running two synthetic cases before landing the fix. This was the defect blocking
+  any answer-quality promotion gate for a retrieval change (D100's `MAX_PER_PAGE` change went through
+  `eval:rag`/D100's own rule instead, precisely because this gate was not yet trustworthy).
 - **LIVE.** `leak_canary`'s `forbidden_strings` — the actual canaries — frequently live *only* on
   team-scoped pages that `:107` never ingests. **lc-021: 7 of 7 canaries unreachable**; lc-022: 6 of
   7; lc-020: 5 of 8. The designed leak target was never loaded, leaving `forbidden_workspace` as the
@@ -862,12 +944,19 @@ retrieval numbers above it are stale (§6.7).
   tenant **0 rows** under `iterative_scan=off` and all 16 under `relaxed_order`. `extract/index.ts`'s semaphore can also
   over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
   waking) — reachable only if an `await` is ever introduced between them.
-- **Cross-model dissent.** Codex's token is revoked (`codex login status` / `codex exec` both report
-  authenticated; a real call still 401s). **Five** passes now, single-model — the M4 review tried
-  again and hit the same wall, and M5a's six-specialist review (42 findings, all fixed in `a9d43f1`)
-  did not attempt it at all. Every pass since Pass 2 has substituted a fresh-context adversarial
-  agent plus a red-team gap hunt — independence of *context*, not of *model*, and it has been enough
-  to catch real defects each time, but it is not the same guarantee.
+- **Cross-model dissent — still open, but the plan for it has changed (D102).** Codex's token was
+  revoked through at least this pass (`codex login status` reports "Logged in" while every API call
+  401s with `refresh_token_invalidated` — the status check itself is unreliable, not just the
+  token). **Six** passes now single-model — the CI/leak-canary review (`/autoplan`, this pass) hit
+  the identical error and had to re-verify every subagent finding independently rather than trust a
+  second voice. **The founder has stated an intent to bring Codex into part of this project going
+  forward.** That does not retroactively fix any of the six passes, and nothing here should be read
+  as claiming the auth issue is resolved — it is recorded exactly as observed, most recently in this
+  pass. What changes: the next session that invokes Codex should check `codex exec` with a real call
+  (not `login status`) before trusting the result, and if it succeeds, D102 is the place recording
+  what resumes (dual-voice `/autoplan`/`/review` passes) and what stays a single-model habit regardless
+  (the fresh-context-agent substitute below, which is independent of whether Codex works and has
+  caught real defects on its own).
 - **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4 and of
   M5's *phases*. M5's **surfaces** are now defined by `docs/screens.md` (added `8fc0be4`, extended in
   M5a): routes, screens, primary actions and reachable states, including the M5b split. Read both;
@@ -878,19 +967,32 @@ retrieval numbers above it are stale (§6.7).
   normalize,blocklist,log,routes}.ts` and `src/api/{envelope,reqid,roles,tool-defs,call}.ts`
   (~740 lines, 0 changed in M3, all with test files). `session.ts` *was* read — refresh columns
   confirmed **inert**, backing D34.
-- **Whether the shared Supabase project is safe to keep sharing.** Pass 2 established that it drifts
-  (§10). It did not establish a policy, a second project, or a reset procedure. (`migrate:reset`
-  itself is NOT the hazard here — `migrate.ts:742` gates on `isDevEnv`, which requires an EXPLICIT
-  `NODE_ENV` of development/test (`config.ts:128-129`), and `--yes-destroy` plus
-  `CB_CONFIRM_RESET=<supabase-project-ref>` stand behind it. The exposure is the ordinary
-  shared-database one: dev, the eval harness and CI's `live` job all write the same project.)
+- **Whether the shared Supabase project is safe to keep sharing — decided, not yet executed.** Pass 2
+  established that it drifts (§10) without establishing a policy. **That is now closed as a decision
+  (D101, 2026-08-09): a separate CI Supabase project, stood up before any CI secret is set** — a
+  precondition, not a follow-up, because `ci.yml:80` accepts `workflow_dispatch` on any ref and an
+  owner credential for the shared project is exactly what should never sit behind that. What remains
+  is execution: §0 item 2 has the six-step sequence, and none of the six steps has been performed as
+  of this pass. `docs/m5b.md` §6 says it the same way — "not open, listed so it is not re-litigated…
+  pending execution, not pending a decision." (`migrate:reset` itself is NOT the hazard here —
+  `migrate.ts:742` gates on `isDevEnv`, which requires an EXPLICIT `NODE_ENV` of development/test
+  (`config.ts:128-129`), and `--yes-destroy` plus `CB_CONFIRM_RESET=<supabase-project-ref>` stand
+  behind it. The exposure was always the ordinary shared-database one: dev, both eval harnesses and
+  CI's `live` job all writing the same project — and that is what D101 ends.)
 
 ---
 
-## 10. Observed, not derived (last full measurement 2026-07-30 at `0b614ef`; partially re-measured 2026-08-01 at `a9d43f1`)
+## 10. Observed, not derived (last full measurement 2026-07-30 at `0b614ef`; partially re-measured 2026-08-01 at `a9d43f1`; NOT re-measured this pass)
 
 Timestamped observations, not durable properties. **This section decays; the rest of the file does
 not.** Re-run before trusting it if the SHAs in the header have moved.
+
+**This pass could not re-measure it** — no live database in this worktree (`.env` does not exist
+here; it is a symlink to the main checkout in two other worktrees and absent in two, a fact worth
+knowing on its own before assuming any worktree has one). Master has moved fifteen commits, a new
+migration (`0013`) and a full eval harness since the last row below was captured, so treat literally
+every number here as historical until re-run — this is a stronger warning than the last update
+carried, because the gap is now larger than at any previous point in this file's history.
 
 ### Stale — last measured 2026-07-30 on `master` at `0b614ef`, BEFORE M5a. `master` is now `a9d43f1`,
 six commits and ~3,200 changed lines later (`src/api/server.ts`, `src/index.ts`,

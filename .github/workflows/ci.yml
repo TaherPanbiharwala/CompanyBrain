@@ -83,6 +83,19 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-live-shared-db
       cancel-in-progress: false
+    # There was no timeout anywhere in this file, so GitHub's 360-minute default applied. Paired with
+    # `cancel-in-progress: false` directly above, ONE hung live run blocks every later one for six
+    # hours — and on a private repo it bills the whole time. A hang here is plausible rather than
+    # theoretical: `CREATE INDEX CONCURRENTLY` in 0011 waits on locks held by anyone else connected
+    # to the same database.
+    #
+    # This does NOT address a job that never gets a runner (observed: 15 minutes, `runner_name`
+    # empty, zero steps). timeout-minutes starts counting when a runner PICKS THE JOB UP; queue time
+    # is governed by GitHub's own limit. See docs/ci-setup.md.
+    #
+    # 20 is a placeholder, not a measurement — this job has never completed once. Replace it with
+    # ~2x the first real run and say where the number came from.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -94,6 +107,11 @@ jobs:
       # the repo had no automated apply test at all — 0009 and 0011 could only be proven by a human
       # typing the command. It also makes the failure legible: a drifted CI database otherwise fails
       # as a raw 42P01 out of doctor's index assertions rather than as "you have not migrated".
+      #
+      # The ten secrets these three steps read are documented in docs/ci-setup.md — what each value
+      # looks like, which Supabase pooler and port it comes from, and the two traps that make a
+      # wrong one fail somewhere other than where you set it. That file lives next to this list on
+      # purpose: every prose copy of it elsewhere in the repo had drifted to a different count.
       - name: Apply migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -128,7 +146,11 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           # test/mcp.test.ts gates on a REAL membership pair rather than seeding its own, so
           # without these the suite would skip — and under CB_REQUIRE_LIVE_TESTS that is a hard
-          # failure, by design. `bun run seed:a17` prints a valid pair to use as these secrets.
+          # failure, by design. `bun run seed:a17` prints a valid pair to use as these secrets —
+          # note it prints them under the names CB_CLI_PRINCIPAL / CB_CLI_WORKSPACE
+          # (scripts/seed-a17.ts:34-35). Same UUIDs, different variable names. And it must be run
+          # against whichever database CI uses: these identify ROWS, so a pair seeded elsewhere
+          # makes this suite fail three hops from the cause.
           CB_MCP_PRINCIPAL: ${{ secrets.CB_MCP_PRINCIPAL }}
           CB_MCP_WORKSPACE: ${{ secrets.CB_MCP_WORKSPACE }}
         run: bun run test
