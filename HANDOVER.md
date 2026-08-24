@@ -104,10 +104,21 @@ exhausted-Actions-minutes signature on a private repo), and the repo being priva
 make `live` a required check regardless of secrets, because branch protection needs a paid plan or a
 public repo on GitHub's free tier. `docs/ci-setup.md` is the resulting secret checklist (shapes only,
 never values); `D102` is the six-step decision — publish the repo, stand up a separate CI Supabase
-project first, then set the ten secrets. None of the six steps has been executed yet. The same
-session also wrote up where Codex actually stands (`D103`): `codex login status` has said
-"authenticated" throughout six review passes while every real call 401s — a false-positive that's
-worth knowing before trusting the status check alone.
+project first, then set the ten secrets. None of the six steps has been executed yet.
+
+**Codex's status changed since that write-up, and it's worth reading in the right order.** The same
+session first found (`D103`, 2026-08-09/10) that `codex login status` had said "authenticated"
+throughout six review passes while every real call 401s with `refresh_token_invalidated` — a
+false-positive worth knowing before trusting the status check alone. **A later session re-checked it
+directly (2026-08-24) and the diagnosis changed**: `codex exec` against a real prompt no longer
+401s — auth works now, confirmed twice, against the default model and four explicit fallbacks. What
+fails instead is model selection: the installed `codex-cli 0.142.5` rejects the configured default
+(`gpt-5.6-terra`, "requires a newer version of Codex") and rejects every fallback tried with the same
+"not supported when using Codex with a ChatGPT account" 400. **Still zero successful dual-voice
+calls** — the blocker moved from auth to CLI/model version, it did not close. A `codex` CLI upgrade is
+the plausible next step and deliberately wasn't attempted unprompted (upgrading shared tooling outside
+an explicit request is a founder call). `D103` is updated in place with this — read it there, not just
+here, for the exact model IDs and error strings tried.
 
 **A from-scratch audit of what M5b actually needs produced `docs/m5b.md`.** Six parallel area audits,
 each followed by a pass whose only job was to find implementations the auditor had missed — six
@@ -214,11 +225,16 @@ The two items that most need a **founder** decision, not a coding session, becau
 last check and neither has a purely-technical resolution:
 
 1. **The leak canary has never run on a CI runner.** Zero secrets configured, repo still private (so
-   even fully configured, GitHub's free tier won't let it gate a merge). `docs/m5b.md` §4.1 has the
-   full six-step sequence, already agreed 2026-08-09 but not recorded as a `DECISIONS.md` entry
-   anywhere until someone writes it up — do that as part of executing it, not after.
+   even fully configured, GitHub's free tier won't let it gate a merge). The six-step sequence is
+   **`D102`** in `DECISIONS.md` (agreed 2026-08-09, written up the same day — a stale draft of this
+   paragraph once said it wasn't recorded anywhere; it is, don't re-derive it) and `docs/ci-setup.md`
+   has the secret checklist. None of the six steps has been executed as of this writing.
 2. **§0's database fault** — needs the founder to confirm whether it's an in-progress rotation or
-   something else, before any session spends time on it as a bug.
+   something else, before any session spends time on it as a bug. **Not re-checked since it surfaced
+   2026-08-10** (`CONTEXT.md` §6.14) — the most recent session (2026-08-24, the Codex re-verification
+   below) touched Codex only and did not attempt a live connection, so this has now gone two weeks
+   without a fresh check. Confirm live before trusting either "still broken" or "must be fixed by
+   now" — neither is verified.
 
 The single largest **buildable** item, per `docs/m5b.md`: team scope, end-to-end (§2.1 there, sized
 XL). The substrate exists and is completely inert — no write path, and a keyring read that needs
