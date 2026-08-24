@@ -1,236 +1,216 @@
-# M3 handover
+# Handover
 
-Written at the end of the session that built M3, for whoever picks it up next.
+**This file is rewritten at the end of each session it makes sense to hand off from — it is a
+snapshot, not a running log.** If you are reading an old copy (check the branch/commit line below
+against `git log -1 origin/master`), the current one supersedes it entirely; do not merge the two by
+hand. `CONTEXT.md` §8 records specific corrections made to the *previous* version of this file, kept
+because those facts about the code are still true even though that version's text is gone.
 
-**Branch:** `claude/context-review-5957e4` · **Commits:** `aa8752a` (build + review), `634003a` (eval harness)
-**State:** typecheck clean · 523 pass / 1 skip / 0 fail (live) · doctor 62/62 · migrations idempotent · top-8 unchanged
-
-Read `DECISIONS.md` D66–D90 alongside this. This file explains the *session*; DECISIONS explains the
-*choices* and is the thing that stays true after the code moves.
-
----
-
-## 1. The goal, and what "done" meant
-
-M3 is **the brain loop**: upload a real file → get a cited answer naming the position it came from →
-be able to open that position.
-
-Before this session the system could only ingest pasted text, its "hybrid" search was running on one
-engine, and ingest was one-way (no delete, no replace, so every corpus reload died on
-`already_exists`).
-
-The founder's instruction shaped the plan more than anything else:
-
-> "Before continuing further i need to perfect the pipeline… It has been proven in the gbrain and
-> doesnt need to be proved right now. It should be able to ingest json, pdf, docs, excel sheets, etc
-> and should use hybrid and rrf perfectly."
-
-That was an explicit override of two prior reviews that wanted an eval harness built first. It was
-followed. The mitigation for having no eval is `scripts/dump-top8.ts`: a committed snapshot of the
-top-8 retrieval results for ten questions, captured **before** any retrieval change, so a ranking
-regression shows up as a reviewable diff instead of a vibe.
+**Branch/commit at write time:** `master` @ `f05cde5`. **Read `git fetch origin && git log -1
+origin/master` before doing anything** — a concurrent session merged past this exact point mid-way
+through the work described below, and neither session noticed until a manual check (see "Working
+across sessions" below). Do not trust a local ref you haven't just re-fetched.
 
 ---
 
-## 2. How the session ran
+## 0. The one thing to check before anything else
 
-Ten sequential tasks, each verified before the next started. Then a full pre-landing review. Then an
-independent eval against a corpus the founder supplied.
+**As of 2026-08-09, every command in this repo that opens a Postgres connection fails**, against the
+shared `.env`, with:
 
-| # | Task | Outcome |
-|---|---|---|
-| 1 | Capture `dump-top8` baseline | committed BEFORE touching the chunker |
-| 2 | `RouterError` structure + retry | 13 tests |
-| 3 | Extraction layer in a subprocess | 6 modules, 23 tests |
-| 4 | Sanity gate | pure, no DB |
-| 5 | Block chunker | added alongside `chunkText`, not replacing it |
-| 6 | Migration 0009 + `page_sources` + `quarantine` | doctor 58/58, +8 leak-canary cases |
-| 7 | `list_pages` / `delete_page` / `replace_page` | 19 tests |
-| 8 | Four-arm hybrid search | measured at every step |
-| 9 | Batched embedding + degrade + seams | found a live bug in `router.embed` |
-| 10 | `pack.ts`, `search` op, locators, `ingest_file` | both plan gates verified live |
-
-**Three review rounds.** `/autoplan` ×4 on the plan (before code). The NovaByte eval (mid-session).
-`/review` with seven specialists (after code). Codex was unreachable in **all** of them
-(`refresh_token_invalidated`) — so every finding in this session is single-model. `codex login`
-restores cross-model coverage and is worth doing before the next review.
-
----
-
-## 3. Files — what, and why
-
-### New: extraction (`src/ingest/extract/`)
-
-| File | Why it exists |
-|---|---|
-| `detect.ts` | Format from **magic bytes in the parent process**. An extension is attacker-supplied over HTTP; a PDF named `.txt` chunked as prose embeds binary noise at real cost. Detecting in the parent lets `unsupported_format` return without spawning. |
-| `index.ts` | Orchestration + the security boundary. Drains stdout/stderr **before** awaiting exit (the pipe buffer is 64 KB; awaiting first deadlocks and looks like a timeout). Caps output, bounds the wait queue, kills the child before releasing its slot. |
-| `worker.ts` | Rebinds `console.*` to stderr as its **first statement**, then frames its payload `CBX1\n<len>\n<json>`. Without both, a dependency's stray log makes a perfectly good file fail to parse, indistinguishable from a truncated write. |
-| `html.ts` | ONE html→Block converter, shared with docx (mammoth already emits HTML). `div` is deliberately absent from the block regex — including it swallowed wrapper divs and lost every child. |
-| `pdf.ts` | unpdf; one block per page; pages under a char floor counted as **skipped**, so a 40-page PDF that is 37 scans is not indistinguishable from a clean 3-page ingest. |
-| `xlsx.ts` | Where the silent-corruption classes live — see below. |
-| `docx.ts`, `text.ts` | mammoth → shared converter; plain/CSV/JSON. `text.ts` deliberately has **no speaker detection** (`Name:` also matches `Note:`, `TODO:`, `10:30:`, and would silently re-chunk an existing fixture). |
-
-**The xlsx cases are worth understanding** — each is a way a spreadsheet lies quietly:
-- Merged cells: SheetJS stores a merged value only top-left, so a header merged across A1:C1 reads
-  `Line items | | |` and the columns below lose their names. Expanded before header detection.
-- Dates: without `cellDates` a date is the serial `45123`, so "the invoice dated 12 March 2026"
-  never matches — forever, with no error. Both forms emitted.
-- Formulas with no cached value: SheetJS has no formula engine. Emitting blank would report success
-  on lost data; counted as skipped instead.
-- Header row **detected**, not assumed to be row 0. Guessing wrong repeats a title into 500 chunks
-  and makes every embedding near-identical.
-
-### New: the ingest waist
-
-- **`blocks.ts`** — the `Block` / `Locator` contract. Locators are **spans**, not points: with
-  overlap a chunk routinely covers pages 7–8, which `{page: 7}` cannot express.
-- **`sanity.ts`** — pure, so it is trivially testable. Counts **code points**, not UTF-16 units;
-  a unit-based ratio classifies good Hindi as binary, which for an India-first product is rejecting
-  the target market's documents.
-- **`embed.ts`** — batching. Results are written to **preallocated absolute offsets**, never pushed,
-  because batches finish out of order. Writing this test found a live bug in `router.embed`: it
-  sorted by provider index, which *hides* a duplicated index; assigning leaves a detectable hole.
-- **`file.ts`** — the file waist. Takes **bytes**, never a path (see D83). Refuses duplicates
-  *before* embedding, with a predicate that mirrors the partial indexes exactly (see D89).
-- **`lifecycle.ts`** — list/delete/replace. Addresses by **page ID** because D68 made slugs
-  non-unique within a workspace.
-- **`pack.ts`** — the generic pack as data, plus an extraction-prompt template with an unused
-  **vocabulary slot**, reserved now because retrofitting it later invalidates every stored extraction.
-
-### New: migrations
-
-- **`0007_acl_rls.sql`** — the milestone's headline. `acl && current_grants()` becomes the enforced
-  predicate. Defines `current_grants()` **in-file**, because `ensureAuthFunctions` runs *after* the
-  migration loop and a policy referencing a function that does not exist yet fails 42883.
-- **`0009_multiformat.sql`** — locators, source columns, `page_sources`, `quarantine`.
-- **`0011_search_indexes.sql`** — review follow-up. Drops the dead btree, adds the GIN index the
-  title arm actually needs, plus two missing read-path indexes. Uses `-- migrate:no-transaction`,
-  and **was the first file ever to do so** — which is how D88 was found.
-- **`0008` / `0010` `.disabled`** — down paths that are deliberately *asymmetric*. 0010 drops the
-  indexes and CHECK (things that can block a legitimate ingest) and drops **nothing that holds
-  data**, because `page_sources.bytes` is the only copy of every uploaded file.
-
-### Changed: the notable ones
-
-| File | Change and why |
-|---|---|
-| `search/hybrid.ts` | Rewritten. Four arms, weighted RRF, per-page cap, duplicate collapse, cosine blend. The `LIMIT` moved **below** the joins — above them, a row the joins discard had already consumed a result slot. |
-| `search/rrf.ts` | `rrfFuseWeighted` added; `rrfFuse` becomes the all-weights-1 case, so every existing test stays byte-identical (D65: extend, don't replace). |
-| `ai/router.ts` | Structured `RouterError`, retry **inside `fetchJson` only** (so the ask-path query embedding is covered, and a retry can never wrap a mutating op), per-attempt deadlines, index-assigned embeddings, rerank + expansion seams. |
-| `answer/prompt.ts` | Locators added to the evidence header, allow-listed — a sheet name is **file-controlled**, unlike a slug. Degraded-retrieval notice on a nonce line. |
-| `api/dispatch.ts` | `ok_degraded` outcome; `dims: { format }` re-checked against a closed list before logging. |
-| `api/server.ts`, `index.ts` | Upload route parses its own body **after** both guards; the app-wide 100kb parser skips that one path. |
-| `db/migrate.ts` | `narrowGrants` revokes for the new tables (existence-guarded); `splitStatements` for the no-transaction path. |
-| `db/doctor.ts` | `page_sources` acl-drift count; four index assertions — on the **expression**, since a name-only check is what let a dead index ship. |
-| `ingest/chunk.ts` | `chunkBlocks` + byte-based `estimateTokens` added; `chunkText` untouched. Splitter made linear (was O(n²), and the file path feeds it inputs 25× larger). |
-
-**Nothing was deleted.** One dead re-export (`formatLocator` from `file.ts`) and one inert lint
-directive were removed during review; no file was dropped.
-
----
-
-## 4. Decisions — the short form
-
-Full reasoning is in `DECISIONS.md`. Grouped by the problem they solve:
-
-**Permissions became real (D66–D70).** The enforced predicate lives in the RLS policy and nowhere
-else. Private slugs are unique **per author** because unique-index checks bypass RLS and a collision
-error was an enumeration oracle. Grant tags are lowercased because array overlap is byte equality.
-
-**Storing files (D71–D73).** Bytes live in Postgres, not Supabase Storage, because Storage policies
-read a Supabase login this app does not have — the only workable credential bypasses all RLS.
-`quarantine` is a full tenancy-plane table because a rejected upload's **filename** is as sensitive
-as the upload.
-
-**Lifecycle (D74–D76).** Address by ID; every miss is `not_found` (distinguishing them rebuilds the
-oracle). Who may destroy is an **app-layer** rule with nothing beneath it — stated as such, with
-tests, because the database will not catch a regression. `delete_page` relies on the FK cascade
-*because* an explicit child delete runs under RLS and would leave drifted rows behind.
-
-**Search (D77–D79).** OR the terms; fuse the tiers as separately weighted arms. A relevance floor
-and autocut were both **measured and rejected** — numbers in DECISIONS.
-
-**AI plumbing (D80–D82).** Batched embedding defended twice. Losing the embedder degrades to
-keyword-only and **says so** three ways. Rerank and expansion are real seams, switched off, and the
-defaults are the decision.
-
-**API surface (D83–D86).** `ingest_file` takes bytes and there is no path parameter, ever. Locator
-components are allow-listed. `format` is a logged dimension — a scoped, stated exception to D28.
-
-**What the review found (D87–D90).** The subprocess was not secret-free. The no-transaction pragma
-had never worked. A dedup check must mirror its index exactly. Two guards had been weakened by
-shapes their authors did not anticipate.
-
----
-
-## 5. Two patterns worth carrying forward
-
-**A guard that describes the right thing without observing it will pass forever.** The extraction
-test asserted the source *contained* `env: { PATH:`. True continuously, while every secret leaked.
-`live-gate` looked for the string `liveOrFail`, so `liveOrFail(...) && HAVE` sailed past it. The
-`no-transaction` pragma existed and had never run. **When you write a guard, break the thing on
-purpose and confirm it goes red.** Every guard touched in this session was verified that way.
-
-**A mechanism that must bypass permissions becomes a way to ask about invisible data.** Unique
-indexes, error messages, and `not_found` vs `permission_denied` all leak by construction unless
-deliberately blunted. D68, D69, D73 and D74 are four instances of the same shape.
-
----
-
-## 6. Where to pick up
-
-### Open, ranked
-
-1. **Team scope (M5).** The single biggest unlock. 36 of the NovaByte dataset's 105 pages are
-   team-scoped and cannot be loaded, which blocks 54 of 68 visibility cases and 39 of 58 qrels rows.
-   The dataset ships `docs/enabling-team-scope.md` with five located touch points. The one most
-   likely to be missed: `src/auth/resolver.ts` builds the keyring without unioning team grants, so
-   without that change a team page is invisible to **everyone including its author** — a dead row
-   that typechecks.
-
-2. **"Readable" ≠ "publishable".** Surfaced by the injection suite and **not solved**. Grep confirms
-   no notion of it exists: `answerQuestion(ctx, question)` knows who is *asking* and has no
-   parameter for who will *read* the output. So a request to draft a company-wide FAQ can include
-   private material the asker may legitimately read. Suggested shape: an optional `audience` that
-   filters retrieval to chunks whose ACL is a superset — enforce structurally rather than asking the
-   model to be careful. Two open questions: is this M3 scope or later, and does it belong on `ask`
-   or on a future `draft`/`publish` op?
-
-3. **`UNIQUE (page_id, ord)` on `content_chunks`.** `replacePage`'s chunk delete runs under RLS, so a
-   chunk whose acl has drifted survives and becomes an invisible duplicate. A unique index makes it
-   loud. Real tradeoff: a 23505 the caller cannot diagnose from their own view. Task chip exists.
-
-4. ~~**MCP has no rate limiter.**~~ **CLOSED at M4 (D94).** The per-principal budget moved to
-   `dispatchOp` rung 0, so REST and MCP are metered by one instance. Note the CLI is reached but not
-   effectively metered — `FixedWindowLimiter` is per-process and `call.ts` is one-shot — which is
-   accepted and recorded in D94 rather than fixed. Spend *accounting* remains open (M5, D18).
-
-5. **`README.md` is stale.** Does not mention the five new ops, `src/ingest/extract/`, or the upload
-   route's separate body cap.
-
-### Known limits of what is green
-
-- **No cross-model review.** Codex was logged out for the entire session.
-- **Of 19 critical review findings, 8 were verified empirically**; the rest were fixed on careful
-  reading. Solid, but that is a real difference in confidence.
-- **The A17 eval is saturated** — 14 chunks, 10 questions, scoring 1.000 before any change. It can
-  show a *shape* but cannot justify a tuned constant. The arm weights are round on purpose.
-- **Extraction fixtures are generated**, so a generated PDF is the easiest PDF in existence.
-  Two-column layouts, page-spanning tables and Devanagari are where real extraction fails and are
-  untested.
-- **`bun run doctor` may need `--update`** after any schema change — review that diff as a security
-  change, never reflexively.
-
-### Commands
-
-```bash
-bun run typecheck
-bun run migrate && bun run doctor
-CB_REQUIRE_LIVE_TESTS=1 bun run test     # a SKIP here is a failure, by design
-bun run dump:top8 --check                # retrieval regression guard
-DATASET=~/Desktop/novabyte-test-dataset bun run eval:novabyte
-bun run ingest-file ./some.pdf --slug my-doc
+```
+PostgresError: (ENOTFOUND) tenant/user postgres.gyscmykxazysahsbokll not found
 ```
 
-`.env` at the repo root is a **symlink to the main worktree**. It is gitignored. Never copy or print it.
+That's `bun run doctor`, `bun run migrate`, any `CB_REQUIRE_LIVE_TESTS=1` test, `dump:top8`,
+`eval:rag`, `eval:novabyte` — all of it, in every worktree, because `.env` is a symlink to one shared
+file (`CONTEXT.md` §4) and Bun auto-loads it regardless of what you unset on the command line.
+Reproduced twice; not a network blip.
+
+**This is plausibly an in-progress fix, not a fresh bug.** `docs/m5b.md` §4.1 names, as a founder-only
+action already agreed 2026-08-09: *"Rotate the Supabase database and both role passwords (a review
+subagent leaked connection strings into its own output)."* A rotated or replaced project produces
+exactly this error until `.env` is updated to point at it. **Ask before debugging this as a code
+problem** — it almost certainly isn't one, and no command in this session's toolkit can fix a
+Supabase project reference. Full detail: `CONTEXT.md` §6.14.
+
+Everything else in this file assumes that gets resolved. Until it does, only `typecheck` and
+`build:web` are trustworthy signals.
+
+---
+
+## 1. What's true right now, verified this session
+
+```
+bun run typecheck                          clean
+bun run build:web                          clean (writes web/dist)
+bun run test  (DB env unset on cmdline)    585 pass / 17 skip / 50 fail — the 50 are §0's DB fault,
+                                            not a code regression; env-unsetting does not achieve a
+                                            genuinely offline run because Bun reloads from .env
+bun run doctor / migrate / any live test   FAILS on §0 — cannot be trusted, at all, right now
+CI (`live` job, GitHub Actions)            RED on every push since the workflow existed — 0 secrets
+                                            configured (`gh secret list` empty), dies at
+                                            "Apply migrations" in ~40s. `offline` job passes.
+repo visibility                            PRIVATE (confirmed via `gh repo view`)
+```
+
+Do not quote a doctor check count (73? 75?) from memory or from another doc without re-running it —
+see `CONTEXT.md` §6.13/§9 for why it's disputed and currently unmeasurable.
+
+---
+
+## 2. What happened since the last handover (M3), in one paragraph each
+
+Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D101) and `CONTEXT.md`
+(the living snapshot). This section exists so you don't have to read either cover-to-cover just to
+get oriented; it does not replace them for anything you're about to act on.
+
+**M4 — enforcement + doctor** shipped, was reviewed seven times, and survived: a perf/scale suite, a
+cross-transport rate meter at `dispatchOp` rung 0, and two new doctor checks. Seven of its own guards
+were found to pass with their subject *deleted* — the fix pattern (D97) is "break the thing on
+purpose and confirm the guard goes red," and it's worth applying to anything you add.
+
+**M5a — the web app** shipped: a Vite+React SPA, CSP+HSTS, ask/upload/pages/invite screens, deployed
+to Railway. A six-specialist pre-landing review found 42 issues, all fixed before merge.
+
+**A security finding (D99) closed a real gap.** Supabase's Data API — REST access to every table via
+`anon`/`authenticated`/`service_role`, the last with `rolbypassrls = true` — was on by default on the
+live project and had never been used or audited by this codebase. Fixed by disabling it at the
+dashboard (no code change); the standing rule (disable on every future project, at creation) is D99.
+This is very likely the reason for §0's current DB fault — a credential rotation was the first
+follow-up action named.
+
+**A RAG eval harness was built and used once, immediately overturning its own first finding.** A
+40-question sample said one class of question (needing 4 documents at once) was stuck at 0% recall no
+matter how much was retrieved — read at the time as proof no ranking fix could reach it. Running the
+full 2,255-question set overturned that: the same bucket climbs to 19% by k=20, just slower than
+easier questions. **The lesson, worth internalizing before trusting any small-sample finding in this
+repo again:** a flat curve at n=10-40 is not evidence of a structural ceiling. One real change shipped
+from the full run — `MAX_PER_PAGE` 3→2 in `src/search/hybrid.ts`, +3.3pp recall, 75 questions fixed
+and 0 broken, verified by simulating it offline first and then confirming the simulation matched the
+live engine to the decimal. Full reasoning: D100. A separate, real bug in the *other* eval harness
+(`novabyte-score.ts` was silently printing regressions as improvements and vice versa) was found and
+fixed in the same window — D101 — which is what makes an answer-quality check on retrieval changes
+possible for the first time.
+
+**A from-scratch audit of what M5b actually needs produced `docs/m5b.md`.** Six parallel area audits,
+each followed by a pass whose only job was to find implementations the auditor had missed — six
+claims were corrected that way, all in the direction of "more is built than the roadmap says." Read
+it before `CONTEXT.md` §5 for scope; it supersedes that section's item-by-item status and corrected
+six things `CONTEXT.md` itself had gotten stale on `docs/m5b.md` §7 lists them; the ones re-verified
+and folded into `CONTEXT.md` this pass are in its §5.1, §6.10, and the new §6.14/§6.15.
+
+**A gap analysis against gbrain (the MIT reference this repo forked from) produced
+`docs/pipeline-roadmap.md`** — nine milestones, M6 through M14, for the ingestion/enrichment work
+company-brain hasn't built (link extraction, contextual retrieval, a cycle/enrichment engine, etc.).
+It is a map, not a commitment — read its own "What to actually build" section before treating any of
+it as scoped work, and note it competes with M5b for the same calendar time.
+
+---
+
+## 3. Working in this repo — for either agent
+
+**This project will be worked on by both Claude Code and Codex sessions going forward.** Nothing
+below assumes one or the other; where something *is* tool-specific, it says so.
+
+**The two documents that matter are append-only vs. living, and mixing up which is which causes real
+damage:**
+
+- **`DECISIONS.md` is append-only.** Never edit a past entry's reasoning — if it turns out wrong,
+  fix it *forward*: add a new entry and put a one-line pointer in the old one ("Closed by D101" /
+  "Reversed by D66" — see the pattern used throughout). `CONTEXT.md` §7 is a whole section of
+  entries that *didn't* get a forward pointer when they should have, and the cost of following one to
+  a dead end is a wasted afternoon. Next available number: **D102**.
+- **`CONTEXT.md` is a living snapshot**, meant to be corrected and re-derived in place, not appended
+  to. It says explicitly at the top which SHA it was last checked against — if `master` has moved
+  since, treat every specific number/line-citation as a claim to verify, not a fact to quote.
+- **`docs/m5b.md` has its own refresh methodology**, described in its own §8: six parallel area
+  audits (by topic, not by file), each followed by an *adversarial* pass whose only job is to refute
+  the "missing" findings by locating the implementation the first pass missed. It is expensive to
+  produce and cheap to read — that asymmetry is the entire reason it exists as a separate file rather
+  than folded into `CONTEXT.md` §5.
+- **This file (`HANDOVER.md`) gets rewritten, not appended to**, per the note at the top.
+
+**No Claude-Code-specific tooling is assumed anywhere in this repo's own process.** If a past session
+mentions `/autoplan`, `AskUserQuestion`, or a gstack skill, that describes *how a Claude Code session
+happened to do its own review* — it is not a repo convention and Codex has no equivalent. Every
+verification step that actually matters is a plain command, listed in §4 below, runnable identically
+from either tool. Two conventions worth carrying into any process, regardless of which agent is
+running it:
+
+- **Break a guard on purpose before trusting it.** M4's own review (D97) found seven guards that
+  passed with their subject deleted. If you add a test or a doctor check, verify it goes red when the
+  thing it protects is broken — not just green when the thing is fine.
+- **Measure before diagnosing, especially on a small sample.** §2's eval-harness paragraph above is
+  the concrete example: n=40 said one thing, n=2,255 said another, and the cheap full run was
+  available the whole time.
+
+**Working across sessions/worktrees** — the concrete failure mode from this exact handoff, recorded
+so it doesn't repeat: two sessions ran in separate worktrees, one merged the other's branch via PR
+without the first session knowing, and the first session's local `git log` kept showing its own
+branch tip as if it were current. The fix: `git fetch origin && git rev-parse HEAD origin/master` —
+comparing against the fetched **remote** ref, not a cached local one — before assuming your starting
+point is `master`'s actual tip. Do this at the start of a session and again before any push. Full
+account: `CONTEXT.md` §1's fourth lesson.
+
+---
+
+## 4. Commands
+
+```bash
+bun run typecheck                        # no DB needed; trust this one right now
+bun run build:web                        # no DB needed; trust this one right now
+bun run test                             # DB-dependent suites will fail until §0 resolves
+```
+
+Once §0 is confirmed resolved:
+
+```bash
+bun run migrate && bun run doctor        # doctor must be green; note and report the check count,
+                                          # it's a live dispute (CONTEXT.md §6.13/§9)
+CB_REQUIRE_LIVE_TESTS=1 bun run test     # a SKIP here is a failure, by design
+bun run dump:top8 --check                # retrieval regression guard (A17 corpus — shallow, see D100)
+bun run eval:rag --dataset multihop      # the RAG harness; docs/eval-rag.md has the full flag surface
+DATASET=~/Desktop/novabyte-test-dataset bun run eval:novabyte   # now scoreable correctly (D101)
+```
+
+`.env` at the repo root is a **symlink to the main worktree's file**, shared across every worktree.
+It is gitignored. Never copy over it, never print it, and remember that Bun auto-loads it — you
+cannot get a genuinely DB-free test run by unsetting variables on the command line (§0).
+
+---
+
+## 5. Where to pick up
+
+**Read `docs/m5b.md` first — do not re-derive "what's left" from `docs/plan.md` or from this
+section.** It's a verified register with `file:line` evidence for every item, ranked by whether it
+blocks the actual self-serve gate rather than by roadmap prose, and it is far more current than
+anything below could be kept.
+
+The two items that most need a **founder** decision, not a coding session, because both were true at
+last check and neither has a purely-technical resolution:
+
+1. **The leak canary has never run on a CI runner.** Zero secrets configured, repo still private (so
+   even fully configured, GitHub's free tier won't let it gate a merge). `docs/m5b.md` §4.1 has the
+   full six-step sequence, already agreed 2026-08-09 but not recorded as a `DECISIONS.md` entry
+   anywhere until someone writes it up — do that as part of executing it, not after.
+2. **§0's database fault** — needs the founder to confirm whether it's an in-progress rotation or
+   something else, before any session spends time on it as a bug.
+
+The single largest **buildable** item, per `docs/m5b.md`: team scope, end-to-end (§2.1 there, sized
+XL). The substrate exists and is completely inert — no write path, and a keyring read that needs
+either a sixth `SECURITY DEFINER` or a two-phase read (the latter works today with zero new SQL,
+`docs/m5b.md` §2.1 has the exact reasoning). Whether it's in scope at all before a design partner asks
+for it is itself an open question `docs/m5b.md` §6.1 names explicitly — don't assume it's next just
+because it's biggest.
+
+The cheapest real wins, all independently shippable, all named with exact `file:line` in
+`docs/m5b.md` §3: a stale line of copy in the upload flow claiming re-scoping isn't possible (it
+shipped in `07aee51`); the empty-brain cold-start not switching tabs after a successful upload; no
+demo script exists despite being named in `docs/plan.md`; the A17 seed data can't demonstrate the
+scope distinction it exists to demonstrate.
+
+**Once §0 resolves and `eval:novabyte` is runnable again (D101 made it trustworthy, nobody has run it
+since):** the natural next step for the retrieval work in D100 is running the shipped `MAX_PER_PAGE`
+change — and the larger, metric-suspicious `MAX_PER_PAGE = 1` option — through it, since that's the
+only gate that can currently tell a real answer-quality improvement from a document-count artifact.

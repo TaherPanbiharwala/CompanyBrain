@@ -1272,10 +1272,35 @@ Two things recorded because the result reads cleaner than the decision was:
 1. It ships **below the 5pp threshold pre-registered before the run**. The founder chose the
    fixed/broken split (75/0) over the aggregate. A deliberate override, not an oversight — noted so
    that the next person does not read 3.3pp as having passed a bar it did not.
-2. It has **not** passed an answer-quality check. `eval:novabyte` is the intended gate and
-   `novabyte-score.ts` carries a live UP/DOWN inversion (`CONTEXT.md` §6.10) that must be fixed
-   before it can serve as one.
+2. It has **not** passed an answer-quality check. `eval:novabyte` is the intended gate and, at the
+   time of this decision, `novabyte-score.ts` carried a live UP/DOWN inversion (`CONTEXT.md` §6.10)
+   that had to be fixed before it could serve as one. **Closed by D101**, same session.
 
 **A17 cannot protect this class of change.** `dump:top8 --check` is unchanged at both cap values,
 because the A17 corpus is 12 pages / 14 chunks and almost no page has a third chunk to cap. The
 guard is real for ranking changes and blind to per-page caps until it runs on a corpus with depth.
+
+## D101 — `novabyte-score.ts`'s UP/DOWN inversion is fixed; the D100 promotion gate is now usable (2026-08-09)
+
+`findIndex` returns `-1` for "not found", and a plain numeric comparison treats `-1` as the *best*
+possible rank rather than the worst. So whenever a relevant document was missing on either side of a
+before/after comparison, the verdict inverted: a doc present in OLD but missing in NEW (a real
+regression) printed **UP**; a doc missing in OLD but present in NEW (a real improvement) printed
+**DOWN**.
+
+**Fix, `9a7ceb0`:** map "not found" to worse-than-any-real-rank (`Infinity`) before comparing ranks,
+rather than comparing the raw `-1`. `pos()`'s `MISS` display, which already handled `-1` correctly,
+is untouched — only the `UP`/`DOWN` comparison used the raw index.
+
+**Verified against the actual bug, not just the diff.** Two synthetic cases were run through both the
+broken and fixed code: a doc found in OLD (rank 0) and missing in NEW, and the reverse. The broken
+code printed `UP` and `DOWN` respectively — confirmed by reverting the fix and re-running before
+restoring it. The fixed code prints `DOWN` and `UP`, the correct verdicts for a real regression and a
+real improvement.
+
+**Why this belongs in the log rather than as a bare bugfix commit message.** D100 named this exact
+defect as the reason a swept retrieval config could not yet be checked against NovaByte's
+answer-quality gate — the comparison the gate depends on was silently inverting its own verdict on
+every question where document coverage changed on either side. That gate is now usable. It is still
+**unused**: no config has been run through it since the fix, and doing so is the natural next step
+before promoting `MAX_PER_PAGE = 1`'s +13.8pp (D100) or any other swept configuration.

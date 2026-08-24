@@ -16,21 +16,28 @@ What remains open is listed in §5 and marked inline through §6 — nothing bel
 unless it says so and names the commit.
 
 **How this relates to the other docs:** `DECISIONS.md` is the reasoning and survives refactors —
-trust it, with the corrections in §7. `HANDOVER.md` narrates the session that built M3 — trust it,
-with the corrections in §8. `README.md` is stale in the ways §5.4 lists. This file is where the repo
-actually *is*, and where those three get out of sync with the code or each other.
+trust it, with the corrections in §7. `HANDOVER.md` is a per-session artifact, rewritten at the end
+of each session it makes sense to hand off from — read the **current** file for where things stand;
+it no longer narrates M3 (§8 below is a historical record of corrections made to *that* version,
+kept because the underlying facts are still true, not because the M3 text still exists to read
+alongside them). `docs/m5b.md` is the current, verified "what's left" register — read it before this
+file's own §5 for scope. `README.md` is stale in the ways §5.4 lists. This file is where the repo
+actually *is*, and where those get out of sync with the code or each other.
 
 Written against `master` = **`2ac308a`**, then updated for **M4**, then for **M5a**. `master` is now
-**`a9d43f1`** ("M5a: the web app, plus every fix from its pre-landing review"), six commits past
-`72a06b6` (`4ea57d7`, `8f02d4b`, `4d4ff2c`, `8fc0be4`, `9d63033`, `a9d43f1`). **Those six carry a real
-code diff** — 47 files, +5,165/−126 across `src/`, `test/` and the new `web/` tree (new `src/web.ts`,
-rewritten `src/api/server.ts`, `src/auth/csrf.ts`, `src/ingest/lifecycle.ts`, `src/index.ts`, the
-whole `web/` SPA, five new test files) — so this file's own standing rule has fired: **§6 and §10 were
-measured against `0b614ef`/`72a06b6` and have been re-derived here against `a9d43f1`, in the same pass
-that produced this edit.** Every file:line citation in §6 and §10 below has been re-checked; a handful
-that were already wrong when written (pointing at the wrong lines even at `72a06b6`) are also
-corrected. §10 is timestamped observation and decays fastest regardless — re-run it, don't trust it,
-the next time master moves.
+**`f05cde5`**, twelve commits past `a9d43f1`: the ingest-hardening review (`07aee51`), the retrieval
+latency fix (`4bfd891`), the Supabase Data API finding (`2a4b091`, D99), then **three merged PRs** —
+a dataset-agnostic RAG eval harness plus one retrieval tuning change (`e4ab037`..`9a7ceb0`, D100/D101,
+detailed in §6.15), `docs/pipeline-roadmap.md` (M6+ map), and `docs/m5b.md` (a from-scratch, six-audit
+verification of every M5b item, with its own adversarial refutation pass — see §5's banner and §7).
+
+**This pass is corrections, not a full re-derivation.** `docs/m5b.md` already did the expensive
+six-audit pass this file's own methodology calls for; duplicating it here would waste the exact effort
+its existence is meant to save. What follows fixes the specific inaccuracies `docs/m5b.md` §7 found in
+this file, plus two found independently while verifying those (§5.1's call-site count had already
+drifted again since `docs/m5b.md` was written, and a new, live, undated-until-now database fault — see
+§6.14 — that blocks re-measuring anything else). §10 remains the fastest-decaying section and was NOT
+re-run this pass beyond what §6.14 forced; re-run it before trusting any row.
 
 ---
 
@@ -52,7 +59,10 @@ ls -l .env                            # if it's a symlink, do NOT `cp` onto it �
 cp .env.example .env                  # only if it's not a symlink
 bun install                           # M3 added mammoth/unpdf/xlsx — a stale node_modules fails typecheck
 bun run migrate && bun run migrate    # TWICE — doctor.ts:9's idempotency check needs a second run
-bun run doctor                        # must be green: 73 checks
+bun run doctor                        # must be green — check count disputed (73 vs 75, §6.13/§9);
+                                       # AS OF 2026-08-09 this fails outright against the shared .env
+                                       # with a tenant-not-found error — see §6.14 before debugging it
+                                       # as your own environment's fault
 bun run dev                           # GET /health -> {"status":"ok"}
 ```
 Dev sign-in needs `DEV_AUTH=1 DEV_LOGIN=1` uncommented in `.env` (both ship commented out).
@@ -88,8 +98,14 @@ verified by deleting each guard's subject, and merged. M4's own gate — "an unf
 nothing and doctor is green" — is now met on evidence that survived adversarial review, not just
 assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingly.
 
-**If you do only three things:**
+**If you do only four things:**
 
+0. **Do not trust any live command until you check the database connects.** As of 2026-08-09, `bun
+   run doctor` (and therefore `migrate`, any live test, `dump:top8`, `eval:rag`) fails against the
+   shared `.env` with `PostgresError: tenant/user postgres.gyscmykxazysahsbokll not found` — the
+   Supabase project this credential names does not currently resolve. Full detail, and why this is
+   plausibly an *in-progress* fix rather than a regression, at §6.14. Confirm with the founder before
+   assuming anything live is broken versus mid-rotation.
 1. ~~Vendor `docs/enabling-team-scope.md`~~ — **done in `4ea57d7`.** The spec is now in the repo at
    `docs/enabling-team-scope.md`, with a preface listing six ways it is stale against the current tree
    (`0007` is taken so the real migration is `0013`; touch point 3's keyring read runs before
@@ -97,9 +113,14 @@ assertion. §5.3 and the perf-recall bullets in §6.6/§9 are updated accordingl
    Read the preface before the body. Team scope itself is still unbuilt — see §5.1.
 2. **Configure the GitHub repo secrets, or the leak canary is decorative** (§6.2). The remote now
    exists and the workflow was correctly gated before it — the risk that used to sit here is closed.
-   But the seven secrets the `live` job reads were never set in GitHub Settings, so it fails on every
-   merge to master while `offline` passes. D16 calls the canary sacred; today it runs only when a
-   human types the command locally.
+   But the **ten** secrets the `live` job reads (not seven — corrected against a fresh read of
+   `.github/workflows/ci.yml`, which also caught two omissions in the old count:
+   `OPENAI_API_KEY`/`OPENROUTER_API_KEY`) were never set in GitHub Settings, so it fails on every
+   merge to master while `offline` passes — confirmed live, 2026-08-10: `gh secret list` returns
+   empty and every run since the workflow existed dies at `Apply migrations`. D16 calls the canary
+   sacred; today it has never once run on a runner. `docs/m5b.md` §4.1 has the full six-step sequence,
+   which also depends on making the repo public — confirmed **still private** — because a required
+   status check needs a paid plan or a public repo on GitHub's free tier.
 3. **Decide where spend accounting lives** (§5.3). M4 shipped a rate meter, not a cap — there is
    still no ledger, quota or usage table anywhere in `src/`. D18 puts it at M5; `docs/plan.md` says
    M8. Those disagree, and the decision is yours.
@@ -158,6 +179,20 @@ commits ahead" while holding real work as an **uncommitted file** in a worktree 
 did not match its branch. Check `git status` in every worktree, not just the refs.
 
 Backup refs from the reconciliation are at `refs/backup/20260730-121206/`.
+
+**A fourth lesson, 2026-08-09/10: two sessions ran concurrently in separate worktrees, and one merged
+past the other without either noticing until this pass.** One worktree (`compassionate-cohen-8b3789`)
+held the eval-harness branch at its own last-known tip; a second worktree
+(`context-review-5957e4`, a different name from its branch — the same mismatch the third lesson
+above warns about) was on a *different* branch (`claude/mvp-remaining-work-2c5048`) that had already
+merged the first branch via PR, then done a full independent M5b audit, then merged again — three PRs
+landed on `master` while the first worktree's session had no way to know. The first worktree's
+`git log` still showed its own branch tip as HEAD; only `git fetch origin && git rev-parse HEAD
+origin/master` — comparing against the **remote**, not the local ref cache — surfaced the gap.
+**The check §0 already prescribes (`git merge-base master HEAD` equals `git rev-parse master`) must be
+run against `origin/master` after a fetch, every session, not just once at branch-creation time** —
+a long-running session's local `master` ref goes stale the moment any other session pushes, and nothing
+signals that locally.
 
 ---
 
@@ -273,12 +308,19 @@ web/             the M5a frontend (Vite + React 19 + Tailwind 4, same-origin, no
 (typecheck + `bun run build:web` + unit + the two meta-tests) and `live` (the D16 leak canary,
 **master-only** since M5a Phase −1). The `build:web` step is not cosmetic: the SPA-serving
 assertions in `test/web-mount.test.ts` are gated on `web/dist` existing, so without it they skipped
-on every CI run, silently. **`live` is currently RED on every master push** — `gh secret list` is
-empty, so none of `DATABASE_URL` / `DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `CB_APP_DB_PASSWORD`
-/ `CB_AUTH_DB_PASSWORD` / `SESSION_SECRET` / `CB_MCP_*` exist in GitHub Settings, and the job dies at
-`Apply migrations` in ~6s. `offline` passes. The D16 "canary runs in CI forever" guarantee is
-therefore still not real: the file exists, the credentials do not. Configuring the repo secrets —
-or standing up the second CI database §9 already asks for — is the open action. Bun pinned
+on every CI run, silently. **`live` is currently RED on every master push** — reconfirmed 2026-08-10,
+`gh secret list` is empty and every run since the workflow existed dies at `Apply migrations` in
+~40-45s — so none of the **ten** secrets the job reads exist in GitHub Settings: `DATABASE_URL` /
+`DATABASE_ADMIN_URL` / `DATABASE_AUTH_URL` / `CB_APP_DB_PASSWORD` / `CB_AUTH_DB_PASSWORD` /
+`SESSION_SECRET` / `CB_MCP_PRINCIPAL` / `CB_MCP_WORKSPACE` / `OPENAI_API_KEY` /
+`OPENROUTER_API_KEY` (grepped directly from `ci.yml`'s `secrets.*` references — an earlier pass here
+undercounted at seven, missing the two provider keys; `docs/m5b.md` §4.1 corrected it to ten first).
+`offline` passes. The D16 "canary runs in CI forever" guarantee is therefore still not real: the file
+exists, the credentials do not — and even fully configured, the repo is **confirmed still private**,
+so GitHub's free tier cannot make `live` a required status check regardless (`docs/m5b.md` §4.1's
+six-step sequence names making the repo public as the precondition, not an optional hardening step).
+Configuring the repo secrets — or standing up the second CI database §9 already asks for — is the
+open action, and it is a founder action, not a code change. Bun pinned
 to `1.3.14` in this file only — no `engines`/`.tool-versions` elsewhere. Dependencies are pinned
 separately: `bun.lock` plus two exact specs in `package.json` (`@modelcontextprotocol/sdk` and
 `xlsx`, the latter from `cdn.sheetjs.com`, not npm — see §4).
@@ -336,16 +378,32 @@ missed." Everything below that is missing:
 
 - **No write path.** No op creates a team or assigns a member, and `narrowGrants` (`migrate.ts:337`)
   explicitly revokes `cb_app`'s INSERT/UPDATE/DELETE on all three of `acl_grants` (`migrate.ts:353`),
-  `teams` (`:354`) and `team_memberships` (`:355`). A correct keyring would have nothing to read.
-- **Chicken-and-egg on the read path.** The keyring must be built *before* `withScopedTx` opens
-  (grants are GUCs set at transaction start), but `acl_grants` is itself RLS-protected on
-  `workspace_id = app.workspace`. Resolving team grants needs a **sixth `SECURITY DEFINER`** in
-  `cb_internal` plus a doctor fixture change. Not in the five touch points.
-- **Ten call sites, not one.** `resolveGrants` is called at `auth/resolver.ts:122`, `api/call.ts:37`,
-  `api/mcp.ts:24`, `api/dev-auth.ts:98`, and in six `scripts/` files — `load-a17-corpus.ts:34`,
-  `ingest-file.ts:80`, `novabyte-eval.ts:66`, `measure-a17.ts:67`, `run-a17-eval.ts:27`,
-  `dump-top8.ts:47` — including the NovaByte harness that is supposed to *prove* the fix. Patching
-  only `resolver.ts` leaves team pages invisible on CLI and MCP.
+  `teams` (`:354`) and `team_memberships` (`:355`). A correct keyring would have nothing to read. Only
+  `acl_grants_ws` is `WITH CHECK (false)` (`0001_m2_auth.sql:89-92`) — `teams_ws` and
+  `team_memberships_ws` were never re-created by `0001` and keep plain workspace-equality
+  `WITH CHECK`, so a tenant-confined write to those two tables is already **permitted by RLS**; only
+  the table privilege is revoked. That makes the write path exactly the `create_invite` shape, not a
+  policy design problem (corrected against `docs/m5b.md` §2.1, which re-verified this from the
+  policy fixtures — the two tables are not equally write-blocked, as this section previously said).
+- **Chicken-and-egg on the read path, but the fix is a choice, not a hard requirement.** The keyring
+  must be built *before* `withScopedTx` opens (grants are GUCs set at transaction start), but
+  `acl_grants` is itself RLS-protected on `workspace_id = app.workspace`. A **sixth
+  `SECURITY DEFINER`** in `cb_internal` is one answer and preserves the one-DB-call invariant
+  (`src/auth/resolver.ts:5-9`). But `team_memberships_ws`'s qual carries no `current_grants()` term
+  (confirmed in `test/fixtures/expected-policies.json`), so a two-phase read inside a self+ws-keyring
+  `withScopedTx` works **today, with zero new SQL** — cheaper, if the definer's centralization isn't
+  needed yet. This section previously called the definer a requirement; `docs/m5b.md` §2.1 corrected
+  it to a design preference.
+- **Twelve call sites, not ten.** `resolveGrants` is called at `auth/resolver.ts:122`,
+  `api/call.ts:37`, `api/mcp.ts:24`, `api/dev-auth.ts:98`, and in eight `scripts/` files —
+  `load-a17-corpus.ts:34`, `ingest-file.ts:80`, `novabyte-eval.ts:66`, `measure-a17.ts:65`,
+  `run-a17-eval.ts:27`, `dump-top8.ts:47`, `explain-search.ts:73`, and **`eval-common.ts:118`** —
+  including the NovaByte and MultiHop harnesses that are supposed to *prove* the fix. Patching only
+  `resolver.ts` leaves team pages invisible on CLI, MCP and both eval harnesses. This count has now
+  drifted twice in one week: this section said ten, `docs/m5b.md` (verified 2026-08-10) corrected it
+  to eleven by finding `explain-search.ts`, and a fresh grep run while writing *this* correction found
+  a twelfth — `eval-common.ts`, added by the RAG eval harness (§6.15) after `docs/m5b.md` was written.
+  **Re-grep before trusting any number here**; it is not a stable count.
 - **`0007`'s slug indexes assume two scopes.** A third needs a third partial index, and `import.ts`
   matches on the *index name* to build its 409.
 - **The spec is vendored — this is DONE.** `docs/enabling-team-scope.md` is tracked in the repo as of
@@ -615,10 +673,13 @@ are all clamped — that is the input that reaches this path.
 Verified against the actual dataset at `~/Desktop/novabyte-test-dataset`. Pass 1's stronger claims
 were **refuted**; what survives:
 
-- **LIVE.** `novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is missing on either
-  side, because `findIndex` returns `-1`. A question that fell from rank 3 to *nowhere* prints
-  ` UP`; one that went from nowhere to rank 1 prints `DOWN`. The aggregate MRR is correct (guarded
-  by `if (firstRel >= 0)`), so summary and detail contradict each other silently.
+- ~~**LIVE.** `novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is missing on either
+  side, because `findIndex` returns `-1`.~~ — **FIXED `9a7ceb0` (D101).** `-1` now maps to
+  worse-than-any-real-rank before the comparison, rather than comparing the raw index. Verified
+  against the actual bug: reverting the fix and re-running two synthetic cases (a doc found-then-lost,
+  a doc lost-then-found) reproduced the exact inverted `UP`/`DOWN` this bullet describes; the fix
+  prints both correctly. This was D100's stated blocker on using `eval:novabyte` as the answer-quality
+  gate for a swept retrieval config — the gate is now usable, and as of this writing still unused.
 - **LIVE.** `leak_canary`'s `forbidden_strings` — the actual canaries — frequently live *only* on
   team-scoped pages that `:107` never ingests. **lc-021: 7 of 7 canaries unreachable**; lc-022: 6 of
   7; lc-020: 5 of 8. The designed leak target was never loaded, leaving `forbidden_workspace` as the
@@ -718,12 +779,71 @@ automatic RLS** off: migrations already `ENABLE ROW LEVEL SECURITY` explicitly o
 `doctor.ts` asserts both "every public table has RLS ENABLED" and "no table is RLS-enabled with zero
 policies", so the event trigger it installs is redundant and untracked by our own tooling.
 
-**Why `doctor` did not catch this, which is the durable lesson.** Its 75 checks are thorough about
+**Why `doctor` did not catch this, which is the durable lesson.** Its checks are thorough about
 `cb_app`/`cb_auth` — `expected-grants.json` and `expected-column-grants.json` pin their privileges
 exactly — but the census only ever asks about the roles this repo creates. A role the *platform*
 adds, holding grants the platform issued, is outside every fixture. Worth a check if the Data API is
 ever deliberately enabled: assert `anon`/`authenticated` hold no privilege on any `public` table, and
-that no role other than `postgres` has `rolbypassrls`.
+that no role other than `postgres` has `rolbypassrls`. (The exact check count is disputed elsewhere in
+this file and in `README.md` — this sentence originally said "75"; do not treat that as authoritative,
+see §6.14 for why it could not be re-measured this pass and §9 for the standing dispute.)
+
+### 6.14 [critical, undated fault — surfaced 2026-08-10, unresolved] The shared `.env`'s Supabase project does not currently resolve
+
+`bun run doctor` fails with `PostgresError: (ENOTFOUND) tenant/user postgres.gyscmykxazysahsbokll not
+found`, reproduced twice (not a transient blip). Confirmed this is the real, shared credential:
+`.env` at the repo root is a symlink to `/Users/taherpanbiharwala/dev/company-brain/.env` (the same
+file §4 already documents as shared across worktrees), and Bun auto-loads it — so every worktree, and
+every command that opens a Postgres connection, hits this. That includes `migrate`, any live-gated
+test, `dump:top8`, `eval:rag`, and `bun run test` even with DB env vars unset on the command line: Bun
+repopulates them from `.env` regardless, which is the exact "the offline loop was never really
+offline" trap §10 already names — it now applies to a broken connection, not just an unintentionally
+live one. Effect measured directly: `bun run test` with `DATABASE_URL` etc. unset in the invoking
+shell still produced 585 pass / 17 skip / **50 fail**, all real Postgres connection errors, not
+skips.
+
+**Plausibly expected, not a regression** — worth checking with the founder before debugging it as one.
+`docs/m5b.md` §4.1's six-step CI-database sequence names, as step 1 and explicitly a founder action:
+*"Rotate the Supabase database and both role passwords (a review subagent leaked connection strings
+into its own output)."* A rotated or replaced project would produce exactly this error — a
+tenant/project reference in the connection string that no longer exists — until `.env` is updated to
+point at the new one. This file cannot distinguish "credential rotation in progress" from "the project
+was deleted" from any other cause; it can only confirm the failure is real, reproducible, and total.
+
+**Consequence for this pass:** every live number in this file that could otherwise have been
+re-verified — the doctor check count (§0, §6.13, §9), the resolveGrants call-site count's live-grep
+confirmation (§5.1, grep-based and unaffected), anything in §10 — could not be re-run against a live
+database. Typecheck and `build:web` are unaffected (no DB dependency) and were confirmed clean.
+`bun run doctor` **must** be run and confirmed green before trusting any of §10 or the doctor-count
+rows elsewhere in this file again.
+
+### 6.15 A dataset-agnostic RAG eval harness, and the first retrieval change it produced
+
+Built and merged (`e4ab037`..`9a7ceb0`) in the same window as `docs/m5b.md`. Full detail lives in
+`docs/eval-rag.md` and D100/D101 — this is the pointer, not a duplicate.
+
+**What it is.** `src/eval/` (pure scoring, no DB, no network — `slug.ts`, `core.ts`,
+`adapters/`) plus `scripts/{seed,load,run}-*.ts`, built behind a `DatasetAdapter` seam so a benchmark
+is one file, not a shape threaded through the loader/scorer/report. MultiHop-RAG (2,556 questions,
+609 documents) is the first dataset; the internal shape is BEIR-like so a second costs an adapter, not
+a rewrite.
+
+**What it found, and the lesson worth carrying forward.** A 40-question sample showed the
+4-required-document question bucket flat at 0.0% recall across every k tested, which read as
+structural proof that no ranking fix could reach it — two independent plan reviews and the session
+that produced them all treated this as settled. Running the **full** 2,255-question set overturned it:
+the same bucket climbs to 19.2% by k=20, just slower than the others. The n=40 result was noise from a
+low base rate at small sample, not a wall. **The concrete rule this earns:** a flat curve from a
+double-digit sample is not evidence of a structural ceiling; run the full set before treating "0% at
+every k" as a diagnosis rather than a symptom of n.
+
+**What shipped.** `MAX_PER_PAGE` 3 → 2 in `src/search/hybrid.ts` — the only production code change.
+Simulated offline against banked ranked lists, then confirmed live to the decimal at every
+question-hop-count, before merging: `all-evidence-recall@8` 36.9% → 40.3%, 75 questions fixed, 0
+broken. Full reasoning, including why this shipped *below* the pre-registered 5pp threshold and why
+`MAX_PER_PAGE = 1`'s larger +13.8pp is a metric artifact rather than a better answer, is D100. The
+`novabyte-score.ts` fix that closes D100's stated blocker is D101 (§6.10 above records the same fix in
+its own context).
 
 ---
 
@@ -758,7 +878,13 @@ twelve.
 
 ---
 
-## 8. `HANDOVER.md` — corrections (now on master, merged with the M3 line)
+## 8. `HANDOVER.md` — corrections to the M3 version (superseded; kept for provenance)
+
+**`HANDOVER.md` has since been rewritten** to hand off from the current point in the repo, not from
+M3 — it is a per-session artifact, not a running log. Everything below refers to the M3-session text
+that file used to contain. The corrections themselves remain true statements about the *code* (the
+index existed, `worker.ts`'s rebind timing, migration idempotency) regardless of what the current
+`HANDOVER.md` says, which is why this section stays rather than being deleted.
 
 The file inventory, all extraction descriptions, the migration descriptions, "five new ops",
 "nothing was deleted", and the arm weights **all verified true**. Corrections:
