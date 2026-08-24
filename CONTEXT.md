@@ -1046,19 +1046,20 @@ retrieval numbers above it are stale (§6.7).
   tenant **0 rows** under `iterative_scan=off` and all 16 under `relaxed_order`. `extract/index.ts`'s semaphore can also
   over-grant under burst (`acquire()` increments after awaiting, `release()` decrements before
   waking) — reachable only if an `await` is ever introduced between them.
-- **Cross-model dissent — still open, but the plan for it has changed (D103).** Codex's token was
-  revoked through at least this pass (`codex login status` reports "Logged in" while every API call
-  401s with `refresh_token_invalidated` — the status check itself is unreliable, not just the
-  token). **Six** passes now single-model — the CI/leak-canary review (`/autoplan`, this pass) hit
-  the identical error and had to re-verify every subagent finding independently rather than trust a
-  second voice. **The founder has stated an intent to bring Codex into part of this project going
-  forward.** That does not retroactively fix any of the six passes, and nothing here should be read
-  as claiming the auth issue is resolved — it is recorded exactly as observed, most recently in this
-  pass. What changes: the next session that invokes Codex should check `codex exec` with a real call
-  (not `login status`) before trusting the result, and if it succeeds, D103 is the place recording
-  what resumes (dual-voice `/autoplan`/`/review` passes) and what stays a single-model habit regardless
-  (the fresh-context-agent substitute below, which is independent of whether Codex works and has
-  caught real defects on its own).
+- **Cross-model dissent — still open, but the diagnosis changed 2026-08-24 (D103's own update, not a
+  new entry).** Six passes ran single-model on a `refresh_token_invalidated` 401 through at least
+  2026-08-10. **Re-verified this pass and no longer reproduces**: `codex exec` against a real prompt
+  now authenticates successfully (checked twice) — the blocker moved to model selection, not auth. The
+  installed `codex-cli 0.142.5` rejects the configured default (`gpt-5.6-terra`, "requires a newer
+  version of Codex") and rejects every explicit fallback tried (`gpt-5`, `gpt-5-codex`,
+  `gpt-5.1-codex`, `codex`, each "not supported when using Codex with a ChatGPT account") — structured
+  400s, not 401s. **Still zero successful dual-voice calls**, so this is not yet a working
+  cross-model review; a CLI upgrade is the plausible next step and was not attempted here (upgrading
+  shared tooling outside an explicit request is a founder call, not a session's to make
+  unprompted). D103 has the full detail and is the place to record the outcome once a call actually
+  succeeds — update it in place per its own instruction, don't open a new entry. The
+  fresh-context-agent substitute (below) stays regardless of how this resolves — it is independent of
+  whether Codex works and has caught real defects on its own across every pass since Pass 2.
 - **`docs/plan.md`** beyond its gate-resolution section — still the only definition of M4 and of
   M5's *phases*. M5's **surfaces** are now defined by `docs/screens.md` (added `8fc0be4`, extended in
   M5a): routes, screens, primary actions and reachable states, including the M5b split. Read both;

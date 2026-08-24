@@ -1415,3 +1415,17 @@ records is the operating change once it does work:
 
 Related: `CONTEXT.md` §9's cross-model-dissent bullet carries the same history in narrower form and
 cross-references this entry.
+
+**Status update, 2026-08-24 — instruction #1 above was followed and the result changes the diagnosis,
+not yet the outcome.** `codex exec` against a real prompt no longer 401s with
+`refresh_token_invalidated` — reproduced twice, both against the default model and against four
+explicit fallbacks (`gpt-5`, `gpt-5-codex`, `gpt-5.1-codex`, `codex`). **Auth now works.** What fails
+is model selection: the configured default, `gpt-5.6-terra`, returns `400 "requires a newer version
+of Codex"` against the installed `codex-cli 0.142.5`, and every explicit fallback tried returns `400
+"not supported when using Codex with a ChatGPT account"`. So the six-pass history's diagnosis — an
+auth problem — is no longer the correct one; the blocker moved to CLI/model-catalog version, which a
+`codex` CLI upgrade plausibly resolves and this session did not attempt (upgrading a shared tool
+outside an explicit request is exactly the kind of unrequested-change the founder should authorize,
+not a session). Dual-voice review (#2) is still not usable — no model call has yet succeeded — but the
+next session attempting it should try a CLI upgrade before re-diagnosing auth, and should update this
+entry again rather than opening a new one, per #4.
