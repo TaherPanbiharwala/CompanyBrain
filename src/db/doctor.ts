@@ -285,6 +285,45 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
         `every private page readable by every workspace member. Do NOT run \`doctor --update\`. Re-run ` +
         `\`bun run migrate\`, then confirm: select * from _migrations where filename = 'migrations/0007_acl_rls.sql';`);
 
+  // ── M6: soft-delete visibility ─────────────────────────────────────────
+  // deleted_at IS NULL lives on a SEPARATE, RESTRICTIVE, FOR SELECT-only policy (migration 0016) —
+  // NOT as a clause on pages_ws/content_chunks_ws. 0014 originally tried the single-policy shape and
+  // it measurably failed: a FOR ALL policy cannot have UPDATE diverge from what SELECT would require
+  // of the same row, regardless of what its own WITH CHECK text says (0016's header has the measured
+  // reasoning). Two checks, because the property being protected is that this stays split: the
+  // restrictive policy exists with the right shape (RESTRICTIVE + FOR SELECT — permissive would do
+  // nothing, since permissive policies OR together and pages_ws would already grant the row; the
+  // wrong cmd would block writes too), and pages_ws/content_chunks_ws stay byte-identical to their
+  // 0007 form. A future "simplification" that folds deleted_at back into the FOR ALL policy would
+  // silently reintroduce the exact UPDATE failure 0016 fixed.
+  // rls-exempt: reads pg_policies (the policy TEXT) on the owner pool, never a content row — same
+  // reasoning as the aclPolicies query above; auditing a policy from inside the policy is circular.
+  const hideDeletedPolicies = await sql<{ tablename: string; policyname: string; permissive: string; cmd: string; qual: string | null }[]>`
+    select tablename, policyname, permissive, cmd, qual from pg_policies
+    where schemaname = 'public' and tablename in ('pages', 'content_chunks') and policyname like '%_hide_deleted'`;
+  const EXPECTED_HIDE_DELETED_TABLES = ['content_chunks', 'pages'];
+  const badHideDeleted = hideDeletedPolicies.filter(
+    (p) => p.permissive !== 'RESTRICTIVE' || p.cmd !== 'SELECT' || !(p.qual ?? '').includes('deleted_at'),
+  );
+  const hideDeletedTables = [...hideDeletedPolicies.map((p) => p.tablename)].sort();
+  add('a RESTRICTIVE, SELECT-only deleted_at policy exists on pages and content_chunks (migration 0016)',
+    JSON.stringify(hideDeletedTables) === JSON.stringify(EXPECTED_HIDE_DELETED_TABLES) && badHideDeleted.length === 0,
+    JSON.stringify(hideDeletedTables) !== JSON.stringify(EXPECTED_HIDE_DELETED_TABLES)
+      ? `found on: ${hideDeletedTables.join(', ') || 'none'} — expected both pages and content_chunks. Re-run \`bun run migrate\`.`
+      : badHideDeleted.length
+        ? `wrong shape on: ${badHideDeleted.map((p) => `${p.tablename} (permissive=${p.permissive}, cmd=${p.cmd})`).join(', ')} — must be RESTRICTIVE + FOR SELECT.`
+        : '');
+
+  const wsPoliciesMentionDeletedAt = aclPolicies.filter(
+    (p) => (p.qual ?? '').includes('deleted_at') || (p.with_check ?? '').includes('deleted_at'),
+  );
+  add('pages_ws/content_chunks_ws do NOT mention deleted_at (it lives only in the restrictive policy above)',
+    wsPoliciesMentionDeletedAt.length === 0,
+    wsPoliciesMentionDeletedAt.length === 0
+      ? ''
+      : `deleted_at found on: ${wsPoliciesMentionDeletedAt.map((p) => p.tablename).join(', ')} — folding it back into ` +
+        `the FOR ALL policy breaks the soft-delete UPDATE the same way migration 0016 fixed. See that file's header.`);
+
   // D14's version floor, asserted nowhere until now. Below 0.8 there is no iterative scan, so
   // set_config('hnsw.iterative_scan', …) silently creates a placeholder GUC that accepts any string
   // and does nothing — D58's tenancy control, present in the code and absent from the server.
@@ -645,7 +684,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
     select p.proname as name, p.proconfig::text as config, p.proacl::text as acl
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where p.prosecdef and n.nspname = 'cb_internal' order by 1`;
-  add('all 5 cb_internal definers present', ours.length === 5, `found ${ours.length}`);
+  add('all 7 cb_internal definers present', ours.length === 7, `found ${ours.length}`);
   for (const fn of ours) {
     add(`${fn.name}: search_path pinned to 'pg_catalog, public, pg_temp'`,
       (fn.config ?? '').includes('search_path=pg_catalog, public, pg_temp'), fn.config ?? '(unpinned)');

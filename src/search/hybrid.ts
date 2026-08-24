@@ -219,7 +219,15 @@ export interface SearchOutcome {
 export async function hybridSearch(
   ctx: OperationContext,
   query: string,
-  opts?: { topK?: number },
+  opts?: {
+    topK?: number;
+    /** Only chunks whose effective_date is on or after this ISO date (migration 0014). */
+    since?: string;
+    /** Only chunks whose effective_date is on or before this ISO date. */
+    until?: string;
+    /** Only chunks whose author matches exactly. */
+    author?: string;
+  },
 ): Promise<SearchOutcome> {
   const topK = opts?.topK ?? DEFAULT_TOP_K;
 
@@ -268,7 +276,18 @@ export async function hybridSearch(
   // so the blend collapses to pure RRF over the surviving arms.
   const hasVector = vectorLiteral !== null;
 
-  const rows = await withScopedTx(ctx, (tx) => hybridQuery(tx, { query, orQuery, vectorLiteral, hasVector, fetchK }));
+  const rows = await withScopedTx(ctx, (tx) =>
+    hybridQuery(tx, {
+      query,
+      orQuery,
+      vectorLiteral,
+      hasVector,
+      fetchK,
+      since: opts?.since ?? null,
+      until: opts?.until ?? null,
+      author: opts?.author ?? null,
+    }),
+  );
 
   let hits: ChunkHit[] = rows.map((r) => ({
     chunkId: r.chunk_id,
@@ -339,6 +358,12 @@ export interface HybridQueryParams {
   vectorLiteral: string | null;
   hasVector: boolean;
   fetchK: number;
+  /** Metadata filters (migration 0014), null when not given. Ordinary correctness predicates, not
+   *  security ones — deleted_at is NOT among them; that stays enforced purely by RLS (see 0014's
+   *  header for why duplicating it here would be the wrong move, per D66). */
+  since: string | null;
+  until: string | null;
+  author: string | null;
 }
 
 /**
@@ -366,7 +391,7 @@ export function hybridQuery(
   tx: postgres.TransactionSql,
   p: HybridQueryParams,
 ): postgres.PendingQuery<FusedRow[]> {
-  const { query, orQuery, vectorLiteral, hasVector, fetchK } = p;
+  const { query, orQuery, vectorLiteral, hasVector, fetchK, since, until, author } = p;
   return tx<FusedRow[]>`
     with
     -- ── KEYWORD ARM ────────────────────────────────────────────────────────
@@ -399,6 +424,11 @@ export function hybridQuery(
       from content_chunks c
       where ${orQuery} <> ''
         and c.content_tsv @@ websearch_to_tsquery('english', ${orQuery})
+        -- Metadata filters (migration 0014). Ordinary correctness predicates, identical shape in
+        -- every arm — NOT deleted_at, which stays enforced purely by RLS (see the module header).
+        and (${since}::date is null or c.effective_date >= ${since}::date)
+        and (${until}::date is null or c.effective_date <= ${until}::date)
+        and (${author}::text is null or c.author = ${author}::text)
     ),
     kw_split as (
       -- Ranked WITHIN each tier, which is what lets the two leave as separate arms below. Each list
@@ -446,6 +476,9 @@ export function hybridQuery(
         from content_chunks c
         where ${hasVector}::boolean
           and c.embedding is not null
+          and (${since}::date is null or c.effective_date >= ${since}::date)
+          and (${until}::date is null or c.effective_date <= ${until}::date)
+          and (${author}::text is null or c.author = ${author}::text)
         order by c.embedding <=> ${vectorLiteral}::vector
         limit ${ARM_LIMIT}
       ) v
@@ -468,6 +501,9 @@ export function hybridQuery(
         join content_chunks c on c.page_id = p.id and c.ord = 0
         where ${orQuery} <> ''
           and to_tsvector('english', coalesce(p.title, '')) @@ websearch_to_tsquery('english', ${orQuery})
+          and (${since}::date is null or c.effective_date >= ${since}::date)
+          and (${until}::date is null or c.effective_date <= ${until}::date)
+          and (${author}::text is null or c.author = ${author}::text)
         -- ORDER BY belongs INSIDE the limit. Without it the LIMIT took an arbitrary 10 matching
         -- titles (physical order, on a seq scan) and the outer row_number() then ranked whatever
         -- happened to survive — so the rk values feeding RRF were not the title arm's best 10.

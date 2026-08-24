@@ -8,8 +8,10 @@ import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { withScopedTx } from '../db/client.ts';
 import { withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
-import { chunkText, estimateTokens } from './chunk.ts';
+import type postgres from 'postgres';
+import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
+import { contentHash } from './sanity.ts';
 import { OperationError } from '../api/errors.ts';
 
 export interface ImportPageInput {
@@ -19,6 +21,12 @@ export interface ImportPageInput {
   tags?: string[];
   scope?: PageScope;
   kind?: PackKind;
+  /** Who WROTE the document (not who uploaded it — that is owner_principal). */
+  author?: string;
+  /** Unstructured metadata bag. Bounded to 10KB at the op boundary (src/api/operations.ts). */
+  metadata?: Record<string, unknown>;
+  /** ISO date (YYYY-MM-DD) the document is ABOUT. Omit to default to the upload date. */
+  effectiveDate?: string;
 }
 
 export interface ImportPageResult {
@@ -36,6 +44,13 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
   const scope = input.scope ?? DEFAULT_PAGE_SCOPE;
   const acl = aclForScope(scope, ctx);
   const kind = input.kind ?? DEFAULT_PACK_KIND;
+  // Provenance sentinel (migration 0014) — same reasoning as file.ts's ingest path.
+  const effectiveDate = input.effectiveDate ?? new Date().toISOString().slice(0, 10);
+  const effectiveDateSource = input.effectiveDate ? 'manual' : 'upload_time';
+  // Hashes the BODY text directly — this path has no separate "extracted" text (body IS the
+  // content), the same reason it never wrote source_sha256 either. Reuses contentHash() on the
+  // byte-generic Uint8Array it already accepts, so it means the same thing as file.ts's textHash.
+  const textHash = contentHash(Buffer.from(input.body, 'utf8'));
 
   // Embed OUTSIDE any DB transaction (D6) — a stalled model call must never pin a pooled
   // connection. embedAll batches, so a document large enough to exceed the provider's input limit
@@ -53,8 +68,15 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
       // 'note' regardless of what they contain. Passing it here is what makes that comment stale in
       // the good direction.
       rows = await tx<{ id: string }[]>`
-        insert into pages (workspace_id, slug, title, kind, tags, owner_principal, scope, acl, body)
-        values (${ctx.workspaceId}, ${input.slug}, ${input.title}, ${kind}, ${tags}, ${ctx.principal}, ${scope}, ${acl}, ${input.body})
+        insert into pages (
+          workspace_id, slug, title, kind, tags, owner_principal, scope, acl, body,
+          author, metadata, effective_date, effective_date_source, content_hash
+        )
+        values (
+          ${ctx.workspaceId}, ${input.slug}, ${input.title}, ${kind}, ${tags}, ${ctx.principal}, ${scope}, ${acl}, ${input.body},
+          ${input.author ?? null}, ${input.metadata ? tx.json(input.metadata as postgres.JSONValue) : null},
+          ${effectiveDate}, ${effectiveDateSource}, ${textHash}
+        )
         returning id`;
     } catch (err) {
       // Re-ingesting an existing slug is the single most ordinary ingest mistake, and it used to
@@ -125,9 +147,12 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
         // writers of content_chunks.token_count use the same estimator.
         token_count: estimateTokens(chunk.text),
         embedding: toVectorLiteral(embeddings[i]!),
+        effective_date: effectiveDate,
+        author: input.author ?? null,
+        chunker_version: CHUNKER_VERSION,
       }));
       await tx`
-        insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'embedding')}`;
+        insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'embedding', 'effective_date', 'author', 'chunker_version')}`;
     }
 
     return { pageId, chunkCount: chunks.length };

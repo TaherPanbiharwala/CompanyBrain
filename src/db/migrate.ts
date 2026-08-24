@@ -471,13 +471,73 @@ LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_
 AS $fn$ UPDATE public.principals SET google_sub = p_sub, updated_at = now()
         WHERE id = p_id AND google_sub IS NULL RETURNING id $fn$;
 
+-- (6)/(7) Soft-delete (migration 0014/0016). A scoped cb_app UPDATE that sets pages.deleted_at fails
+-- RLS even though neither pages_ws's WITH CHECK nor the restrictive pages_hide_deleted policy (0016)
+-- mentions deleted_at in a way that should block it — MEASURED against the live database, not
+-- assumed: PostgreSQL requires an UPDATE's new row to remain visible under the table's
+-- SELECT-governing policies (permissive AND restrictive alike) as an intrinsic property of row-level
+-- security, independent of what a differently-scoped WITH CHECK declares. There is no pure-policy
+-- shape — one combined FOR ALL policy, or a separate FOR SELECT-only restrictive one — that lets a
+-- scoped connection write a row into a state its own SELECT policy would then hide. That is exactly
+-- the class of problem resolve_session/adopt_principal above already exist to solve: re-derive the
+-- SAME authorization RLS would have applied (workspace + acl, read from the tx-local GUCs
+-- withScopedTx already sets) INSIDE a function that bypasses RLS by running as the owner, rather than
+-- trying to make RLS itself express it.
+--
+-- Also folds in the content_chunks UPDATE that used to run separately in lifecycle.ts under RLS: that
+-- version could miss a chunk whose acl had independently drifted from its page's (D76's residual risk
+-- for an explicit child write under RLS). Running as the owner removes that gap rather than merely
+-- accepting it — every chunk with this page_id is reached, drifted or not.
+CREATE OR REPLACE FUNCTION cb_internal.soft_delete_page(p_page_id uuid) RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+  WITH page_upd AS (
+    UPDATE public.pages SET deleted_at = now()
+    WHERE id = p_page_id
+      AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
+      AND acl && (SELECT string_to_array(NULLIF(current_setting('app.grants', true), ''), ','))
+      AND deleted_at IS NULL
+    RETURNING id
+  ),
+  chunks_upd AS (
+    UPDATE public.content_chunks SET deleted_at = now()
+    WHERE page_id IN (SELECT id FROM page_upd)
+    RETURNING id
+  )
+  SELECT EXISTS (SELECT 1 FROM page_upd)
+$fn$;
+
+-- Batch form, for delete_page's pageIds arm. Returns the ids ACTUALLY soft-deleted — an id that is
+-- already deleted, invisible, or not writable by the caller's keyring is silently excluded, matching
+-- the partition-not-abort contract deletePages already promises (src/ingest/lifecycle.ts).
+CREATE OR REPLACE FUNCTION cb_internal.soft_delete_pages(p_page_ids uuid[]) RETURNS SETOF uuid
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+  WITH page_upd AS (
+    UPDATE public.pages SET deleted_at = now()
+    WHERE id = ANY(p_page_ids)
+      AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
+      AND acl && (SELECT string_to_array(NULLIF(current_setting('app.grants', true), ''), ','))
+      AND deleted_at IS NULL
+    RETURNING id
+  ),
+  chunks_upd AS (
+    UPDATE public.content_chunks SET deleted_at = now()
+    WHERE page_id IN (SELECT id FROM page_upd)
+    RETURNING id
+  )
+  SELECT id FROM page_upd
+$fn$;
+
 -- Postgres grants EXECUTE to PUBLIC on every new function. Without this REVOKE the definers would
 -- be callable by every role the moment they are created, inverting the whole design.
 REVOKE ALL ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
   cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid),
-  cb_internal.adopt_principal(uuid,text) FROM PUBLIC;
+  cb_internal.adopt_principal(uuid,text), cb_internal.soft_delete_page(uuid),
+  cb_internal.soft_delete_pages(uuid[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
-  cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid) TO cb_app;
+  cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid),
+  cb_internal.soft_delete_page(uuid), cb_internal.soft_delete_pages(uuid[]) TO cb_app;
 GRANT EXECUTE ON FUNCTION cb_internal.adopt_principal(uuid,text) TO cb_auth;
 
 -- public.current_grants() is CREATED by migration 0007, not here — a policy cannot reference a

@@ -9,12 +9,13 @@
 import { withScopedTx } from '../db/client.ts';
 import { withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
+import type postgres from 'postgres';
 import { aclForScope, DEFAULT_PAGE_SCOPE, type OperationContext, type PageScope } from '../core/context.ts';
 import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { OperationError } from '../api/errors.ts';
 import { extractFile, withUploadSlot } from './extract/index.ts';
 import { assessExtraction, contentHash, sanitySuggestion } from './sanity.ts';
-import { chunkBlocks, estimateTokens } from './chunk.ts';
+import { chunkBlocks, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
 
 export interface ImportFileInput {
@@ -25,6 +26,12 @@ export interface ImportFileInput {
   tags?: string[];
   scope?: PageScope;
   kind?: PackKind;
+  /** Who WROTE the document (not who uploaded it — see pages.author's migration comment). */
+  author?: string;
+  /** Unstructured metadata bag. Bounded to 10KB at the op boundary (src/api/operations.ts). */
+  metadata?: Record<string, unknown>;
+  /** ISO date (YYYY-MM-DD) the document is ABOUT. Omit to default to the upload date. */
+  effectiveDate?: string;
 }
 
 export interface ImportFileResult {
@@ -65,8 +72,9 @@ export const MAX_FILE_BYTES = 25 * 1024 * 1024;
  *  The chunk insert binds INSERT_COLUMNS parameters per row in one multi-row statement, and a
  *  protocol message caps at 65,534 parameters — postgres.js throws rather than splitting. Floored
  *  with headroom so a column added to that insert shrinks the bound automatically instead of turning
- *  it into a lie. */
-const INSERT_COLUMNS = 9; // workspace_id, page_id, acl, tags, ord, content, token_count, locator, embedding
+ *  it into a lie. UPDATE THIS when the insert's column list changes — migration 0014 added three
+ *  (effective_date, author, chunker_version), which is exactly the case this comment warns about. */
+const INSERT_COLUMNS = 12; // workspace_id, page_id, acl, tags, ord, content, token_count, locator, embedding, effective_date, author, chunker_version
 const MAX_CHUNKS_PER_INSERT = Math.floor(65_534 / INSERT_COLUMNS);
 
 export async function importFile(ctx: OperationContext, input: ImportFileInput): Promise<ImportFileResult> {
@@ -93,6 +101,11 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
   const kind = input.kind ?? DEFAULT_PACK_KIND;
   const tags = input.tags ?? [];
   const sha256 = contentHash(input.bytes);
+  // Provenance sentinel (migration 0014): 'manual' when the caller supplied a date, else defaulted
+  // to today so a since/until search filter has something real to match against — leaving this NULL
+  // by default would make date filtering vacuous for every ordinarily-ingested page.
+  const effectiveDate = input.effectiveDate ?? new Date().toISOString().slice(0, 10);
+  const effectiveDateSource = input.effectiveDate ? 'manual' : 'upload_time';
 
   // 1. Extract, in the hardened subprocess. Throws typed errors (unsupported_format,
   //    extraction_failed, payload_too_large) that reach the caller as themselves, never as a 500.
@@ -199,6 +212,11 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
   );
 
   const extractedText = extracted.blocks.map((b) => b.text).join('\n\n');
+  // Distinct from `sha256` above (the ORIGINAL UPLOADED BYTES, for pre-embed dedup). This hashes the
+  // EXTRACTED TEXT — reusing contentHash() on the byte-generic Uint8Array it already accepts — so it
+  // means the same thing on both ingest paths (import.ts hashes `body` the same way). No consumer
+  // yet; see migration 0014.
+  const textHash = contentHash(Buffer.from(extractedText, 'utf8'));
 
   // 5. One transaction: page + source bytes + chunks, or none of them.
   return withScopedTx(ctx, async (tx) => {
@@ -207,12 +225,15 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
       rows = await tx<{ id: string }[]>`
         insert into pages (
           workspace_id, slug, title, kind, tags, owner_principal, scope, acl,
-          source_format, source_meta, source_sha256, extracted_text, extractor
+          source_format, source_meta, source_sha256, extracted_text, extractor,
+          author, metadata, effective_date, effective_date_source, content_hash
         )
         values (
           ${ctx.workspaceId}, ${input.slug}, ${input.title ?? extracted.title ?? input.filename}, ${kind},
           ${tags}, ${ctx.principal}, ${scope}, ${acl},
-          ${extracted.format}, ${tx.json(extracted.meta)}, ${sha256}, ${extractedText}, ${extracted.extractor}
+          ${extracted.format}, ${tx.json(extracted.meta)}, ${sha256}, ${extractedText}, ${extracted.extractor},
+          ${input.author ?? null}, ${input.metadata ? tx.json(input.metadata as postgres.JSONValue) : null},
+          ${effectiveDate}, ${effectiveDateSource}, ${textHash}
         )
         returning id`;
       // `body` is deliberately absent from that insert, not set to null by accident: migration 0009's
@@ -267,9 +288,14 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
       // scalar — which is exactly what migration 0009's chunks_locator_shape CHECK caught here.
       locator: chunk.locator ?? null,
       embedding: toVectorLiteral(embeddings[i]!),
+      // Denormalized from the page (D4's reasoning — see migration 0014's header): hybridSearch scans
+      // this table directly with no per-arm join to pages.
+      effective_date: effectiveDate,
+      author: input.author ?? null,
+      chunker_version: CHUNKER_VERSION,
     }));
     await tx`
-      insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'locator', 'embedding')}`;
+      insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'locator', 'embedding', 'effective_date', 'author', 'chunker_version')}`;
 
     return {
       pageId,

@@ -45,6 +45,24 @@
     "body_md5": "a35f47e56fdbf480eddbc6749d3d0767"
   },
   {
+    "schema": "cb_internal",
+    "name": "soft_delete_page",
+    "args": "p_page_id uuid",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "e2a14b260da276f8f2570f70cb6c0020"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "soft_delete_pages",
+    "args": "p_page_ids uuid[]",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "af111f388c1d8bf75a7f94652dd6001e"
+  },
+  {
     "schema": "public",
     "name": "rls_auto_enable",
     "args": "",

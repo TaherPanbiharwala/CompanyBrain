@@ -13,8 +13,9 @@
 import { withScopedTx } from '../db/client.ts';
 import { withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
-import { chunkText, estimateTokens } from './chunk.ts';
+import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
+import { contentHash } from './sanity.ts';
 import { OperationError } from '../api/errors.ts';
 import { aclForScope, type OperationContext, type PageScope } from '../core/context.ts';
 import type postgres from 'postgres';
@@ -219,6 +220,11 @@ async function resolvePage(tx: postgres.TransactionSql, ref: PageRef): Promise<R
 export interface DeletePageResult {
   pageId: string;
   slug: string;
+  /** True when this page had a stored source file (D71). Since migration 0014, delete is a SOFT
+   *  delete: the file is not actually gone yet, only immediately unreadable through every existing
+   *  path (RLS's USING clause hides it — see 0014's header). It is destroyed for real when
+   *  scripts/purge-deleted.ts reaps it after the grace window. Named for the eventual outcome, not
+   *  the instant one, to keep the field stable across the M6 change. */
   sourceRemoved: boolean;
 }
 
@@ -228,26 +234,36 @@ export async function deletePage(ctx: OperationContext, ref: PageRef): Promise<D
     const page = await resolvePage(tx, ref);
     requireWriteAccess(ctx, page, 'delete');
 
-    // Checked BEFORE the delete, because after it the row is gone and the answer is unknowable. It
-    // is the one destructive side effect the caller may not have in mind: the original uploaded file
-    // is stored only here (D71), so this delete is the last copy going away.
+    // Checked BEFORE the delete, because after it the row is invisible (see below) and the answer is
+    // unknowable through this handle. It is the one destructive side effect the caller may not have
+    // in mind: the original uploaded file is stored only here (D71).
     const hadSource =
       (await tx<{ n: number }[]>`select count(*)::int as n from page_sources where page_id = ${page.id}`)[0]!.n > 0;
 
-    const deleted = await tx<{ id: string }[]>`delete from pages where id = ${page.id} returning id`;
-    // resolvePage saw it a moment ago inside this same transaction, so an empty result here is not
-    // "already gone" — it would mean DELETE and SELECT disagree about the policy, which is a bug
-    // worth failing on rather than reporting as success.
-    if (deleted.length === 0) {
+    // SOFT delete (migration 0014, mechanism in migrate.ts's ensureAuthFunctions): via
+    // cb_internal.soft_delete_page, a SECURITY DEFINER function, not a raw UPDATE on this scoped
+    // handle. MEASURED, not a style choice: a plain `update pages set deleted_at = now() ...` here
+    // 42501'd — PostgreSQL requires an UPDATE's new row to stay visible under the table's
+    // SELECT-governing policies (permissive AND restrictive) regardless of what WITH CHECK declares,
+    // and no pure-policy shape lets a scoped connection write past that. The function re-derives the
+    // SAME workspace+acl authorization RLS would have applied, from the identical tx-local GUCs, then
+    // bypasses RLS by running as the owner — see its definition for the full reasoning. It also marks
+    // content_chunks in the SAME statement, and because it runs as the owner it reaches every chunk
+    // with this page_id even if one had independently drifted out of this caller's RLS-scoped reach
+    // (the residual risk an explicit child UPDATE under RLS would have had — D76's shape, closed here
+    // rather than merely accepted).
+    //
+    // A restrictive, FOR SELECT-only policy (pages_hide_deleted, migration 0016) is what makes the
+    // row disappear from every READ the instant this commits — no read call site has to remember a
+    // deleted_at filter.
+    const [result] = await tx<{ soft_delete_page: boolean }[]>`select cb_internal.soft_delete_page(${page.id})`;
+    // resolvePage saw it a moment ago inside this same transaction, so `false` here is not "already
+    // gone" — it would mean the function and resolvePage's SELECT disagree about the row, which is a
+    // bug worth failing on rather than reporting as success.
+    if (!result?.soft_delete_page) {
       throw new OperationError('permission_denied', 'the database refused to delete a page you can read');
     }
 
-    // Chunks and stored bytes go with it through the composite FKs' ON DELETE CASCADE. NOT deleted
-    // explicitly first, and that is the correct choice rather than a shortcut: an explicit
-    // `delete from content_chunks where page_id = …` runs under RLS, so a chunk whose acl has
-    // drifted out of the caller's reach would survive it — while the cascade, running as the table
-    // owner during referential integrity, removes every child unconditionally. The looser-looking
-    // mechanism is the one that actually leaves nothing behind.
     return { pageId: page.id, slug: page.slug, sourceRemoved: hadSource };
   });
 }
@@ -356,24 +372,26 @@ export async function deletePages(ctx: OperationContext, pageIds: string[]): Pro
         select count(*)::int as n from page_sources where page_id = any(${deletable}::uuid[])`
     )[0]!.n;
 
-    // One statement. Chunks and stored bytes follow through the composite FKs' ON DELETE CASCADE —
-    // deliberately NOT deleted explicitly first, because an explicit child delete runs under RLS and
-    // would leave behind any chunk whose acl has drifted out of the caller's reach, while the
-    // cascade runs during referential integrity and removes every child unconditionally.
-    const gone = await tx<{ id: string; slug: string }[]>`
-      delete from pages where id = any(${deletable}::uuid[]) returning id, slug`;
-
-    const goneIds = new Set(gone.map((g) => g.id));
-    for (const g of gone) outcomes.push({ pageId: g.id, slug: g.slug, ok: true, code: 'ok' });
-    // Selected a moment ago in this same transaction, so a survivor is not "already gone" — it means
-    // DELETE and SELECT disagree about the policy, which is a bug worth surfacing, not swallowing.
+    // SOFT delete (migration 0014), via cb_internal.soft_delete_pages — the batch form of the
+    // SECURITY DEFINER function deletePage uses; see its comment above for why a raw UPDATE under
+    // RLS on this scoped handle does not work and what the function does instead. It marks
+    // content_chunks in the same statement, unaffected by chunk-acl drift (it runs as the owner).
+    const gone = await tx<{ soft_delete_pages: string }[]>`select cb_internal.soft_delete_pages(${deletable}::uuid[])`;
+    const goneIds = new Set(gone.map((g) => g.soft_delete_pages));
+    // Selected a moment ago in this same transaction, so a count mismatch here is not "some were
+    // already gone" — it would mean the function and SELECT disagree about the row set, which is a
+    // bug worth failing loudly on rather than reporting a wrong per-page outcome.
+    if (goneIds.size !== deletable.length) {
+      throw new Error(
+        `deletePages: expected to soft-delete ${deletable.length} row(s), the function returned ${goneIds.size}`,
+      );
+    }
     for (const id of deletable) {
-      if (!goneIds.has(id)) {
-        outcomes.push({ pageId: id, ok: false, code: 'refused', reason: 'the database refused a delete you can read' });
-      }
+      const row = byId.get(id)!;
+      outcomes.push({ pageId: id, slug: row.slug, ok: true, code: 'ok' });
     }
 
-    return { deleted: gone.length, sourcesRemoved, outcomes };
+    return { deleted: deletable.length, sourcesRemoved, outcomes };
   });
 }
 
@@ -627,8 +645,11 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
     //   * Without FOR UPDATE the read and the insert below sit in different READ COMMITTED
     //     snapshots, so a concurrent re-scope (the D68 path) could commit between them and leave the
     //     new chunks stamped with the OLD acl.
-    const locked = await tx<{ id: string; slug: string; acl: string[]; tags: string[] }[]>`
-      select id, slug, acl, tags from pages where id = ${target.id} for update`;
+    // effective_date/author come along for the ride so the regenerated chunks carry the PAGE's
+    // existing values forward (migration 0014's denormalization) rather than going NULL on every
+    // replace — replace_page does not accept new values for either; it only carries the old ones.
+    const locked = await tx<{ id: string; slug: string; acl: string[]; tags: string[]; effective_date: Date | null; author: string | null }[]>`
+      select id, slug, acl, tags, effective_date, author from pages where id = ${target.id} for update`;
     const page = locked[0];
     // Deleted between the two phases — while we were embedding, which is the longest gap in the op.
     if (!page) {
@@ -657,9 +678,13 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
         // writers of this column must agree or a future re-embed disagrees with the batch planner.
         token_count: estimateTokens(chunk.text),
         embedding: toVectorLiteral(embeddings[i]!),
+        // Carried forward from the locked page row, not re-derived — see the comment on `locked` above.
+        effective_date: page.effective_date,
+        author: page.author,
+        chunker_version: CHUNKER_VERSION,
       }));
       await tx`
-        insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'embedding')}`;
+        insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'embedding', 'effective_date', 'author', 'chunker_version')}`;
     }
 
     // This UPDATE is the FIRST writer of updated_at anywhere in the codebase — importPage and
@@ -670,12 +695,17 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
     // scope and acl are deliberately absent from this UPDATE: re-scoping is a separate operation
     // with its own hazard (D68 — promoting a private page can now collide with a shared slug and
     // must handle 23505), and smuggling it into "replace the body" would ship that hazard unhandled.
+    //
+    // content_hash IS recomputed here, unlike scope/acl above: its entire meaning is "hash of the
+    // CURRENT content" (migration 0014), so leaving it stale the first time a page is edited would
+    // defeat the reason it exists before it has a single consumer.
     await tx`
       update pages
          set body = ${input.body},
              -- coalesce, so omitting the title keeps the existing one rather than nulling it.
              title = coalesce(${input.title ?? null}, title),
              tags = ${tags},
+             content_hash = ${contentHash(Buffer.from(input.body, 'utf8'))},
              updated_at = now()
        where id = ${page.id}`;
 

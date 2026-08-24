@@ -135,7 +135,7 @@ describe.skipIf(!live)('page lifecycle', () => {
   });
 
   describe('delete_page', () => {
-    it('removes the page and cascades its chunks', async () => {
+    it('soft-deletes the page and marks its chunks deleted (migration 0014)', async () => {
       const page = await seed(ctxA(), 'del-basic', 'Northstar Robotics reported 4.2 crore in quarterly revenue.');
       const before = await withScopedTx(ctxA(), (tx) =>
         tx<{ n: number }[]>`select count(*)::int as n from content_chunks where page_id = ${page.pageId}`);
@@ -147,13 +147,15 @@ describe.skipIf(!live)('page lifecycle', () => {
 
       // Counted on the OWNER pool, not through RLS: a scoped count cannot distinguish "the chunks
       // are gone" from "the chunks are merely invisible to me now", and only one of those is the
-      // claim being made.
-      const after = await adminSql()<{ n: number }[]>`
-        select count(*)::int as n from content_chunks where page_id = ${page.pageId}`;
-      expect(after[0]!.n, 'chunks survived their page — the FK cascade did not fire').toBe(0);
+      // claim being made. Soft delete (0014) means the ROW survives with deleted_at set, not that it
+      // vanishes — real removal is scripts/purge-deleted.ts's job, after the grace window.
+      const chunks = await adminSql()<{ deleted_at: Date | null }[]>`
+        select deleted_at from content_chunks where page_id = ${page.pageId}`;
+      expect(chunks.length, 'chunks are gone entirely — this is a hard delete again, not a soft one').toBeGreaterThan(0);
+      for (const c of chunks) expect(c.deleted_at, 'a chunk survived its page delete without being marked').not.toBeNull();
     }, 120_000);
 
-    it('cascades the stored source file, and reports that it did', async () => {
+    it('reports sourceRemoved on the page that had a source, and its bytes survive until purge', async () => {
       const page = await seed(ctxA(), 'del-with-source', 'A page that also has its original bytes retained.');
       await withScopedTx(ctxA(), async (tx) => {
         const acl = (await tx<{ acl: string[] }[]>`select acl from pages where id = ${page.pageId}`)[0]!.acl;
@@ -163,12 +165,14 @@ describe.skipIf(!live)('page lifecycle', () => {
       });
 
       const result = await deletePage(ctxA(), { pageId: page.pageId });
-      // The caller has to be told: this row is the only copy of the file (D71), so the delete just
-      // destroyed a user's upload, not merely an index entry.
+      // The caller has to be told: this row is the only copy of the file (D71). Soft delete means the
+      // bytes are not gone THIS INSTANT (page_sources has no deleted_at column of its own — nothing
+      // reads it standalone today, and purge reaps it via the pages row's cascade) — sourceRemoved is
+      // still true because that is the eventual, promised outcome, per its own doc comment.
       expect(result.sourceRemoved).toBe(true);
       const after = await adminSql()<{ n: number }[]>`
         select count(*)::int as n from page_sources where page_id = ${page.pageId}`;
-      expect(after[0]!.n).toBe(0);
+      expect(after[0]!.n, 'page_sources was destroyed immediately — expected it to survive until purge').toBe(1);
     }, 120_000);
 
     it('a page in another tenant is not addressable by id — not_found, not permission_denied', async () => {
@@ -197,8 +201,9 @@ describe.skipIf(!live)('page lifecycle', () => {
       const page = await seed(ctxA(), 'del-admin-can', 'A shared page an admin is entitled to remove.');
       const asAdmin = ctxFor(pB, ws1, 'admin');
       await deletePage(asAdmin, { pageId: page.pageId });
-      const still = await adminSql()<{ n: number }[]>`select count(*)::int as n from pages where id = ${page.pageId}`;
-      expect(still[0]!.n).toBe(0);
+      const still = await adminSql()<{ deleted_at: Date | null }[]>`select deleted_at from pages where id = ${page.pageId}`;
+      expect(still, 'the page row is gone — this is a hard delete again, not a soft one').toHaveLength(1);
+      expect(still[0]!.deleted_at).not.toBeNull();
     }, 120_000);
 
     it('refuses an ambiguous slug rather than deleting the wrong page', async () => {
@@ -225,6 +230,50 @@ describe.skipIf(!live)('page lifecycle', () => {
       expect(await opCode(() => deletePage(ctxA(), {}))).toBe('invalid_params');
       expect(await opCode(() => deletePage(ctxA(), { pageId: crypto.randomUUID(), slug: 'x' }))).toBe('invalid_params');
     }, 60_000);
+  });
+
+  describe('soft delete (migration 0014)', () => {
+    it('a deleted page disappears from get_page, list_pages, and a direct scoped SELECT', async () => {
+      // The direct SELECT is the test that actually proves the RLS USING clause enforces this — not
+      // just that the app-level op happens to 404. deletePage/getPage/listPages could all be broken
+      // in a way that coincidentally agrees; a raw query under the author's own keyring cannot.
+      const page = await seed(ctxA(), 'sd-basic', 'A page that will be soft-deleted.');
+      await deletePage(ctxA(), { pageId: page.pageId });
+
+      expect(await opCode(() => getPage(ctxA(), { pageId: page.pageId }))).toBe('not_found');
+      const { pages } = await listPages(ctxA(), { limit: 200 });
+      expect(pages.map((p) => p.id)).not.toContain(page.pageId);
+
+      const direct = await withScopedTx(ctxA(), (tx) =>
+        tx<{ id: string }[]>`select id from pages where id = ${page.pageId}`);
+      expect(direct, 'RLS did not hide the soft-deleted row from a direct query').toHaveLength(0);
+    }, 120_000);
+
+    it('the row and its chunks SURVIVE on the admin pool, with deleted_at set — this is soft, not hard, delete', async () => {
+      const page = await seed(ctxA(), 'sd-survives', 'A page whose row must still exist after delete.');
+      await deletePage(ctxA(), { pageId: page.pageId });
+
+      const pageRow = (await adminSql()<{ deleted_at: Date | null }[]>`
+        select deleted_at from pages where id = ${page.pageId}`)[0];
+      expect(pageRow, 'the page row is GONE — this is a hard delete, not a soft one').toBeDefined();
+      expect(pageRow!.deleted_at).not.toBeNull();
+
+      // Chunks are marked EXPLICITLY (UPDATE does not cascade the way the old hard DELETE did) — this
+      // is the check that actually exercises that statement, distinct from the RLS check above.
+      const chunkRows = await adminSql()<{ deleted_at: Date | null }[]>`
+        select deleted_at from content_chunks where page_id = ${page.pageId}`;
+      expect(chunkRows.length, 'no chunks found to check — the fixture produced none').toBeGreaterThan(0);
+      for (const c of chunkRows) expect(c.deleted_at, 'a chunk was left live after its page was deleted').not.toBeNull();
+    }, 120_000);
+
+    it('a double-delete is not_found, not a redundant success', async () => {
+      const page = await seed(ctxA(), 'sd-double', 'A page that will be deleted twice.');
+      await deletePage(ctxA(), { pageId: page.pageId });
+      // resolvePage can no longer see it (RLS), so the second call fails exactly like deleting a page
+      // that never existed — same as the cross-tenant case, and for the same reason (D68's rule: not
+      // distinguishing "gone" from "never was" is what keeps delete_page from being an existence oracle).
+      expect(await opCode(() => deletePage(ctxA(), { pageId: page.pageId }))).toBe('not_found');
+    }, 120_000);
   });
 
   describe('replace_page', () => {

@@ -10,6 +10,15 @@
   },
   {
     "tablename": "content_chunks",
+    "policyname": "content_chunks_hide_deleted",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "permissive": "RESTRICTIVE",
+    "qual": "(deleted_at IS NULL)",
+    "with_check": "(none)"
+  },
+  {
+    "tablename": "content_chunks",
     "policyname": "content_chunks_ws",
     "roles": "{public}",
     "cmd": "ALL",
@@ -43,6 +52,15 @@
     "permissive": "PERMISSIVE",
     "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
     "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
+  },
+  {
+    "tablename": "pages",
+    "policyname": "pages_hide_deleted",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "permissive": "RESTRICTIVE",
+    "qual": "(deleted_at IS NULL)",
+    "with_check": "(none)"
   },
   {
     "tablename": "pages",

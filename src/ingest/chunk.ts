@@ -20,6 +20,12 @@ export interface ChunkOptions {
   maxChars?: number; // hard cap on any chunk's char length (default 6000)
 }
 
+/** Stamped onto every chunk row at write time (migration 0014). No existing versioning scheme in
+ *  this file to match — bump by hand when the chunking algorithm changes materially enough that a
+ *  targeted re-chunk (rather than a blind full-corpus rebuild) would be worth triggering on it later.
+ *  No consumer reads this yet. */
+export const CHUNKER_VERSION = 'v1';
+
 export interface TextChunk {
   text: string;
   index: number;
