@@ -33,7 +33,8 @@
     "seed:eval": "bun run scripts/seed-eval-workspace.ts",
     "load:eval": "bun run scripts/load-eval-corpus.ts",
     "eval:rag": "bun run scripts/run-rag-eval.ts",
-    "replay-eval": "bun run scripts/replay-eval.ts"
+    "replay-eval": "bun run scripts/replay-eval.ts",
+    "purge:deleted": "bun run scripts/purge-deleted.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

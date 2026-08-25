@@ -176,6 +176,17 @@ const ingest = defineOp({
           'advisory. replace_page keeps whatever scope the page already has; rescope_pages is the op ' +
           'that changes it afterwards.',
       ),
+    author: z.string().max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
+    metadata: z
+      .record(z.unknown())
+      .optional()
+      .refine((m) => !m || JSON.stringify(m).length <= 10_000, 'metadata too large (10KB limit)')
+      .describe('Unstructured metadata bag, up to 10KB serialized.'),
+    effectiveDate: z
+      .string()
+      .date()
+      .optional()
+      .describe('ISO date (YYYY-MM-DD) this document is ABOUT — a contract signing date, a meeting date. Omit to default to today; used by search/ask\'s since/until filters.'),
   }),
   requiredRole: 'member',
   mutating: true,
@@ -193,9 +204,16 @@ const ask = defineOp({
   // Bounded: `question` reaches embed() AND the chat prompt, both paid calls. Unbounded, a 100kb
   // question exceeded the embedding input limit and surfaced as `internal_error` — a 500 for what is
   // plainly an input-validation failure, after the money was already spent.
-  params: z.object({ question: z.string().min(1).max(2_000) }),
+  params: z.object({
+    question: z.string().min(1).max(2_000),
+    // Same filters as `search`, same reasoning — see that op's params.
+    since: z.string().date().optional().describe('Only consider evidence whose effective_date is on or after this ISO date.'),
+    until: z.string().date().optional().describe('Only consider evidence whose effective_date is on or before this ISO date.'),
+    author: z.string().max(200).optional().describe('Only consider evidence whose author matches exactly.'),
+  }),
   requiredRole: 'member',
-  handler: async (ctx, params) => answerQuestion(ctx, params.question),
+  handler: async (ctx, params) =>
+    answerQuestion(ctx, params.question, { since: params.since, until: params.until, author: params.author }),
 });
 
 // ── Lifecycle (M3) ────────────────────────────────────────────────────────
@@ -394,6 +412,19 @@ const ingest_file = defineOp({
           "every member. 'private': only you — enforced by the database, and it covers the stored " +
           'original bytes too, not just the text.',
       ),
+    // Same three fields and reasoning as `ingest` above — not a second hand-written copy of the
+    // bound, just of the fields, since the two ops share no single schema object.
+    author: z.string().max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
+    metadata: z
+      .record(z.unknown())
+      .optional()
+      .refine((m) => !m || JSON.stringify(m).length <= 10_000, 'metadata too large (10KB limit)')
+      .describe('Unstructured metadata bag, up to 10KB serialized.'),
+    effectiveDate: z
+      .string()
+      .date()
+      .optional()
+      .describe('ISO date (YYYY-MM-DD) this document is ABOUT. Omit to default to today; used by search/ask\'s since/until filters.'),
   }),
   requiredRole: 'member',
   mutating: true,
@@ -419,6 +450,9 @@ const ingest_file = defineOp({
       tags: params.tags,
       kind: params.kind,
       scope: params.scope,
+      author: params.author,
+      metadata: params.metadata,
+      effectiveDate: params.effectiveDate,
     });
   },
 });
@@ -444,10 +478,22 @@ const search = defineOp({
     // Bounded well below the arm limits: asking for more than retrieval fetches would return a
     // short list and look like a corpus problem.
     limit: z.number().int().min(1).max(20).default(8),
+    // Filters against effective_date/author (migration 0014) — document metadata, never chunk
+    // security. A page ingested before this milestone, or without an explicit author, simply has no
+    // opinion and is excluded by a filter that names either — that is standard NULL semantics, not a
+    // bug to work around.
+    since: z.string().date().optional().describe('Only chunks whose effective_date is on or after this ISO date.'),
+    until: z.string().date().optional().describe('Only chunks whose effective_date is on or before this ISO date.'),
+    author: z.string().max(200).optional().describe('Only chunks whose author matches exactly.'),
   }),
   requiredRole: 'member',
   handler: async (ctx, params) => {
-    const { hits, degraded } = await hybridSearch(ctx, params.query, { topK: params.limit });
+    const { hits, degraded } = await hybridSearch(ctx, params.query, {
+      topK: params.limit,
+      since: params.since,
+      until: params.until,
+      author: params.author,
+    });
     return {
       // `degraded` is surfaced here for the same reason `ask` carries it: a short result list and a
       // short result list from half a search look identical, and dispatchOp reads this field to log

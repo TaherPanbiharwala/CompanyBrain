@@ -50,6 +50,42 @@
   {
     "grantee": "cb_app",
     "table_name": "content_chunks",
+    "column_name": "author",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "author",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "author",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "chunker_version",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "chunker_version",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "chunker_version",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
     "column_name": "content",
     "privilege_type": "INSERT"
   },
@@ -99,6 +135,42 @@
     "grantee": "cb_app",
     "table_name": "content_chunks",
     "column_name": "created_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "deleted_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "deleted_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "deleted_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "effective_date",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "effective_date",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "content_chunks",
+    "column_name": "effective_date",
     "privilege_type": "UPDATE"
   },
   {
@@ -500,6 +572,24 @@
   {
     "grantee": "cb_app",
     "table_name": "pages",
+    "column_name": "author",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "author",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "author",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
     "column_name": "body",
     "privilege_type": "INSERT"
   },
@@ -536,6 +626,24 @@
   {
     "grantee": "cb_app",
     "table_name": "pages",
+    "column_name": "content_hash",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "content_hash",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "content_hash",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
     "column_name": "created_at",
     "privilege_type": "INSERT"
   },
@@ -554,6 +662,24 @@
   {
     "grantee": "cb_app",
     "table_name": "pages",
+    "column_name": "deleted_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "deleted_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "deleted_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
     "column_name": "description",
     "privilege_type": "INSERT"
   },
@@ -567,6 +693,42 @@
     "grantee": "cb_app",
     "table_name": "pages",
     "column_name": "description",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date_source",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date_source",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "effective_date_source",
     "privilege_type": "UPDATE"
   },
   {
@@ -639,6 +801,24 @@
     "grantee": "cb_app",
     "table_name": "pages",
     "column_name": "kind",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "metadata",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "metadata",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "pages",
+    "column_name": "metadata",
     "privilege_type": "UPDATE"
   },
   {

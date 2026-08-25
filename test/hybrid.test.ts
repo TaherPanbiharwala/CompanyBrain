@@ -310,6 +310,57 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     expect(degraded).toBeUndefined();
   }, 30_000);
 
+  it('since/until filter on effective_date narrows results (migration 0014)', async () => {
+    // A distinctive token shared by both docs, so the KEYWORD arm reliably surfaces both regardless
+    // of the fake embedder's uncorrelated vectors — same mechanism the "keyword arm surfaces a
+    // document" test above relies on. The filter, not the retrieval, is what's under test.
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const TOKEN = 'zzzqqqDateFilterMarker';
+    await importPage(ctx, {
+      slug: `date-old-${RUN}`,
+      title: 'Old dated doc',
+      body: `This document mentions ${TOKEN} and is explicitly dated in the past.`,
+      effectiveDate: '2020-01-01',
+    });
+    await importPage(ctx, {
+      slug: `date-new-${RUN}`,
+      title: 'Undated doc',
+      body: `This document also mentions ${TOKEN}, with no explicit date — defaults to today.`,
+    });
+
+    const unfiltered = (await hybridSearch(ctx, TOKEN)).hits.map((h) => h.slug);
+    expect(unfiltered).toContain(`date-old-${RUN}`);
+    expect(unfiltered).toContain(`date-new-${RUN}`);
+
+    const sinceRecent = (await hybridSearch(ctx, TOKEN, { since: '2024-01-01' })).hits.map((h) => h.slug);
+    expect(sinceRecent).toContain(`date-new-${RUN}`);
+    expect(sinceRecent, 'since excluded nothing — the filter is a no-op').not.toContain(`date-old-${RUN}`);
+
+    const untilOld = (await hybridSearch(ctx, TOKEN, { until: '2020-12-31' })).hits.map((h) => h.slug);
+    expect(untilOld).toContain(`date-old-${RUN}`);
+    expect(untilOld, 'until excluded nothing — the filter is a no-op').not.toContain(`date-new-${RUN}`);
+  }, 30_000);
+
+  it('author filter narrows results to an exact match (migration 0014)', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const TOKEN = 'zzzqqqAuthorFilterMarker';
+    await importPage(ctx, {
+      slug: `auth-a-${RUN}`,
+      title: 'Authored',
+      body: `This document mentions ${TOKEN} and names its author.`,
+      author: 'zzzqqq-author-a',
+    });
+    await importPage(ctx, {
+      slug: `auth-none-${RUN}`,
+      title: 'No author given',
+      body: `This document also mentions ${TOKEN}, with no author.`,
+    });
+
+    const filtered = (await hybridSearch(ctx, TOKEN, { author: 'zzzqqq-author-a' })).hits.map((h) => h.slug);
+    expect(filtered).toContain(`auth-a-${RUN}`);
+    expect(filtered, 'author excluded nothing — the filter is a no-op').not.toContain(`auth-none-${RUN}`);
+  }, 30_000);
+
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {
     const ctx2 = buildContext({ principal: p2, workspaceId: ws2, role: 'owner', grants: resolveGrants(p2, ws2), remote: false });
     const { hits } = await hybridSearch(ctx2, 'zzzqqqmarker');

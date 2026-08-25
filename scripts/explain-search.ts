@@ -85,7 +85,9 @@ async function main(): Promise<void> {
   const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([question]));
   const vectorLiteral = toVectorLiteral(queryVector!);
 
-  const params = { query: question, orQuery, vectorLiteral, hasVector: true, fetchK: 8 };
+  // since/until/author (migration 0014) left null: this script attributes the SHIPPED query's cost,
+  // and an unfiltered ask is the common case the arms' predicates must stay cheap for.
+  const params = { query: question, orQuery, vectorLiteral, hasVector: true, fetchK: 8, since: null, until: null, author: null };
 
   await withScopedTx(ctx, async (tx) => {
     // ── 1. The whole statement, as shipped ────────────────────────────────

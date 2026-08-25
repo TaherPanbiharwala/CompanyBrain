@@ -124,10 +124,23 @@ function parseAnswerJson(
   return { answer: scrubMarkers(raw, sourceCount), citations: [], parseDegraded: true };
 }
 
-export async function answerQuestion(ctx: OperationContext, question: string): Promise<AnswerResult> {
+export interface AskFilters {
+  /** Only chunks whose effective_date is on or after this ISO date (migration 0014). */
+  since?: string;
+  /** Only chunks whose effective_date is on or before this ISO date. */
+  until?: string;
+  /** Only chunks whose author matches exactly. */
+  author?: string;
+}
+
+export async function answerQuestion(
+  ctx: OperationContext,
+  question: string,
+  filters?: AskFilters,
+): Promise<AnswerResult> {
   // Retrieval runs in its own withScopedTx (inside hybridSearch); the model call below runs
   // OUTSIDE any tx (D6) — chat() must never be called while a pooled connection is held open.
-  const { hits: sources, degraded } = await hybridSearch(ctx, question);
+  const { hits: sources, degraded } = await hybridSearch(ctx, question, filters);
 
   const raw = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
     chat({
