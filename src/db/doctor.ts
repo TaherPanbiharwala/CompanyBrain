@@ -274,7 +274,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // the policy from inside the policy would be circular.
   const aclPolicies = await sql<{ tablename: string; qual: string | null; with_check: string | null }[]>`
     select tablename, qual, with_check from pg_policies
-    where schemaname = 'public' and tablename in ('pages','content_chunks') and policyname like '%_ws'`;
+    where schemaname = 'public' and tablename in ('pages','content_chunks','page_sources') and policyname like '%_ws'`;
   const missingAcl = aclPolicies.filter(
     (p) => !(p.qual ?? '').includes('current_grants') || !(p.with_check ?? '').includes('current_grants'),
   );
@@ -300,16 +300,20 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // reasoning as the aclPolicies query above; auditing a policy from inside the policy is circular.
   const hideDeletedPolicies = await sql<{ tablename: string; policyname: string; permissive: string; cmd: string; qual: string | null }[]>`
     select tablename, policyname, permissive, cmd, qual from pg_policies
-    where schemaname = 'public' and tablename in ('pages', 'content_chunks') and policyname like '%_hide_deleted'`;
-  const EXPECTED_HIDE_DELETED_TABLES = ['content_chunks', 'pages'];
+    where schemaname = 'public' and tablename in ('pages', 'content_chunks', 'page_sources') and policyname like '%_hide_deleted'`;
+  // page_sources joined this set in migration 0017 — it holds the original uploaded file bytes
+  // (D71) and was the gap an adversarial review found: 0014/0016 gave pages/content_chunks a
+  // deleted_at column and this restrictive policy, but left page_sources fully live/readable
+  // indefinitely after "delete", contradicting lifecycle.ts's own claim otherwise.
+  const EXPECTED_HIDE_DELETED_TABLES = ['content_chunks', 'page_sources', 'pages'];
   const badHideDeleted = hideDeletedPolicies.filter(
     (p) => p.permissive !== 'RESTRICTIVE' || p.cmd !== 'SELECT' || !(p.qual ?? '').includes('deleted_at'),
   );
   const hideDeletedTables = [...hideDeletedPolicies.map((p) => p.tablename)].sort();
-  add('a RESTRICTIVE, SELECT-only deleted_at policy exists on pages and content_chunks (migration 0016)',
+  add('a RESTRICTIVE, SELECT-only deleted_at policy exists on pages, content_chunks and page_sources (migrations 0016/0017)',
     JSON.stringify(hideDeletedTables) === JSON.stringify(EXPECTED_HIDE_DELETED_TABLES) && badHideDeleted.length === 0,
     JSON.stringify(hideDeletedTables) !== JSON.stringify(EXPECTED_HIDE_DELETED_TABLES)
-      ? `found on: ${hideDeletedTables.join(', ') || 'none'} — expected both pages and content_chunks. Re-run \`bun run migrate\`.`
+      ? `found on: ${hideDeletedTables.join(', ') || 'none'} — expected pages, content_chunks and page_sources. Re-run \`bun run migrate\`.`
       : badHideDeleted.length
         ? `wrong shape on: ${badHideDeleted.map((p) => `${p.tablename} (permissive=${p.permissive}, cmd=${p.cmd})`).join(', ')} — must be RESTRICTIVE + FOR SELECT.`
         : '');
@@ -317,7 +321,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   const wsPoliciesMentionDeletedAt = aclPolicies.filter(
     (p) => (p.qual ?? '').includes('deleted_at') || (p.with_check ?? '').includes('deleted_at'),
   );
-  add('pages_ws/content_chunks_ws do NOT mention deleted_at (it lives only in the restrictive policy above)',
+  add('pages_ws/content_chunks_ws/page_sources_ws do NOT mention deleted_at (it lives only in the restrictive policies above)',
     wsPoliciesMentionDeletedAt.length === 0,
     wsPoliciesMentionDeletedAt.length === 0
       ? ''

@@ -51,7 +51,7 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "e2a14b260da276f8f2570f70cb6c0020"
+    "body_md5": "f32d4143c904978f3e9339e0c64c4e4d"
   },
   {
     "schema": "cb_internal",
@@ -60,7 +60,7 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "af111f388c1d8bf75a7f94652dd6001e"
+    "body_md5": "b290403a069b60405b3c2cb28ea69b7a"
   },
   {
     "schema": "public",

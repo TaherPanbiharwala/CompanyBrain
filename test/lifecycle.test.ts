@@ -155,7 +155,7 @@ describe.skipIf(!live)('page lifecycle', () => {
       for (const c of chunks) expect(c.deleted_at, 'a chunk survived its page delete without being marked').not.toBeNull();
     }, 120_000);
 
-    it('reports sourceRemoved on the page that had a source, and its bytes survive until purge', async () => {
+    it('reports sourceRemoved on the page that had a source, hides it via RLS, and its bytes survive until purge', async () => {
       const page = await seed(ctxA(), 'del-with-source', 'A page that also has its original bytes retained.');
       await withScopedTx(ctxA(), async (tx) => {
         const acl = (await tx<{ acl: string[] }[]>`select acl from pages where id = ${page.pageId}`)[0]!.acl;
@@ -166,13 +166,21 @@ describe.skipIf(!live)('page lifecycle', () => {
 
       const result = await deletePage(ctxA(), { pageId: page.pageId });
       // The caller has to be told: this row is the only copy of the file (D71). Soft delete means the
-      // bytes are not gone THIS INSTANT (page_sources has no deleted_at column of its own — nothing
-      // reads it standalone today, and purge reaps it via the pages row's cascade) — sourceRemoved is
-      // still true because that is the eventual, promised outcome, per its own doc comment.
+      // bytes are not gone THIS INSTANT — migration 0017 gave page_sources its own deleted_at column
+      // and a restrictive hide-deleted policy (the same shape pages/content_chunks already had), so it
+      // is IMMEDIATELY invisible via RLS while the bytes physically survive until purge reaps them via
+      // the pages row's cascade. Before 0017 this row stayed fully live and RLS-readable indefinitely —
+      // the exact gap an adversarial review of the M6 PR found.
       expect(result.sourceRemoved).toBe(true);
-      const after = await adminSql()<{ n: number }[]>`
-        select count(*)::int as n from page_sources where page_id = ${page.pageId}`;
-      expect(after[0]!.n, 'page_sources was destroyed immediately — expected it to survive until purge').toBe(1);
+
+      const scoped = await withScopedTx(ctxA(), (tx) =>
+        tx<{ id: string }[]>`select page_id as id from page_sources where page_id = ${page.pageId}`);
+      expect(scoped, 'page_sources is still readable through RLS after delete').toHaveLength(0);
+
+      const admin = await adminSql()<{ n: number; deleted_at: Date | null }[]>`
+        select count(*)::int as n, max(deleted_at) as deleted_at from page_sources where page_id = ${page.pageId}`;
+      expect(admin[0]!.n, 'page_sources was destroyed immediately — expected it to survive until purge').toBe(1);
+      expect(admin[0]!.deleted_at, 'page_sources row survives but was never marked deleted').not.toBeNull();
     }, 120_000);
 
     it('a page in another tenant is not addressable by id — not_found, not permission_denied', async () => {
@@ -273,6 +281,42 @@ describe.skipIf(!live)('page lifecycle', () => {
       // that never existed — same as the cross-tenant case, and for the same reason (D68's rule: not
       // distinguishing "gone" from "never was" is what keeps delete_page from being an existence oracle).
       expect(await opCode(() => deletePage(ctxA(), { pageId: page.pageId }))).toBe('not_found');
+    }, 120_000);
+
+    it("a deleted page's slug becomes reusable — migration 0018 closes the gap 0007's index left", async () => {
+      // Before 0018, pages_ws_slug_shared/private had no `AND deleted_at IS NULL`, so a soft-deleted
+      // row still occupied its slug at the index level even though RLS hid it from every read —
+      // re-ingesting the same slug deterministically 23505'd as "already_exists", for a page that by
+      // every visible signal did not exist. Found in adversarial review of the M6 PR.
+      const slug = `sd-reuse-${RUN}`;
+      const first = await importPage(ctxA(), { slug, title: 'Original', body: 'The first version of this page.', scope: 'workspace' });
+      await deletePage(ctxA(), { pageId: first.pageId });
+
+      const second = await importPage(ctxA(), { slug, title: 'Replacement', body: 'A brand new page at the same slug.', scope: 'workspace' });
+      expect(second.pageId).not.toBe(first.pageId);
+      const got = await getPage(ctxA(), { pageId: second.pageId });
+      expect(got.content).toContain('brand new page');
+    }, 120_000);
+
+    it("a deleted page's file hash becomes reusable — same fix, on pages_sha_*", async () => {
+      // Same gap, same fix, on the source_sha256 dedup indexes (0009). Exercised directly at the SQL
+      // layer rather than through the full file-extraction pipeline, since the property under test is
+      // the INDEX's WHERE clause, not extraction — the two ingest paths already share one dupe-check
+      // shape (D89), so proving it here for the underlying constraint is sufficient.
+      const sha = 'b'.repeat(64);
+      const first = await seed(ctxA(), 'sd-reuse-hash-1', 'A page standing in for a file-sourced page.');
+      await withScopedTx(ctxA(), (tx) =>
+        tx`update pages set source_sha256 = ${sha} where id = ${first.pageId}`);
+      await deletePage(ctxA(), { pageId: first.pageId });
+
+      // The same hash, on a NEW page, must succeed now that the first is soft-deleted — this INSERT
+      // would have 23505'd against pages_sha_shared before migration 0018.
+      const second = await seed(ctxA(), 'sd-reuse-hash-2', 'A different page reusing the same file hash.');
+      await withScopedTx(ctxA(), (tx) =>
+        tx`update pages set source_sha256 = ${sha} where id = ${second.pageId}`);
+      const row = await adminSql()<{ source_sha256: string }[]>`
+        select source_sha256 from pages where id = ${second.pageId}`;
+      expect(row[0]!.source_sha256).toBe(sha);
     }, 120_000);
   });
 

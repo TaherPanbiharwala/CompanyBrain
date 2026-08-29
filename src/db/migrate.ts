@@ -488,6 +488,10 @@ AS $fn$ UPDATE public.principals SET google_sub = p_sub, updated_at = now()
 -- version could miss a chunk whose acl had independently drifted from its page's (D76's residual risk
 -- for an explicit child write under RLS). Running as the owner removes that gap rather than merely
 -- accepting it — every chunk with this page_id is reached, drifted or not.
+-- Also marks page_sources (migration 0017 closes the gap this left when first written: page_sources
+-- — the ORIGINAL UPLOADED FILE BYTES, D71 — got no deleted_at column and stayed fully live/readable
+-- after "delete" until this was added). No grant change needed: narrowGrants() already revokes
+-- UPDATE on page_sources from cb_app table-wide, so only this owner-run function can ever set it.
 CREATE OR REPLACE FUNCTION cb_internal.soft_delete_page(p_page_id uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $fn$
@@ -503,6 +507,11 @@ AS $fn$
     UPDATE public.content_chunks SET deleted_at = now()
     WHERE page_id IN (SELECT id FROM page_upd)
     RETURNING id
+  ),
+  sources_upd AS (
+    UPDATE public.page_sources SET deleted_at = now()
+    WHERE page_id IN (SELECT id FROM page_upd)
+    RETURNING page_id
   )
   SELECT EXISTS (SELECT 1 FROM page_upd)
 $fn$;
@@ -525,6 +534,11 @@ AS $fn$
     UPDATE public.content_chunks SET deleted_at = now()
     WHERE page_id IN (SELECT id FROM page_upd)
     RETURNING id
+  ),
+  sources_upd AS (
+    UPDATE public.page_sources SET deleted_at = now()
+    WHERE page_id IN (SELECT id FROM page_upd)
+    RETURNING page_id
   )
   SELECT id FROM page_upd
 $fn$;

@@ -241,10 +241,13 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
       // carries different semantics (derived, re-derivable, parser-versioned).
     } catch (err) {
       const e = err as { code?: string; constraint_name?: string };
-      if (e.code === '23505' && (e.constraint_name === 'pages_sha_shared' || e.constraint_name === 'pages_sha_private')) {
+      // Index names renamed by migration 0018 (adds `AND deleted_at IS NULL` so a soft-deleted
+      // page's file hash becomes reusable) — this check must track the "_live" names, not 0009's
+      // original ones.
+      if (e.code === '23505' && (e.constraint_name === 'pages_sha_shared_live' || e.constraint_name === 'pages_sha_private_live')) {
         throw new OperationError(
           'already_exists',
-          e.constraint_name === 'pages_sha_shared'
+          e.constraint_name === 'pages_sha_shared_live'
             ? 'this exact file has already been uploaded to this workspace'
             : 'you have already uploaded this exact file',
           // Never echoes the colliding page's slug or title: for the private index the collision is

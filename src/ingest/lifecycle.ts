@@ -375,23 +375,38 @@ export async function deletePages(ctx: OperationContext, pageIds: string[]): Pro
     // SOFT delete (migration 0014), via cb_internal.soft_delete_pages — the batch form of the
     // SECURITY DEFINER function deletePage uses; see its comment above for why a raw UPDATE under
     // RLS on this scoped handle does not work and what the function does instead. It marks
-    // content_chunks in the same statement, unaffected by chunk-acl drift (it runs as the owner).
+    // content_chunks and page_sources in the same statement, unaffected by chunk-acl drift (it runs
+    // as the owner).
+    //
+    // A count mismatch here is NOT necessarily "the function and SELECT disagree" — it is also the
+    // ordinary shape of a benign race: `rows` above was read at the start of this transaction, and
+    // under READ COMMITTED a concurrent session can commit a change to one of these ids (a rescope,
+    // another delete) before this statement runs, causing the function's own WHERE clause to
+    // silently exclude it. PARTITION, not abort: an id the function didn't return is reported
+    // `refused` and every other id in the batch still succeeds — the exact contract this function's
+    // own comment in migrate.ts promises, and the shape the pre-M6 hard-delete code (a single
+    // `delete ... returning`, with a missing id reported as `refused`) already had. A prior version
+    // of this code aborted the WHOLE transaction on any mismatch via a bare `throw new Error(...)` —
+    // surfacing as an opaque 500 and undoing every successful delete in the batch for one contested
+    // row. Restored to partition here.
     const gone = await tx<{ soft_delete_pages: string }[]>`select cb_internal.soft_delete_pages(${deletable}::uuid[])`;
     const goneIds = new Set(gone.map((g) => g.soft_delete_pages));
-    // Selected a moment ago in this same transaction, so a count mismatch here is not "some were
-    // already gone" — it would mean the function and SELECT disagree about the row set, which is a
-    // bug worth failing loudly on rather than reporting a wrong per-page outcome.
-    if (goneIds.size !== deletable.length) {
-      throw new Error(
-        `deletePages: expected to soft-delete ${deletable.length} row(s), the function returned ${goneIds.size}`,
-      );
-    }
     for (const id of deletable) {
       const row = byId.get(id)!;
-      outcomes.push({ pageId: id, slug: row.slug, ok: true, code: 'ok' });
+      if (goneIds.has(id)) {
+        outcomes.push({ pageId: id, slug: row.slug, ok: true, code: 'ok' });
+      } else {
+        outcomes.push({
+          pageId: id,
+          slug: row.slug,
+          ok: false,
+          code: 'refused',
+          reason: 'the database refused a delete you can read',
+        });
+      }
     }
 
-    return { deleted: deletable.length, sourcesRemoved, outcomes };
+    return { deleted: goneIds.size, sourcesRemoved, outcomes };
   });
 }
 

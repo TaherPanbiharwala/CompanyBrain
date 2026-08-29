@@ -506,6 +506,18 @@
   {
     "grantee": "cb_app",
     "table_name": "page_sources",
+    "column_name": "deleted_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
+    "column_name": "deleted_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "page_sources",
     "column_name": "filename",
     "privilege_type": "INSERT"
   },

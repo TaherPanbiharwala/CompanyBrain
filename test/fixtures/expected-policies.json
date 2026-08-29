@@ -46,6 +46,15 @@
   },
   {
     "tablename": "page_sources",
+    "policyname": "page_sources_hide_deleted",
+    "roles": "{public}",
+    "cmd": "SELECT",
+    "permissive": "RESTRICTIVE",
+    "qual": "(deleted_at IS NULL)",
+    "with_check": "(none)"
+  },
+  {
+    "tablename": "page_sources",
     "policyname": "page_sources_ws",
     "roles": "{public}",
     "cmd": "ALL",

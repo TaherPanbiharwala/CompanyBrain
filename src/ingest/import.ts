@@ -87,9 +87,11 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
       //
       // TWO index names. 0007 replaced UNIQUE(workspace_id, slug) with two partial unique indexes
       // because the single constraint made another principal's INVISIBLE private slug enumerable
-      // (unique checks bypass RLS, and this handler echoes the slug back). If this map falls out of
-      // sync with the migrations, the friendly 409 silently becomes a 500 on the most common mistake
-      // there is.
+      // (unique checks bypass RLS, and this handler echoes the slug back). Migration 0018 renamed
+      // both to the "_live" suffix (adding `AND deleted_at IS NULL` so a soft-deleted page's slug
+      // becomes reusable) — this map must track that name, not the original 0007 one. If this map
+      // falls out of sync with the migrations, the friendly 409 silently becomes a 500 on the most
+      // common mistake there is.
       //
       // 0009's source_sha256 pair is deliberately ABSENT: importPage never writes source_sha256 and
       // both of those indexes are partial on `IS NOT NULL`, so this path cannot raise them. The live
@@ -97,11 +99,11 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
       // unlisted 23505 still rethrows rather than being guessed at.
       const e = err as { code?: string; constraint_name?: string };
       const COLLISIONS: Record<string, { message: string; suggestion: string }> = {
-        pages_ws_slug_shared: {
+        pages_ws_slug_shared_live: {
           message: `a page with slug "${input.slug}" already exists in this workspace`,
           suggestion: 'Choose a different slug, or delete the existing page first.',
         },
-        pages_ws_slug_private: {
+        pages_ws_slug_private_live: {
           message: `you already have a private page with slug "${input.slug}"`,
           suggestion: 'Choose a different slug, or delete your existing page first.',
         },
