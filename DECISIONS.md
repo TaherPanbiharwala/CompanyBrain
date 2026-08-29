@@ -1469,3 +1469,127 @@ today** — schema, RLS and grants exist, zero readers, and that is now the inte
 an in-progress gap. `docs/m5b.md` §2.1 and §6.1, and `CONTEXT.md` §5.1, are corrected to say so. Revisit
 only when a design partner asks for it by name — the same standard `docs/pipeline-roadmap.md` already
 applies to cutting M13.
+
+## D105 — M6 ships (metadata plane); an 8-angle adversarial review found 10 issues, 3 fixed before the next merge (2026-08-25)
+
+`docs/pipeline-roadmap.md`'s M6 — founder-approved, named as blocking nothing further in the roadmap
+should start ahead of it — ships: `effective_date`/`effective_date_source`/`author`/`metadata`/
+`content_hash` on `pages`, `effective_date`/`author`/`chunker_version` denormalized onto
+`content_chunks` (D4's reasoning — `hybridSearch` scans `content_chunks` directly with no per-arm join
+to `pages`), `since`/`until`/`author` filters on `search`/`ask`, and soft delete for `delete_page`/
+`delete_pages`. Merged via PR #4 (`744ae60`), then followed by a same-day fix commit (`d7a955c`) after
+an adversarial review — both parts recorded here together since the second is the direct continuation
+of the first, not a separate decision.
+
+**The RLS design for soft delete took two migrations to get right, and the first attempt was live-
+measured wrong, not theorized wrong.** `0014_metadata_plane.sql`'s original design added
+`deleted_at IS NULL` as a fourth conjunct on `pages_ws`/`content_chunks_ws`'s existing `USING` clause,
+reasoning that leaving `WITH CHECK` untouched would let the soft-delete `UPDATE` satisfy its own check.
+It didn't: a real `cb_app`-scoped `update pages set deleted_at = now() ...` (no `RETURNING`, so 0007's
+documented RETURNING-visibility behavior wasn't the cause either) failed with `42501 new row violates
+row-level security policy`, while an identical `UPDATE` to an unrelated column on the same row
+succeeded. Postgres does not let an `UPDATE`'s new-row check diverge from what `SELECT` requires of the
+same row for a single combined `FOR ALL` policy, regardless of what that policy's own `WITH CHECK` text
+says. `0016_soft_delete_policy_fix.sql` fixed it with the textbook-correct shape instead: `pages_ws`/
+`content_chunks_ws` revert to byte-identical-to-0007, and `deleted_at IS NULL` becomes a separate
+**RESTRICTIVE, `FOR SELECT`-only** policy (`pages_hide_deleted`/`content_chunks_hide_deleted`) — which
+ANDs into reads only and is structurally invisible to `UPDATE`/`INSERT`/`DELETE`. The write itself
+routes through two new `SECURITY DEFINER` functions, `cb_internal.soft_delete_page`/`soft_delete_pages`
+(`src/db/migrate.ts`, same file and pattern as `resolve_session`/`adopt_principal`), which re-derive the
+same workspace+acl authorization from the tx-local GUCs `withScopedTx` already sets and write as the
+owner — which also closes D76's residual chunk-acl-drift gap for delete (every chunk with the target
+`page_id` is reached, drifted or not) rather than merely accepting it, since an explicit UPDATE on the
+scoped `cb_app` handle would have had the same gap D76 already named for an explicit child delete.
+`doctor.ts` gained two positive checks for this exact shape (a RESTRICTIVE + SELECT-only policy exists,
+and `pages_ws`/`content_chunks_ws` do NOT mention `deleted_at`) so a future "simplification" folding it
+back into the `FOR ALL` policy fails loudly instead of silently reintroducing the `42501`.
+
+**An 8-angle adversarial review (finder pass + independent 1-vote verification; all 10 candidates
+CONFIRMED, none refuted) found three real gaps the migration's own ceremony didn't catch, each fixed
+in the same-day follow-up commit:**
+
+1. **`page_sources` — the original uploaded file bytes (D71) — never got the same treatment.**
+   `0014`/`0016` gave `pages`/`content_chunks` a `deleted_at` column and the restrictive policy;
+   `page_sources` got neither, so after `delete_page` the uploaded file stayed fully live and
+   RLS-readable under its original acl indefinitely — not for the documented grace window, but until
+   an operator manually ran `scripts/purge-deleted.ts` (no cron wiring exists for it) — directly
+   contradicting `lifecycle.ts`'s own `DeletePageResult` comment claiming immediate unreadability.
+   **Fixed:** `0017_page_sources_soft_delete.sql` gives it the identical shape (a `deleted_at` column,
+   a `page_sources_hide_deleted` restrictive policy), and the two `SECURITY DEFINER` functions mark it
+   in the same statement as the parent page. No grant-matrix change needed — `narrowGrants()` already
+   revokes `cb_app`'s `UPDATE` on `page_sources` table-wide, so the new column inherited that
+   automatically (confirmed against the live `expected-column-grants.json` diff: only `INSERT`/`SELECT`
+   landed, no `UPDATE`).
+2. **The pre-existing slug and `source_sha256` partial unique indexes (0007, 0009) never excluded
+   soft-deleted rows** — a **structural guarantee**, not a rare race, confirmed by direct read of the
+   index definitions and the soft-delete functions' column set: a soft-deleted page still occupies its
+   slug and file-hash uniqueness slot forever, because nothing in `soft_delete_page`/`soft_delete_pages`
+   touches `scope`, `slug`, `source_sha256`, or `owner_principal`. Deleting a page and then re-ingesting
+   the same slug, or re-uploading the same file, deterministically 23505'd as `already_exists` — for a
+   page that `list_pages`/`get_page`/`search` all agreed did not exist. This also broke
+   `scripts/load-eval-corpus.ts`'s own `--purge`-then-reload workflow, since its purge now goes through
+   the app-level (soft) delete. **Fixed:** `0018_slug_hash_indexes_exclude_deleted.sql` creates four new
+   indexes with an added `AND deleted_at IS NULL` under new `_live`-suffixed names — following 0013's
+   own precedent of replacing an index under a new name rather than a same-name drop-then-recreate,
+   which would open a window with no uniqueness enforced at all — created *before* the old ones drop,
+   so there is never a moment with fewer constraints than before. `src/ingest/import.ts`/`file.ts`'s
+   `constraint_name`-keyed 23505 error maps are updated in the same change; leaving that for a
+   follow-up would have turned a friendly 409 back into a raw `internal_error` for the exact cases
+   D68/D73 built those maps to catch.
+3. **`deletePages` aborted the whole batch on a single-row mismatch**, contradicting `migrate.ts`'s own
+   comment on `soft_delete_pages` claiming it "match[es] the partition-not-abort contract deletePages
+   already promises." The implementation threw a bare `Error` (not `OperationError`) whenever
+   `soft_delete_pages` returned fewer ids than requested, rolling back every already-successful
+   soft-delete in the same transaction for one contested row — verified as a realistic, not merely
+   theoretical, failure: no isolation level is set anywhere in this codebase (`READ COMMITTED` is
+   Postgres's default), so a concurrent session committing a rescope or another delete on just one id
+   in the batch, between the batch's initial visibility `SELECT` and the `soft_delete_pages` call,
+   reproduces the mismatch. **Fixed:** restored per-row `refused` reporting for any id the function
+   didn't return, matching both the SQL function's own documented contract and the pre-M6 hard-delete
+   code's behavior (a missing id from `DELETE ... RETURNING` was already reported the same way).
+
+**Seven further findings were CONFIRMED but deliberately left open** — recorded here so a future
+session doesn't have to re-run the review to rediscover them:
+
+- `metadata`'s "10KB" cap (`src/api/operations.ts`) checks `JSON.stringify(m).length` — UTF-16 code
+  units, not UTF-8 bytes. Verified by execution: a CJK-heavy payload passes the length check at close
+  to 3x the intended byte size, with no other layer (Express body limits are per-request, not
+  per-field) catching the overshoot.
+- The `author` search filter (`src/search/hybrid.ts`) does raw `=` with no trim/case-fold at either
+  ingest or query time — a real deviation from this codebase's own established normalize-on-write
+  convention for other exact-match identity fields (`normalizeEmail`, lowercased grant tags in
+  `context.ts`), not a codebase-wide absence of the pattern.
+- `soft_delete_page`/`soft_delete_pages` hand-copy `current_grants()`'s ACL-parsing expression instead
+  of calling the function directly (both are owned by the same role and could), and no `doctor.ts`
+  check cross-validates the two definitions stay in agreement.
+- Migration `0015`'s new index (`idx_chunks_ws_effdate`) ships explicitly unverified — its own header
+  says so — and `scripts/explain-search.ts`'s update hardcodes `since`/`until`/`author` to `null`, so
+  the one tool that could produce the `EXPLAIN` plan the migration's header demands cannot exercise the
+  query shape it needs to verify. This repo has direct, expensive precedent (`0013_chunk_tsvector.sql`)
+  for exactly this failure mode — a correlated predicate silently losing its index — going undetected
+  until someone happened to run `EXPLAIN`.
+- `effectiveDate`/`effectiveDateSource` derivation and the `contentHash(Buffer.from(text,'utf8'))`
+  text-hashing pattern are duplicated verbatim across `file.ts`/`import.ts`/`lifecycle.ts` with no
+  shared helper.
+- The same three-line `since`/`until`/`author` SQL predicate block is copy-pasted into all three
+  `hybridQuery` arms (`kw_pool`, `vec`, `title`) rather than factored into one fragment — confirmed
+  structurally unnecessary (all three reference the filtered columns via the same `c` alias).
+- `scripts/load-eval-corpus.ts` was never updated to map `EvalDocument.metadata`'s `source`/`author`/
+  `published_at` into the new ingest fields, so the MultiHop eval corpus cannot exercise the new
+  filters at all — every loaded page gets `author: null` and a defaulted `effectiveDate` regardless of
+  what the dataset says.
+
+**Retrieval-quality re-test, and what it does and doesn't prove.** Against the untouched pre-M6 corpus
+(same workspace, same 2,255-question MultiHop set, seed 42), `hit@1` and `candidate-recall` matched the
+D100 baseline at every k, with only a razor-thin (0.1pp / 0.001 MRR) drift traced to two *ruled-out*
+mechanisms, not asserted-away: `explain:search` confirmed the new `since`/`until`/`author` predicates
+are provably absent from the executed plan when unset (Postgres's planner constant-folds
+`NULL::date IS NULL OR ...` before execution, since `prepare:false` behind the pooler means literals,
+not opaque bind params), and a direct side-by-side SQL comparison showed the new `deleted_at IS NULL`
+clause produces byte-identical scores with or without it on this corpus. A second re-test — after fully
+purging and rebuilding the corpus from scratch (609 documents re-extracted, re-chunked, re-embedded, a
+new HNSW graph) — showed a larger, still non-regressive shift (`hit@1` +0.9pp, MRR up at every k). That
+comparison does **not** isolate causation the way the first one does: rebuilding the corpus changed
+embeddings and index structure simultaneously with the code, so it answers "does retrieval still work
+well on a fresh build" rather than "did M6 change anything" — the first re-test is the one that actually
+answers the second question, and should be the one cited for it.
