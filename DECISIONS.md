@@ -1593,3 +1593,49 @@ comparison does **not** isolate causation the way the first one does: rebuilding
 embeddings and index structure simultaneously with the code, so it answers "does retrieval still work
 well on a fresh build" rather than "did M6 change anything" — the first re-test is the one that actually
 answers the second question, and should be the one cited for it.
+
+## D106 — `idx_chunks_ws_effdate` verified: correct at real selectivity, 0013's misestimation at broad selectivity — kept, not tuned (2026-09-01)
+
+The fourth of D105's seven deliberately-left-open findings, chased on request. 0015's own header said
+not to trust its new index "without running `bun run explain:search`... that is the discipline 0013
+exists to demonstrate" — this is that discipline, actually run, with the honest result.
+
+**Two clean data points, both the planner behaving correctly.** Against the live `multihop eval (plain)`
+workspace (2,829 chunks), a highly selective `--since`/`--author` (matching 0 rows) produced a genuine
+`Index Cond: (workspace_id = ... AND effective_date >= ...)` on `idx_chunks_ws_effdate`, in all three arms
+that scan `content_chunks` directly. A non-selective `--since` (matching all 2,829 rows) correctly
+dropped `effective_date` to a plain `Filter` and scanned via `idx_chunks_ws` instead — the right call,
+since checking the index's second column buys nothing when every row already qualifies. Neither is a
+defect.
+
+**The missing case was the realistic middle, and the loaded corpus couldn't produce it.** Every chunk in
+the eval workspace currently carries the identical upload-time `effective_date` (it predates today's
+`provenanceFor` fix) and no `author` — a reload with real per-article dates would have supplied it, but
+was blocked by an OS-level permission error reading `~/Desktop/Datasets/MultiHopRAG` from this
+environment (unrelated to the app; not chased further). Substituted a synthetic, in-transaction-only
+test instead: spread `effective_date` across a synthetic 180-day range and re-ran `ANALYZE` inside a
+`withScopedTx` call whose callback threw a sentinel error at the end so the whole transaction — the
+UPDATE, the ANALYZE, and their statistics — rolled back and nothing persisted (confirmed after: the real
+corpus still shows one distinct date across all 2,829 chunks). Re-ran the shipped `hybridQuery` at the
+resulting ~1/6 selectivity.
+
+**That run reproduced 0013's exact failure mode, not a new one.** The planner scanned via `idx_chunks_ws`
+(workspace_id alone), estimated **2 rows** out of it, got **199** actual, and never priced
+`idx_chunks_ws_effdate` against a sub-plan it already believed was nearly free — `Rows Removed by
+Filter: 2630` out of 2,829, ~67ms of a ~250ms statement. The root cause is the one 0013 already named:
+`workspace_id = ...` and `acl && current_grants()` are perfectly correlated (`aclForScope` always stamps
+`ws:<workspace_id>`) but scored as independent, so any scan gated on both looks far cheaper than it is —
+cheap enough that a third predicate never gets a second look. Confirmed this has no cheap fix: Postgres's
+extended statistics (`dependencies`/`ndistinct`/MCV) only correct joint selectivity for equality, range,
+and `IS [NOT] NULL` clauses — never for the array-overlap operator (`&&`) that makes `acl` the correlated
+column here — so there is no statistics-based version of 0013's fix available for this case.
+
+**Decision: keep the index exactly as shipped; do not add a second one or fight the planner.** It is
+proven correct exactly where `since`/`until`/`author` are normally used — a narrow window against a
+large workspace ("the last week", "this author's docs") — and the measured gap only appears at broad
+(~1/6+) selectivity, where the fallback plan is still correct, just not index-driven, at a bounded cost
+on a workspace already at 2,829 chunks. Same call already made for `idx_chunks_fts` → `idx_chunks_tsv`
+and for `AUTOCUT_RATIO`: document the measured trade-off rather than build unverified machinery to chase
+it, and revisit only if a real workspace's own numbers disagree. `0019_effdate_index_verified.sql`
+updates the index's `COMMENT` to this verdict; 0015's own file is untouched, per the fix-forward
+convention for applied migrations.

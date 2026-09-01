@@ -1,0 +1,26 @@
+-- 0015 shipped idx_chunks_ws_effdate with its own header saying "first guess, not a verified answer"
+-- and told the next reader not to trust it without running `bun run explain:search` against a real
+-- filtered query. That verification happened (D106) — this migration only updates the index's
+-- COMMENT to record the verdict. The index itself, and 0015's file, are untouched.
+--
+-- Verified, both extremes: a highly selective since/author (matches 0 of 2,829 chunks) produces a
+-- genuine `Index Cond` on (workspace_id, effective_date); a non-selective since (matches all 2,829)
+-- correctly falls back to evaluating effective_date as a plain Filter, because the second index column
+-- buys nothing at 100% selectivity. Both are the planner doing the right thing.
+--
+-- The realistic middle (~1/6 selectivity, synthesized in a rolled-back transaction — the loaded eval
+-- corpus itself has no date variance yet) reproduces 0013's own documented failure mode instead: the
+-- planner treats workspace_id = ... and acl && current_grants() as independent when they are perfectly
+-- correlated, estimates ~2 rows out of that scan when the truth is 199, and never bothers pricing
+-- idx_chunks_ws_effdate against a sub-plan it already believes is nearly free. Same root cause as
+-- 0013's idx_chunks_fts, not a new one — and not fixable the way 0013 fixed its case, either: Postgres's
+-- extended statistics (dependencies/ndistinct/MCV) only correct joint selectivity for equality, range
+-- and IS [NOT] NULL clauses, never for the array-overlap operator (&&) that makes acl the correlated
+-- column here, so there is no equivalent of 0013's "make the fallback cheap" move available.
+--
+-- Decision: keep the index as shipped, do not chase it further. It is proven correct exactly where a
+-- since/until/author filter is normally narrow relative to a workspace (the common case), and the
+-- measured gap only appears at broad selectivity, where the fallback still returns correct results at
+-- a bounded cost (tens of ms on a workspace already at 2,829 chunks). Revisit only if a real workspace's
+-- own numbers say this stopped being true.
+COMMENT ON INDEX idx_chunks_ws_effdate IS 'Backs the since/until search filter (src/search/hybrid.ts) at narrow selectivity — verified via explain:search, not assumed (D106). At broad selectivity it is correctly skipped in favor of a Filter, and at very broad (~1/6+) selectivity that skip is sometimes the SAME workspace_id/acl cardinality misestimation documented in 0013 rather than a genuinely better plan; accepted for the same reason 0013''s analogous gap was. See D106 before adding a second index here.';
