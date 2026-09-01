@@ -367,6 +367,31 @@ export interface HybridQueryParams {
 }
 
 /**
+ * The since/until/author predicate (migration 0014) — ONE definition, interpolated into every arm
+ * that scans `content_chunks` directly (kw_pool, vec, title), rather than the three independent
+ * copies an adversarial review of the M6 PR found. All three arms reference the filtered columns
+ * via the same `c` alias, so there is no aliasing reason for the duplication to have existed.
+ *
+ * Not deleted_at, which stays enforced purely by RLS (see 0014's header for why duplicating THAT
+ * one here would be the wrong move, per D66) — this fragment carries only the ordinary, non-security
+ * correctness filters.
+ *
+ * Returns a postgres.js fragment, not a query result: like `hybridQuery` itself, this is built and
+ * interpolated via `${...}` into a larger statement, never awaited on its own.
+ */
+function metadataFilter(
+  tx: postgres.TransactionSql,
+  since: string | null,
+  until: string | null,
+  author: string | null,
+) {
+  return tx`
+    and (${since}::date is null or c.effective_date >= ${since}::date)
+    and (${until}::date is null or c.effective_date <= ${until}::date)
+    and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))`;
+}
+
+/**
  * The retrieval statement, as a postgres.js FRAGMENT rather than an inline template.
  *
  * ONE statement, not four. MEASURED (D65): the cost here is per-STATEMENT — every round trip on
@@ -426,9 +451,7 @@ export function hybridQuery(
         and c.content_tsv @@ websearch_to_tsquery('english', ${orQuery})
         -- Metadata filters (migration 0014). Ordinary correctness predicates, identical shape in
         -- every arm — NOT deleted_at, which stays enforced purely by RLS (see the module header).
-        and (${since}::date is null or c.effective_date >= ${since}::date)
-        and (${until}::date is null or c.effective_date <= ${until}::date)
-        and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
+        ${metadataFilter(tx, since, until, author)}
     ),
     kw_split as (
       -- Ranked WITHIN each tier, which is what lets the two leave as separate arms below. Each list
@@ -476,9 +499,7 @@ export function hybridQuery(
         from content_chunks c
         where ${hasVector}::boolean
           and c.embedding is not null
-          and (${since}::date is null or c.effective_date >= ${since}::date)
-          and (${until}::date is null or c.effective_date <= ${until}::date)
-          and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
+          ${metadataFilter(tx, since, until, author)}
         order by c.embedding <=> ${vectorLiteral}::vector
         limit ${ARM_LIMIT}
       ) v
@@ -501,9 +522,7 @@ export function hybridQuery(
         join content_chunks c on c.page_id = p.id and c.ord = 0
         where ${orQuery} <> ''
           and to_tsvector('english', coalesce(p.title, '')) @@ websearch_to_tsquery('english', ${orQuery})
-          and (${since}::date is null or c.effective_date >= ${since}::date)
-          and (${until}::date is null or c.effective_date <= ${until}::date)
-          and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
+          ${metadataFilter(tx, since, until, author)}
         -- ORDER BY belongs INSIDE the limit. Without it the LIMIT took an arbitrary 10 matching
         -- titles (physical order, on a seq scan) and the outer row_number() then ranked whatever
         -- happened to survive — so the rk values feeding RRF were not the title arm's best 10.

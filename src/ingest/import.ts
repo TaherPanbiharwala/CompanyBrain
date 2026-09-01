@@ -11,7 +11,7 @@ import { toVectorLiteral } from '../ai/vector.ts';
 import type postgres from 'postgres';
 import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
-import { contentHash } from './sanity.ts';
+import { deriveEffectiveDate, textHash as computeTextHash } from './provenance.ts';
 import { OperationError } from '../api/errors.ts';
 
 export interface ImportPageInput {
@@ -44,13 +44,11 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
   const scope = input.scope ?? DEFAULT_PAGE_SCOPE;
   const acl = aclForScope(scope, ctx);
   const kind = input.kind ?? DEFAULT_PACK_KIND;
-  // Provenance sentinel (migration 0014) — same reasoning as file.ts's ingest path.
-  const effectiveDate = input.effectiveDate ?? new Date().toISOString().slice(0, 10);
-  const effectiveDateSource = input.effectiveDate ? 'manual' : 'upload_time';
+  const { effectiveDate, effectiveDateSource } = deriveEffectiveDate(input.effectiveDate);
   // Hashes the BODY text directly — this path has no separate "extracted" text (body IS the
-  // content), the same reason it never wrote source_sha256 either. Reuses contentHash() on the
-  // byte-generic Uint8Array it already accepts, so it means the same thing as file.ts's textHash.
-  const textHash = contentHash(Buffer.from(input.body, 'utf8'));
+  // content), the same reason it never wrote source_sha256 either. See provenance.ts's textHash()
+  // for why this means the same thing as file.ts's ingest path.
+  const textHash = computeTextHash(input.body);
 
   // Embed OUTSIDE any DB transaction (D6) — a stalled model call must never pin a pooled
   // connection. embedAll batches, so a document large enough to exceed the provider's input limit

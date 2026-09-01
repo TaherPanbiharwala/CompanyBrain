@@ -22,12 +22,16 @@ export const STATE_PATH = join(EVAL_DIR, '.eval-workspaces.json');
 /**
  * The two ingest variants.
  *
- * `plain` is what the pipeline does today: body only. `meta` prepends a header carrying source,
- * author and published_at. 92% of MultiHop questions name a news outlet and only 35% of documents
- * contain their own outlet name in the body; 583 questions reference dates and `ImportPageInput` has
- * no date field at all. Retrieval reads `content_chunks.content`, `content_chunks.embedding` and
- * `pages.title` — never `tags` — so without this header the metadata those questions key on reaches
- * nothing searchable, and a low temporal score would be measuring the LOADER, not the pipeline.
+ * `plain` is what the pipeline does today: body only. `meta` ADDITIONALLY prepends a header carrying
+ * source, author and published_at, so it is searchable/embeddable the way `pages.title` is. 92% of
+ * MultiHop questions name a news outlet and only 35% of documents contain their own outlet name in
+ * the body. Retrieval reads `content_chunks.content`, `content_chunks.embedding` and `pages.title` —
+ * never `tags` — so without this header the metadata those questions key on reaches nothing
+ * searchable by CONTENT MATCHING, and a low temporal/entity score would be measuring the LOADER, not
+ * the pipeline. (`ImportPageInput` gained `author`/`effectiveDate` fields in migration 0014 —
+ * `provenanceFor()` below wires them from this SAME metadata bag on BOTH variants, independent of
+ * this header, so `since`/`until`/`author` FILTERING works regardless of variant; this header is
+ * about ranking/embedding, not filtering.)
  *
  * The delta between the two runs is the finding.
  */
@@ -56,6 +60,25 @@ export function withMetadataHeader(doc: EvalDocument): string {
 
 export function bodyFor(doc: EvalDocument, variant: Variant): string {
   return variant === 'meta' ? withMetadataHeader(doc) : doc.body;
+}
+
+/**
+ * Extract the `ingest` op's typed `author`/`effectiveDate` params from an `EvalDocument`'s metadata
+ * bag. Independent of `withMetadataHeader` above — that renders the SAME bag into the body text for
+ * the `meta`-variant A/B; this feeds the typed columns migration 0014 added, on BOTH variants, so
+ * `since`/`until`/`author` search filters have real values to match against on this corpus for the
+ * first time. Before this, every loaded page got `author: null` and a defaulted `effectiveDate`
+ * regardless of what the dataset said.
+ */
+export function provenanceFor(doc: EvalDocument): { author?: string; effectiveDate?: string } {
+  const meta = doc.metadata ?? {};
+  const author = typeof meta.author === 'string' && meta.author.trim() !== '' ? meta.author : undefined;
+  // published_at isn't guaranteed to already be a bare YYYY-MM-DD (the ingest op's own zod validator
+  // requires exactly that shape) — take the leading date-shaped prefix and drop anything that isn't
+  // one, rather than let one malformed dataset row fail a corpus load whose only job is loading.
+  const raw = meta.published_at;
+  const dateMatch = typeof raw === 'string' ? /^\d{4}-\d{2}-\d{2}/.exec(raw) : null;
+  return { author, effectiveDate: dateMatch?.[0] };
 }
 
 // ── Workspace state ─────────────────────────────────────────────────────────

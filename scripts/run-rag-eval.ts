@@ -694,10 +694,12 @@ async function main(): Promise<void> {
         }),
       ]), '');
       lines.push(
-        `The meta workspace prepends \`source | author | published_at\` to each document body.`,
-        `92% of questions name an outlet and only 35% of documents contain their own outlet name;`,
-        `583 reference dates and \`ImportPageInput\` has no date field. Retrieval never reads \`tags\`.`,
-        `A large delta means retrieval depends on metadata the engine currently cannot index.`, '');
+        `The meta workspace prepends \`source | author | published_at\` to each document body, so it`,
+        `is searchable/embeddable the way \`pages.title\` is. 92% of questions name an outlet and only`,
+        `35% of documents contain their own outlet name in the body. Retrieval never reads \`tags\`.`,
+        `A large delta means retrieval depends on CONTENT-MATCHING metadata the engine cannot index`,
+        `(since/until/author FILTERING is wired on both variants via provenanceFor() in`,
+        `scripts/eval-common.ts and is a separate question from what this delta measures).`, '');
     }
   }
 

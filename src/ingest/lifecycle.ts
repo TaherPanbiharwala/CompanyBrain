@@ -15,7 +15,7 @@ import { withRouterScope } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
 import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
-import { contentHash } from './sanity.ts';
+import { textHash } from './provenance.ts';
 import { OperationError } from '../api/errors.ts';
 import { aclForScope, type OperationContext, type PageScope } from '../core/context.ts';
 import type postgres from 'postgres';
@@ -720,7 +720,7 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
              -- coalesce, so omitting the title keeps the existing one rather than nulling it.
              title = coalesce(${input.title ?? null}, title),
              tags = ${tags},
-             content_hash = ${contentHash(Buffer.from(input.body, 'utf8'))},
+             content_hash = ${textHash(input.body)},
              updated_at = now()
        where id = ${page.id}`;
 

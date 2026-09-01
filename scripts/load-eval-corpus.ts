@@ -19,7 +19,7 @@ import { resolveAdapter } from '../src/eval/adapters/index.ts';
 import { slugify, findSlugCollisions, SLUG_MAX_LEN, SLUG_RE } from '../src/eval/slug.ts';
 import type { EvalDocument } from '../src/eval/types.ts';
 import {
-  parseArgs, say, ctxFor, loadWorkspaces, bodyFor, VARIANTS, knownDatasets,
+  parseArgs, say, ctxFor, loadWorkspaces, bodyFor, provenanceFor, VARIANTS, knownDatasets,
   type Variant, type CommonArgs,
 } from './eval-common.ts';
 import type { OperationContext } from '../src/core/context.ts';
@@ -105,10 +105,16 @@ async function loadVariant(
 
   await pMap(work, CONCURRENCY, async (doc) => {
     const slug = slugify(doc.id);
+    // author/effectiveDate come from the SAME metadata bag withMetadataHeader renders into the body
+    // for the meta variant — see provenanceFor's own comment. Both fields are optional and simply
+    // omitted (not sent as undefined-that-becomes-null) when the dataset doesn't have them, matching
+    // the ingest op's own "omit to default" contract. `metadata` carries the full bag through into
+    // the new jsonb column too, on both variants, so nothing the dataset knew is dropped at the door.
+    const { author, effectiveDate } = provenanceFor(doc);
     const result = await dispatchOp(
       ctx,
       'ingest',
-      { slug, title: doc.title, body: bodyFor(doc, variant), tags: [] },
+      { slug, title: doc.title, body: bodyFor(doc, variant), tags: [], author, effectiveDate, metadata: doc.metadata },
       {
         unmetered:
           'corpus seeding: a deliberate burst on a dedicated local principal, and a throttled load ' +

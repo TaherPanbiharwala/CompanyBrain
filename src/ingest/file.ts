@@ -15,6 +15,7 @@ import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { OperationError } from '../api/errors.ts';
 import { extractFile, withUploadSlot } from './extract/index.ts';
 import { assessExtraction, contentHash, sanitySuggestion } from './sanity.ts';
+import { deriveEffectiveDate, textHash as computeTextHash } from './provenance.ts';
 import { chunkBlocks, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
 
@@ -101,11 +102,7 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
   const kind = input.kind ?? DEFAULT_PACK_KIND;
   const tags = input.tags ?? [];
   const sha256 = contentHash(input.bytes);
-  // Provenance sentinel (migration 0014): 'manual' when the caller supplied a date, else defaulted
-  // to today so a since/until search filter has something real to match against — leaving this NULL
-  // by default would make date filtering vacuous for every ordinarily-ingested page.
-  const effectiveDate = input.effectiveDate ?? new Date().toISOString().slice(0, 10);
-  const effectiveDateSource = input.effectiveDate ? 'manual' : 'upload_time';
+  const { effectiveDate, effectiveDateSource } = deriveEffectiveDate(input.effectiveDate);
 
   // 1. Extract, in the hardened subprocess. Throws typed errors (unsupported_format,
   //    extraction_failed, payload_too_large) that reach the caller as themselves, never as a 500.
@@ -212,11 +209,10 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
   );
 
   const extractedText = extracted.blocks.map((b) => b.text).join('\n\n');
-  // Distinct from `sha256` above (the ORIGINAL UPLOADED BYTES, for pre-embed dedup). This hashes the
-  // EXTRACTED TEXT — reusing contentHash() on the byte-generic Uint8Array it already accepts — so it
-  // means the same thing on both ingest paths (import.ts hashes `body` the same way). No consumer
-  // yet; see migration 0014.
-  const textHash = contentHash(Buffer.from(extractedText, 'utf8'));
+  // Distinct from `sha256` above (the ORIGINAL UPLOADED BYTES, for pre-embed dedup). content_hash is
+  // over the EXTRACTED TEXT — see provenance.ts's textHash() for why it means the same thing on both
+  // ingest paths. No consumer yet; see migration 0014.
+  const textHash = computeTextHash(extractedText);
 
   // 5. One transaction: page + source bytes + chunks, or none of them.
   return withScopedTx(ctx, async (tx) => {
