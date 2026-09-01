@@ -341,7 +341,7 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     expect(untilOld, 'until excluded nothing — the filter is a no-op').not.toContain(`date-new-${RUN}`);
   }, 30_000);
 
-  it('author filter narrows results to an exact match (migration 0014)', async () => {
+  it('author filter narrows results, case- and whitespace-insensitively (migration 0014)', async () => {
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
     const TOKEN = 'zzzqqqAuthorFilterMarker';
     await importPage(ctx, {
@@ -359,6 +359,14 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     const filtered = (await hybridSearch(ctx, TOKEN, { author: 'zzzqqq-author-a' })).hits.map((h) => h.slug);
     expect(filtered).toContain(`auth-a-${RUN}`);
     expect(filtered, 'author excluded nothing — the filter is a no-op').not.toContain(`auth-none-${RUN}`);
+
+    // An adversarial review found the filter was raw `=` with no case/whitespace folding — a stored
+    // author of 'zzzqqq-author-a' would not have matched a query of '  ZZZQQQ-Author-A  ' before the
+    // fix. The op boundary (src/api/operations.ts) trims on the way IN; this proves the SQL comparison
+    // itself (src/search/hybrid.ts) also folds case, independent of what the caller already cleaned up
+    // — direct callers of hybridSearch (this test included) bypass that zod layer entirely.
+    const differentCase = (await hybridSearch(ctx, TOKEN, { author: '  ZZZQQQ-Author-A  ' })).hits.map((h) => h.slug);
+    expect(differentCase, 'a differently-cased/padded author query matched nothing').toContain(`auth-a-${RUN}`);
   }, 30_000);
 
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {

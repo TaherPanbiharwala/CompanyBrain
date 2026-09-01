@@ -16,6 +16,7 @@
 //
 //   bun run explain:search --workspace "multihop eval (plain)"
 //   bun run explain:search --workspace A17 --query "what did the team decide?"
+//   bun run explain:search --workspace A17 --since 2026-01-01 --until 2026-06-30 --author "Jane Doe"
 //
 // Read-only: EXPLAIN ANALYZE executes the statement, but every statement here is a SELECT.
 import { buildContext, resolveGrants } from '../src/core/context.ts';
@@ -36,6 +37,15 @@ const REPEATS = 3;
  *  because only this script takes a question. */
 function queryFlag(): string | undefined {
   const i = process.argv.indexOf('--query');
+  return i >= 0 ? process.argv[i + 1] : undefined;
+}
+
+/** `--since`/`--until`/`--author` (migration 0014). Without these this script could only ever
+ *  attribute the UNFILTERED query's cost — and migration 0015's own header says its new index
+ *  (idx_chunks_ws_effdate) must not be trusted without seeing the plan for exactly this filtered
+ *  shape. Named generically so a future filter can follow the same one-line pattern. */
+function stringFlag(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
@@ -85,9 +95,17 @@ async function main(): Promise<void> {
   const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([question]));
   const vectorLiteral = toVectorLiteral(queryVector!);
 
-  // since/until/author (migration 0014) left null: this script attributes the SHIPPED query's cost,
-  // and an unfiltered ask is the common case the arms' predicates must stay cheap for.
-  const params = { query: question, orQuery, vectorLiteral, hasVector: true, fetchK: 8, since: null, until: null, author: null };
+  // since/until/author (migration 0014), from flags — default null so the unfiltered case (the
+  // common one, and the shape the arms' predicates must stay cheap for) is still what you get with
+  // no flags at all. Pass --since/--until/--author to attribute the FILTERED query's cost instead —
+  // migration 0015's own header says its new index must not be trusted without seeing exactly this.
+  const since = stringFlag('since') ?? null;
+  const until = stringFlag('until') ?? null;
+  const author = stringFlag('author') ?? null;
+  if (since || until || author) {
+    console.log(`filters: since=${since ?? '(none)'} until=${until ?? '(none)'} author=${author ?? '(none)'}`);
+  }
+  const params = { query: question, orQuery, vectorLiteral, hasVector: true, fetchK: 8, since, until, author };
 
   await withScopedTx(ctx, async (tx) => {
     // ── 1. The whole statement, as shipped ────────────────────────────────

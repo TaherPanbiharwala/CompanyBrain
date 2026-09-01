@@ -176,11 +176,19 @@ const ingest = defineOp({
           'advisory. replace_page keeps whatever scope the page already has; rescope_pages is the op ' +
           'that changes it afterwards.',
       ),
-    author: z.string().max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
+    // .trim() so a pasted value's stray leading/trailing whitespace never gets stored as part of the
+    // value — the SEARCH-side comparison (src/search/hybrid.ts) additionally folds case, since a name
+    // has no canonical casing to enforce at ingest.
+    author: z.string().trim().min(1).max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
     metadata: z
       .record(z.unknown())
       .optional()
-      .refine((m) => !m || JSON.stringify(m).length <= 10_000, 'metadata too large (10KB limit)')
+      // Buffer.byteLength, not .length: .length counts UTF-16 code units, and this bound is a
+      // storage-byte one (migration 0014's column comment: "Bounded to 10KB"). A CJK/emoji-heavy
+      // payload can pass a code-unit check at up to ~3x its intended byte size — '日'.repeat(4900) is
+      // .length 4908 but 14,708 UTF-8 bytes. Matches how this codebase already bounds text elsewhere
+      // (src/ingest/chunk.ts, src/ingest/extract/index.ts both use Buffer.byteLength for the same reason).
+      .refine((m) => !m || Buffer.byteLength(JSON.stringify(m), 'utf8') <= 10_000, 'metadata too large (10KB limit)')
       .describe('Unstructured metadata bag, up to 10KB serialized.'),
     effectiveDate: z
       .string()
@@ -209,7 +217,7 @@ const ask = defineOp({
     // Same filters as `search`, same reasoning — see that op's params.
     since: z.string().date().optional().describe('Only consider evidence whose effective_date is on or after this ISO date.'),
     until: z.string().date().optional().describe('Only consider evidence whose effective_date is on or before this ISO date.'),
-    author: z.string().max(200).optional().describe('Only consider evidence whose author matches exactly.'),
+    author: z.string().trim().min(1).max(200).optional().describe('Only consider evidence whose author matches (case-insensitive).'),
   }),
   requiredRole: 'member',
   handler: async (ctx, params) =>
@@ -414,11 +422,19 @@ const ingest_file = defineOp({
       ),
     // Same three fields and reasoning as `ingest` above — not a second hand-written copy of the
     // bound, just of the fields, since the two ops share no single schema object.
-    author: z.string().max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
+    // .trim() so a pasted value's stray leading/trailing whitespace never gets stored as part of the
+    // value — the SEARCH-side comparison (src/search/hybrid.ts) additionally folds case, since a name
+    // has no canonical casing to enforce at ingest.
+    author: z.string().trim().min(1).max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
     metadata: z
       .record(z.unknown())
       .optional()
-      .refine((m) => !m || JSON.stringify(m).length <= 10_000, 'metadata too large (10KB limit)')
+      // Buffer.byteLength, not .length: .length counts UTF-16 code units, and this bound is a
+      // storage-byte one (migration 0014's column comment: "Bounded to 10KB"). A CJK/emoji-heavy
+      // payload can pass a code-unit check at up to ~3x its intended byte size — '日'.repeat(4900) is
+      // .length 4908 but 14,708 UTF-8 bytes. Matches how this codebase already bounds text elsewhere
+      // (src/ingest/chunk.ts, src/ingest/extract/index.ts both use Buffer.byteLength for the same reason).
+      .refine((m) => !m || Buffer.byteLength(JSON.stringify(m), 'utf8') <= 10_000, 'metadata too large (10KB limit)')
       .describe('Unstructured metadata bag, up to 10KB serialized.'),
     effectiveDate: z
       .string()
@@ -484,7 +500,7 @@ const search = defineOp({
     // bug to work around.
     since: z.string().date().optional().describe('Only chunks whose effective_date is on or after this ISO date.'),
     until: z.string().date().optional().describe('Only chunks whose effective_date is on or before this ISO date.'),
-    author: z.string().max(200).optional().describe('Only chunks whose author matches exactly.'),
+    author: z.string().trim().min(1).max(200).optional().describe('Only chunks whose author matches (case-insensitive).'),
   }),
   requiredRole: 'member',
   handler: async (ctx, params) => {

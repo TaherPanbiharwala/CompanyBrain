@@ -225,7 +225,7 @@ export async function hybridSearch(
     since?: string;
     /** Only chunks whose effective_date is on or before this ISO date. */
     until?: string;
-    /** Only chunks whose author matches exactly. */
+    /** Only chunks whose author matches, case- and whitespace-insensitively. */
     author?: string;
   },
 ): Promise<SearchOutcome> {
@@ -428,7 +428,7 @@ export function hybridQuery(
         -- every arm — NOT deleted_at, which stays enforced purely by RLS (see the module header).
         and (${since}::date is null or c.effective_date >= ${since}::date)
         and (${until}::date is null or c.effective_date <= ${until}::date)
-        and (${author}::text is null or c.author = ${author}::text)
+        and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
     ),
     kw_split as (
       -- Ranked WITHIN each tier, which is what lets the two leave as separate arms below. Each list
@@ -478,7 +478,7 @@ export function hybridQuery(
           and c.embedding is not null
           and (${since}::date is null or c.effective_date >= ${since}::date)
           and (${until}::date is null or c.effective_date <= ${until}::date)
-          and (${author}::text is null or c.author = ${author}::text)
+          and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
         order by c.embedding <=> ${vectorLiteral}::vector
         limit ${ARM_LIMIT}
       ) v
@@ -503,7 +503,7 @@ export function hybridQuery(
           and to_tsvector('english', coalesce(p.title, '')) @@ websearch_to_tsquery('english', ${orQuery})
           and (${since}::date is null or c.effective_date >= ${since}::date)
           and (${until}::date is null or c.effective_date <= ${until}::date)
-          and (${author}::text is null or c.author = ${author}::text)
+          and (${author}::text is null or lower(trim(c.author)) = lower(trim(${author}::text)))
         -- ORDER BY belongs INSIDE the limit. Without it the LIMIT took an arbitrary 10 matching
         -- titles (physical order, on a seq scan) and the outer row_number() then ranked whatever
         -- happened to survive — so the rk values feeding RRF were not the title arm's best 10.

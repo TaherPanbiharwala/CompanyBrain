@@ -488,6 +488,15 @@ AS $fn$ UPDATE public.principals SET google_sub = p_sub, updated_at = now()
 -- version could miss a chunk whose acl had independently drifted from its page's (D76's residual risk
 -- for an explicit child write under RLS). Running as the owner removes that gap rather than merely
 -- accepting it — every chunk with this page_id is reached, drifted or not.
+-- Calls public.current_grants() for the acl check, rather than re-deriving its parsing inline — an
+-- earlier version of this function hand-copied that expression, and an adversarial review flagged it:
+-- nothing enforced the two staying in sync, and a future change to current_grants()'s parsing rule
+-- (or to GRANT_SEPARATOR in src/core/context.ts, which it depends on) would have updated every RLS
+-- policy automatically while leaving these two functions silently stale. Calling it directly is safe
+-- here: both are owned by the same role (postgres), an owner always has EXECUTE on functions they
+-- own regardless of GRANT state, and public is already in this function's own search_path.
+-- doctor.ts asserts the call is present so a future edit cannot silently revert to the inline copy.
+--
 -- Also marks page_sources (migration 0017 closes the gap this left when first written: page_sources
 -- — the ORIGINAL UPLOADED FILE BYTES, D71 — got no deleted_at column and stayed fully live/readable
 -- after "delete" until this was added). No grant change needed: narrowGrants() already revokes
@@ -499,7 +508,7 @@ AS $fn$
     UPDATE public.pages SET deleted_at = now()
     WHERE id = p_page_id
       AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
-      AND acl && (SELECT string_to_array(NULLIF(current_setting('app.grants', true), ''), ','))
+      AND acl && (SELECT public.current_grants())
       AND deleted_at IS NULL
     RETURNING id
   ),
@@ -526,7 +535,7 @@ AS $fn$
     UPDATE public.pages SET deleted_at = now()
     WHERE id = ANY(p_page_ids)
       AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
-      AND acl && (SELECT string_to_array(NULLIF(current_setting('app.grants', true), ''), ','))
+      AND acl && (SELECT public.current_grants())
       AND deleted_at IS NULL
     RETURNING id
   ),

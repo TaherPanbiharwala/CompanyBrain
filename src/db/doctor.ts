@@ -684,11 +684,25 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
 
   // Our own definers must pin search_path (a definer running with a caller-controlled search_path is
   // a privilege-escalation primitive) and must never carry PUBLIC EXECUTE.
-  const ours = await sql<{ name: string; config: string | null; acl: string | null }[]>`
-    select p.proname as name, p.proconfig::text as config, p.proacl::text as acl
+  const ours = await sql<{ name: string; config: string | null; acl: string | null; prosrc: string }[]>`
+    select p.proname as name, p.proconfig::text as config, p.proacl::text as acl, p.prosrc as prosrc
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where p.prosecdef and n.nspname = 'cb_internal' order by 1`;
   add('all 7 cb_internal definers present', ours.length === 7, `found ${ours.length}`);
+
+  // soft_delete_page/soft_delete_pages must CALL current_grants(), not hand-copy its parsing — an
+  // adversarial review found an earlier version doing exactly that, with nothing to stop the copy
+  // drifting from the source it was copied from (e.g. a future change to GRANT_SEPARATOR in
+  // src/core/context.ts). This is a source-text check rather than a behavioral one because the two
+  // forms can be behaviorally identical today and still be the risk this exists to catch.
+  const softDeleteFns = ours.filter((fn) => fn.name === 'soft_delete_page' || fn.name === 'soft_delete_pages');
+  const notCalling = softDeleteFns.filter((fn) => !fn.prosrc.includes('current_grants'));
+  add('soft_delete_page/soft_delete_pages call current_grants() rather than re-deriving its parsing',
+    softDeleteFns.length === 2 && notCalling.length === 0,
+    softDeleteFns.length !== 2
+      ? `expected both soft_delete_page and soft_delete_pages, found ${softDeleteFns.map((f) => f.name).join(', ') || 'neither'}. Run \`bun run migrate\`.`
+      : `${notCalling.map((f) => f.name).join(', ')} no longer call current_grants() — see migrate.ts's comment on why this must not hand-copy the parsing.`);
+
   for (const fn of ours) {
     add(`${fn.name}: search_path pinned to 'pg_catalog, public, pg_temp'`,
       (fn.config ?? '').includes('search_path=pg_catalog, public, pg_temp'), fn.config ?? '(unpinned)');
