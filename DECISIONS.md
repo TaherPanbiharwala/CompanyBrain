@@ -1639,3 +1639,23 @@ and for `AUTOCUT_RATIO`: document the measured trade-off rather than build unver
 it, and revisit only if a real workspace's own numbers disagree. `0019_effdate_index_verified.sql`
 updates the index's `COMMENT` to this verdict; 0015's own file is untouched, per the fix-forward
 convention for applied migrations.
+
+## D107 — `AGENTS.md` added: one cross-tool entry point, pointing at the existing docs rather than duplicating them (2026-09-03)
+
+D103 named Codex as expected back in this repo's workflow, and this repo had no file that told a fresh
+agent — one not already carrying `HANDOVER.md`/`CONTEXT.md`/`DECISIONS.md` context from a live session —
+where to start; no `CLAUDE.md` exists here either, since this project has used the three-document split
+(append-only decisions, living reference, session snapshot) as its onboarding mechanism from the start,
+and nothing pointed a stranger at it. `AGENTS.md` is the convention Codex, Cursor and others read by
+default, filled with the minimum needed to get a fresh agent to the right document rather than a fourth
+copy of the same information: the read order, the handful of hard rules that have actually cost this
+repo real time when missed (forward-only migrations, the `tx`-naming RLS convention enforced by
+`test/scoped-tx-guard.test.ts`, `doctor` as the security gate, the "run `explain:search`, don't assume"
+lesson from `0013`/D106), and the current `~/Desktop` sandbox gotcha. Kept deliberately short — it is an
+index, not a reference; `CONTEXT.md` stays the place a real answer lives.
+
+Also folded into this same session's docs pass: `master` was fast-forwarded directly to this branch's
+tip (`a1e390a`) rather than through a second PR — `057b55e` (PR #4's merge) was already its sole
+ancestor-vs.-branch divergence, so the fast-forward was conflict-free by construction, confirmed with
+`git merge-base --is-ancestor` before pushing. `HANDOVER.md` is rewritten in the same commit to reflect
+both this and D106.

@@ -6,32 +6,44 @@ against `git log -1 origin/master`), the current one supersedes it entirely; do 
 hand. `CONTEXT.md` §8 records specific corrections made to *earlier* versions of this file, kept
 because those facts about the code are still true even though that version's text is gone.
 
-**Branch/commit at write time:** `master` @ `d7a955c` (M6 metadata plane, PR #4, plus a same-day
-adversarial-review fix commit — both described in full below). **Read `git fetch origin && git log -1
-origin/master` before doing anything** — this repo has hit the same "a concurrent session merged past
-this exact point and nobody noticed" failure mode on at least three separate occasions now (`CONTEXT.md`
-§1's fourth lesson, and it happened again mid-session this time: this session's own branch was cut
-before a separate same-day commit landed D104 on `master`, discovered only by re-fetching before
-allocating the next `DECISIONS.md` number). Do not trust a local ref you haven't just re-fetched.
+**New this session: read `AGENTS.md` first if you haven't.** It's the short cross-tool entry point
+(D107) — this file, `CONTEXT.md`, and `DECISIONS.md` are what it points you at, in the order that
+actually gets you oriented fastest.
+
+**Branch/commit at write time:** `master` @ `a1e390a`, pushed there directly (no second PR — see §2).
+**Read `git fetch origin && git log -1 origin/master` before doing anything** — this repo has hit the
+same "a concurrent session merged past this exact point and nobody noticed" failure mode on multiple
+occasions (`CONTEXT.md` §1's fourth lesson). Do not trust a local ref you haven't just re-fetched.
 
 ---
 
-## 0. The database fault from the last two handovers is resolved
+## 0. Two things that look like regressions and aren't — check these before you chase either
 
-**§0 of the prior two versions of this file named a total DB-connectivity fault** (every command
-opening a Postgres connection failing with `tenant/user ... not found` against the shared `.env`,
-first surfaced 2026-08-09). **This session confirmed it is gone** — `bun run doctor`, `bun run migrate`
-(twice), the full test suite, and a live 2,255-question retrieval eval all ran successfully against the
-shared project throughout this session, with no connection errors at any point. Nobody in this session
-touched the credential or the Supabase project directly, so treat this as **confirmed-fixed, cause
-unconfirmed** — plausibly the founder-side credential rotation `docs/m5b.md` §4.1 named as the likely
-explanation, but that hasn't been independently verified, only the *symptom's* absence has. If a future
-session hits the same error again, don't assume it's the same root cause without checking `.env` and
-the project reference fresh — a lot can happen to a shared credential over two weeks.
+**The DB connectivity fault named by the previous two handovers is still resolved.** Nobody touched the
+credential or the Supabase project this session either; `bun run doctor`, `bun run migrate`, and the test
+suite all ran against the shared project with no connection errors. Still "confirmed-fixed, cause
+unconfirmed" — if it comes back, check `.env` and the project reference fresh rather than assuming it's
+the same root cause as before.
 
-`bun run doctor` is now **81 checks**, up from 73 at the last full count — the growth is M6's own
-(3 new checks for the soft-delete RLS shape, plus the new columns/policies moving the fixture-diffed
-counts). Don't quote 73 from memory anywhere in this repo going forward; that count is now stale.
+**New: some sandboxed environments cannot read `~/Desktop/Datasets/MultiHopRAG`.** `ls` on that directory
+returns `EPERM: operation not permitted` — an OS-level permission wall (macOS TCC / Desktop-folder
+protection on whatever process is running the tools), not anything wrong with the repo or the dataset.
+This breaks two things: `bun run load:eval` (can't reload the corpus) and `test/eval-harness.test.ts`'s
+"MultiHop adapter, against the real files" suite (10 tests, all failing with the identical `EPERM` stack
+trace bottoming out in `readJsonArray` — `src/eval/adapters/multihop.ts:103`). **This is why the full
+suite may show `730 pass / 19 skip / 10 fail` instead of the `740 pass / 0 fail` reported earlier in this
+same session** — that earlier count was inherited from a pre-compaction summary rather than freshly
+re-verified, and the discrepancy was never reconciled; treat `740/0` as unconfirmed and the `EPERM`-caused
+`730/19/10` as what was actually, directly observed this session. If you hit this: check `ls
+~/Desktop/Datasets/MultiHopRAG` first, before assuming any code change broke something. Fix is either
+granting the running process Desktop/Full-Disk access, or re-downloading the dataset somewhere readable
+and pointing `--dir` / `MULTIHOP_DIR` at it (see `AGENTS.md` / the script's own `--help`).
+
+`bun run doctor` is **82/82** as of this session, verified freshly (up from the 81 the last handover
+named — the increment happened somewhere in the findings-4-10 fix batches between then and now; D106's
+own migration is comment-only and added no check itself). Don't re-derive which exact commit added the
+82nd check; it isn't load-bearing, and doctor.ts's checks run inside loops, so a source-line count won't
+match the runtime total anyway.
 
 ---
 
@@ -40,109 +52,100 @@ counts). Don't quote 73 from memory anywhere in this repo going forward; that co
 ```
 bun run typecheck                          clean
 bun run build:web                          not re-run this session; no reason to expect drift
-bun run migrate (twice)                    idempotent, applies 0014-0018 cleanly
-bun run doctor                             81/81
-bun run test (full suite)                  737 pass / 0 fail / 19 skip, across 55 files
-bun run eval:rag --dataset multihop        2,255 questions x 2 workspaces, 0 errored — twice
-                                            (once against the untouched pre-M6 corpus, once against
-                                            a fully rebuilt one; see §2's M6 paragraph for what each
-                                            run does and doesn't prove)
+bun run migrate (repeated)                 idempotent, applies 0014-0019 cleanly
+bun run doctor                             82/82
+bun run test (full suite)                  730 pass / 19 skip / 10 fail — all 10 the SAME §0 EPERM,
+                                            not a code regression (see §0 before re-deriving this)
+bun run explain:search --since/--until/--author
+                                            now genuinely exercises the filtered query shape (D105's
+                                            finding #4 fix); read D106 before trusting or re-litigating
+                                            what it shows about idx_chunks_ws_effdate
 ```
 
 ---
 
 ## 2. What happened since the last handover, in one paragraph each
 
-Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D105) and `CONTEXT.md` (the
-living snapshot, **not updated this session** — see the note at the end of this section). This section
-exists so you don't have to read either cover-to-cover just to get oriented; it does not replace them
-for anything you're about to act on.
+Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D107) and `CONTEXT.md` (the
+living snapshot, **not updated this session** — see the note near the end of this section).
 
-**M6 — the metadata plane — shipped, was adversarially reviewed, and three real gaps were fixed
-same-day (D105).** `effective_date`/`author`/`metadata`/`content_hash` on `pages`, denormalized onto
-`content_chunks`, `since`/`until`/`author` search filters, and soft delete for `delete_page`/
-`delete_pages`. The soft-delete RLS design took two migrations to get right: the first attempt
-(`0014`, a single `FOR ALL` policy with `deleted_at IS NULL` folded into its own `USING` clause) was
-live-measured to fail — Postgres does not let an `UPDATE`'s new-row check diverge from what `SELECT`
-requires of the same row, whatever the policy's own `WITH CHECK` text says, so the soft-delete write
-itself 42501'd. `0016` fixed it with the textbook-correct shape: a separate `RESTRICTIVE`,
-`FOR SELECT`-only policy plus two `SECURITY DEFINER` functions that write as the owner. An 8-angle
-adversarial review (finder pass + independent verification; all 10 candidates confirmed) then found
-three things that design still missed — `page_sources` (the original uploaded file bytes) never got
-the same soft-delete treatment and stayed fully readable indefinitely; the pre-existing slug/file-hash
-unique indexes never excluded soft-deleted rows, so deleting a page permanently squatted its own slug;
-and a batch delete aborted its *entire* transaction on one benign concurrent-edit race instead of
-reporting just that row as refused. All three are fixed (migrations `0017`/`0018` plus a `lifecycle.ts`
-change). **Seven further confirmed findings were left open on purpose** — read D105 for the full list
-(a UTF-16-vs-bytes size-cap bug, an un-normalized `author` filter, some code duplication, and a real
-gap in `explain-search.ts`'s own verification capability for the new index) rather than re-deriving it
-by re-running the review.
+**All ten findings from M6's adversarial review (D105) are now fixed — the previous handover's "three
+fixed, seven open" is stale.** The seven left open at that point (UTF-16-vs-bytes size cap,
+un-normalized `author` filter, `explain-search.ts` unable to exercise a filtered query, duplicated
+provenance-derivation logic, duplicated SQL predicate across three `hybridQuery` arms, `soft_delete_*`
+hand-copying `current_grants()`'s parsing, and `load-eval-corpus.ts` never wiring dataset metadata into
+ingest) were fixed in two follow-up commits, each independently typechecked, doctor'd, and full-suite
+tested before landing. `ReportFindings` was re-called after each batch with `outcome: fixed`, so the
+review's own record — not just this prose — reflects that all 10 are closed.
 
-**Retrieval was re-tested twice, and the two runs prove different things — know which is which before
-citing either.** The first run, against the *untouched* pre-M6 corpus, isolated causation properly:
-`hit@1`/`candidate-recall` matched the existing D100 baseline exactly, and the two mechanisms that
-could plausibly have caused drift (the new search filters, the new RLS clause) were each directly ruled
-out rather than assumed clean. The second run, after fully wiping and rebuilding the corpus from
-scratch, showed a larger but still non-regressive shift — useful for "does retrieval still work on a
-fresh index," useless for "did M6 change anything," since it no longer holds corpus state constant.
-Don't cite the second run as a regression check; it isn't one.
+**D106 — the one thing D105 deliberately left as a *question* rather than a finding — is now answered
+by measurement, not left to rot as an "unverified" comment forever.** `idx_chunks_ws_effdate` (0015) is
+proven correct exactly where `since`/`until`/`author` filters are normally narrow relative to a
+workspace: a highly selective filter produces a genuine `Index Cond`. At broad (~1/6+) selectivity the
+planner skips it — reproduced with a synthetic, in-transaction-only date spread (rolled back, never
+persisted; the loaded eval corpus itself still has zero date variance, see below) because the loaded
+corpus can't yet produce that middle case on its own. That skip is 0013's already-documented
+workspace_id/acl cardinality misestimation recurring for a new column, not a new defect, and Postgres's
+extended statistics don't cover the array-overlap operator that would need correcting — so there's no
+cheap fix, and the decision (0019, comment-only) is to keep the index as shipped and stop chasing it
+further unless a real workspace's own numbers disagree.
 
-**`CONTEXT.md` was not touched this session.** Given the scale of M6, its §2 (system overview), §3
-(where things live — the ingest/search modules gained real behavior, not just new files), and §5
-(open work — the M7 roadmap dependency on `effective_date` is now satisfied) are all likely stale in
-places. The next session that does real work in `src/ingest/`, `src/search/`, or `src/db/` should
-expect to find and fix a few specific staleness points there rather than assume it's still current —
-this file and `DECISIONS.md` are the two documents actually kept current this session.
+**The eval corpus's provenance is still synthetic, not real — that's a live gap for whoever picks up
+retrieval-quality work next.** `provenanceFor()` (the findings-8-10 fix) is wired correctly end-to-end —
+verified by direct execution against four hand-built cases — but the *currently loaded* 2,829 chunks in
+`multihop eval (plain/meta)` all predate that fix and still carry one identical upload-time
+`effective_date` and no `author` at all. A reload would fix this but is blocked by §0's `~/Desktop`
+permission wall in this environment; it may not be blocked in yours.
 
-**Everything from the prior handover that this session did not touch is presumed still accurate**:
-the leak canary status (D102's six steps, still zero executed as of this writing — nobody has published
-the repo, stood up a separate CI Supabase project, or set the ten secrets), Codex's status (D103 — auth
-works, dual-voice review still blocked on CLI/model-catalog version), and the two founder rulings from
-D104 (spend accounting at M8, team scope out of v0). None of these were re-verified this session; they
-simply weren't in scope for M6 work.
+**`master` was fast-forwarded directly to this branch's tip, not merged through a second PR.** PR #4
+already covered and merged the first commit on this branch (`744ae60`); the five commits after it (three
+review-fix batches, the HANDOVER/D105 rewrite, and D106) sat unmerged on the branch until this session
+pushed `claude/review-handover-decisions-context-9f5d31:master` directly. `git merge-base
+--is-ancestor origin/master <branch>` confirmed master had not diverged, so this was a true fast-forward
+with zero conflict risk — worth knowing if you're wondering why there's no second merge commit for this
+work.
+
+**`AGENTS.md` is new (D107)** — a short cross-tool entry point (Codex, per D103, and any other agent
+that reads it by convention), pointing at this file, `CONTEXT.md`, and `DECISIONS.md` rather than
+duplicating them.
+
+**`CONTEXT.md` was not touched this session** (same as last time). Given two sessions' worth of changes
+have now landed since it was last checked, treat its specifics as more likely stale than usual, not less.
+
+**Everything from before that wasn't touched is presumed still accurate**: the leak canary (D102, still
+zero steps executed), Codex's status (D103 — auth works, dual-voice review still blocked on CLI/model
+version), and the two founder rulings in D104 (spend accounting at M8, team scope out of v0).
 
 ---
 
 ## 3. Working in this repo — for either agent
 
-**This project will be worked on by both Claude Code and Codex sessions going forward.** Nothing below
-assumes one or the other; where something *is* tool-specific, it says so.
+**Start at `AGENTS.md`, not here, if this is your first time in this repo.** This section is the parts
+of that orientation worth restating with more context.
 
-**The two documents that matter are append-only vs. living, and mixing up which is which causes real
-damage:**
+**The three documents that matter are append-only vs. living vs. snapshot, and mixing up which is which
+causes real damage:**
 
-- **`DECISIONS.md` is append-only.** Never edit a past entry's reasoning — if it turns out wrong, fix
-  it *forward*: add a new entry and put a one-line pointer in the old one. `CONTEXT.md` §7 is a whole
-  section of entries that *didn't* get a forward pointer when they should have, and the cost of
-  following one to a dead end is a wasted afternoon. **Next available number: D106.**
-  **This has now collided at least twice**, most recently this session: this session's branch was cut
-  from a point before a separate, same-day commit added `D104` on `master`. The fix each time has been
-  the same — `git fetch origin` and re-check `DECISIONS.md`'s actual current tail on `origin/master`
-  (not your local checkout) before allocating a number, merge that in first if it's moved, and only
-  then append. Skipping the fetch is exactly how this keeps happening.
-- **`CONTEXT.md` is a living snapshot**, meant to be corrected and re-derived in place, not appended
-  to. It was **not updated this session** (see §2's note above) — treat every specific number or
-  line-citation in it as a claim to re-verify against current code, more so than usual, since a full
-  milestone's worth of ingest/search changes landed since it was last checked.
-- **`docs/m5b.md` has its own refresh methodology** (its own §8): six parallel area audits, each
-  followed by an adversarial pass whose only job is to refute "missing" findings. Not touched this
-  session either, and M6 doesn't change its scope (M6 is `docs/pipeline-roadmap.md` territory, not
-  M5b's).
-- **This file (`HANDOVER.md`) gets rewritten, not appended to.**
+- **`DECISIONS.md` is append-only.** Never edit a past entry's reasoning — fix it *forward* with a new
+  entry and a one-line pointer in the old one. **Next available number: D108.** This numbering has
+  collided across concurrent sessions more than once — **fetch `origin` and check `DECISIONS.md`'s
+  actual tail on `origin/master`** before allocating a number, merge if it's moved, only then append.
+- **`CONTEXT.md` is a living snapshot**, corrected in place, not appended to. **Not updated for two
+  sessions running now** (M6 and this one) — treat any specific number or line-citation in it as a claim
+  to re-verify, more so than usual.
+- **`docs/m5b.md` has its own refresh methodology**, untouched this session; M6 (and this session's
+  follow-ups) are `docs/pipeline-roadmap.md` territory, not M5b's.
+- **This file gets rewritten, not appended to.**
 
 **Two conventions worth carrying into any process, regardless of which agent is running it:**
 
-- **Break a guard on purpose before trusting it.** M4's review (D97) found seven guards that passed
-  with their subject deleted. This session's own review process did the equivalent for M6's RLS design
-  — a live-reproduced `42501`, not a hypothetical, is what actually found the `0014` design was wrong,
-  and a direct side-by-side SQL comparison (not just re-running the eval) is what ruled out the
-  `deleted_at` clause as the source of the retrieval drift. Prefer measuring the actual failure over
-  reasoning about whether one could occur.
-- **An adversarial review pass is worth running on any RLS/security-relevant change before it merges,
-  not just at milestone boundaries.** M6's review found three real, live-reproducible-shaped bugs that
-  a normal review (and a passing test suite) had already missed — the migration's own extensive header
-  comments and the new doctor checks did not catch any of the three, because all three were gaps in
-  what those checks were checking, not violations of what they already checked.
+- **Break a guard on purpose before trusting it, or measure instead of reasoning about whether something
+  could occur.** M6's own RLS design was live-reproduced wrong (a real `42501`), not theorized wrong; D106
+  answered "does the new index actually get used" the same way, with `EXPLAIN`, not by re-reading the
+  migration's comment and deciding it sounded plausible.
+- **An adversarial review pass is worth running on any RLS/security-relevant change before it merges, not
+  just at milestone boundaries.** M6's review found three real, live-reproducible bugs (and seven smaller
+  ones, all now fixed) that a normal review and a passing test suite had already missed.
 
 ---
 
@@ -151,54 +154,44 @@ damage:**
 ```bash
 bun run typecheck                        # clean
 bun run migrate && bun run migrate       # idempotent; doctor.ts:9's own stated precondition
-bun run doctor                           # 81/81 as of this session
-bun run test                             # full suite: 737 pass / 0 fail / 19 skip
-bun run explain:search                   # see D105's open-findings list: this cannot currently
-                                          # exercise a since/until/author-filtered query — hardcodes
-                                          # them to null. Fix that before trusting migration 0015's
-                                          # new index on a filtered query shape.
-bun run eval:rag --dataset multihop      # the RAG harness; docs/eval-rag.md has the full flag surface
+bun run doctor                           # 82/82 as of this session
+bun run test                             # 730 pass / 19 skip / 10 fail here — §0 before you trust
+                                          # either that count or the 740/0 figure from earlier
+bun run explain:search --since <date> --until <date> --author "<name>"
+                                          # exercises the filtered query shape; D106 has the verified
+                                          # verdict on what you should expect to see
+bun run eval:rag --dataset multihop      # docs/eval-rag.md has the full flag surface. Remember: the
+                                          # loaded corpus's provenance is still synthetic (see §2)
 ```
 
 `.env` at the repo root is a **symlink to the main worktree's file**, shared across every worktree. It
-is gitignored. Never copy over it, never print it.
+is gitignored. Never copy over it, never print it. (If a worktree is missing it entirely rather than
+having it as a broken symlink, that's just because nobody created the symlink there yet — `ln -s
+/path/to/main-worktree/.env .env` fixes it; this happened at least once this session.)
 
 ---
 
 ## 5. Where to pick up
 
-**The two founder-decision items from the last handover are unchanged — neither was in scope this
-session:**
+**M6's adversarial review (D105) is fully closed — all 10 findings fixed, the one open question (D106)
+answered.** There is no remaining findings list from that review; don't go looking for one.
 
-1. **The leak canary has never run on a CI runner.** `D102`'s six-step sequence (agreed 2026-08-09) is
-   still fully unexecuted — repo still private, zero secrets configured, no separate CI Supabase
-   project. `docs/ci-setup.md` has the secret checklist.
-2. **Codex** — auth works (confirmed 2026-08-24, `D103`), dual-voice review is still blocked on the
-   installed `codex-cli` rejecting every model tried. A CLI upgrade is the plausible next step,
-   deliberately not attempted without a founder ask.
+**The most concrete near-term item is §0's `~/Desktop` permission wall**, if you're in an environment
+that hits it: it blocks reloading the eval corpus with real provenance, which in turn blocks ever
+observing `idx_chunks_ws_effdate` at realistic (not synthetic, not degenerate) selectivity, and blocks
+10 tests in `test/eval-harness.test.ts`. Either grant the running process Desktop access, or get the
+MultiHop dataset onto a path it can read and point `MULTIHOP_DIR` there.
 
-**What M6's adversarial review left open (D105) is the most concrete near-term work**, roughly ordered
-by how much it matters:
+**Unchanged from the last two handovers, still not in scope for any recent session:**
 
-1. `scripts/explain-search.ts` cannot exercise a `since`/`until`/`author`-filtered query — fix that
-   *before* trusting migration `0015`'s new index (`idx_chunks_ws_effdate`) at any real corpus scale.
-   This repo has direct, expensive precedent (`0013`) for a correlated predicate silently losing its
-   index and nobody noticing for a while.
-2. The `metadata` field's "10KB" cap measures the wrong unit (UTF-16 length, not UTF-8 bytes) — a small
-   fix in `src/api/operations.ts`.
-3. The `author` search filter has no normalization, unlike this codebase's own established pattern for
-   other exact-match identity fields.
-4. `scripts/load-eval-corpus.ts` doesn't wire `EvalDocument.metadata`'s `author`/`published_at` into
-   the new ingest fields — until it does, the MultiHop corpus can't actually exercise the new
-   `since`/`until`/`author` filters, which matters if anyone wants to validate them the way D100
-   validated `MAX_PER_PAGE`.
-5. Two smaller reuse/duplication findings (provenance-derivation logic copy-pasted across three ingest
-   files; the same SQL predicate block copy-pasted across three `hybridQuery` arms) and one
-   security-hygiene one (the new `SECURITY DEFINER` functions hand-copy `current_grants()`'s parsing
-   logic instead of calling it) — all in D105, none urgent, all cheap once picked up.
+1. **The leak canary has never run on a CI runner.** D102's six-step sequence is still fully unexecuted.
+   `docs/ci-setup.md` has the secret checklist.
+2. **Codex** — auth works (D103), dual-voice review still blocked on `codex-cli` rejecting every model
+   tried. A CLI upgrade is the plausible next step, deliberately not attempted without a founder ask.
+3. The two founder rulings in D104 (spend accounting stays at M8, team scope stays out of v0) — settled,
+   not action items, carried forward for context only.
 
-**`docs/pipeline-roadmap.md`'s M7 (retrieval intelligence) now has its stated dependency satisfied** —
-`effective_date` exists. The roadmap's own sizing put M6+M7+M9 as the highest-value-per-week slice of
-the whole M6-M14 map; M7 is a reasonable next milestone if the founder wants to keep going in that
-direction, but `docs/pipeline-roadmap.md` itself is explicit that this competes with M5b for the same
-weeks, and that tradeoff is still the founder's to make, not this document's.
+**`docs/pipeline-roadmap.md`'s M7 (retrieval intelligence) still has its stated dependency satisfied** —
+`effective_date` exists and, per D106, its supporting index behaves correctly where it's meant to. M7 is
+a reasonable next milestone if the founder wants to keep going in that direction, but the roadmap itself
+says this competes with M5b for the same weeks — still the founder's call, not this document's.
