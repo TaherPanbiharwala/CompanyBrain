@@ -17,12 +17,15 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { app } from '../src/index.ts';
 import { MAX_FILE_BYTES } from '../src/ingest/file.ts';
+import { MAX_BATCH_FILES, BATCH_INGEST_CONCURRENCY } from '../src/ingest/batch.ts';
 import { MAX_BODY_CHARS } from '../src/api/operations.ts';
 import {
   PASTE_PATHS,
   PASTE_BODY_LIMIT,
   UPLOAD_PATH,
   UPLOAD_BODY_LIMIT,
+  BATCH_UPLOAD_PATH,
+  INGEST_FILES_BODY_LIMIT,
   STANDARD_BODY_LIMIT,
   bodyLimitFor,
   parsesOwnBody,
@@ -56,6 +59,9 @@ describe('the paste transport limit can actually carry the published schema', ()
     }
     expect(parsesOwnBody(UPLOAD_PATH)).toBe(true);
     expect(bodyLimitFor(UPLOAD_PATH)).toBe(UPLOAD_BODY_LIMIT);
+    // The batch counterpart — same wiring, wider body.
+    expect(parsesOwnBody(BATCH_UPLOAD_PATH)).toBe(true);
+    expect(bodyLimitFor(BATCH_UPLOAD_PATH)).toBe(INGEST_FILES_BODY_LIMIT);
     // Everything else keeps the small cap.
     expect(parsesOwnBody('/api/whoami')).toBe(false);
     expect(bodyLimitFor('/api/whoami')).toBe(STANDARD_BODY_LIMIT);
@@ -68,12 +74,14 @@ describe('the paste transport limit can actually carry the published schema', ()
     // bypass), but it is two things that must agree disagreeing. Same bypass csrf.ts documents.
     expect(bodyLimitFor('/API/INGEST_FILE')).toBe(UPLOAD_BODY_LIMIT);
     expect(bodyLimitFor('/Api/Ingest')).toBe(PASTE_BODY_LIMIT);
+    expect(bodyLimitFor('/API/INGEST_FILES')).toBe(INGEST_FILES_BODY_LIMIT);
     // ...and non-STRICTLY. This half was missed and three reviewers measured it independently:
     // /api/ingest/ reaches the same mount but got the 100kb parser, and /api/ingest_file/ with no
     // cookie 413'd before requireValidSession could 401 it.
     expect(bodyLimitFor('/api/ingest/')).toBe(PASTE_BODY_LIMIT);
     expect(bodyLimitFor('/api/replace_page/')).toBe(PASTE_BODY_LIMIT);
     expect(bodyLimitFor('/API/INGEST_FILE/')).toBe(UPLOAD_BODY_LIMIT);
+    expect(bodyLimitFor('/api/ingest_files/')).toBe(INGEST_FILES_BODY_LIMIT);
     expect(parsesOwnBody('/api/ingest/')).toBe(true);
     // The control: a normaliser that strips too eagerly would claim '/' too.
     expect(bodyLimitFor('/')).toBe(STANDARD_BODY_LIMIT);
@@ -117,6 +125,7 @@ describe('the paste transport limit can actually carry the published schema', ()
       expect(names.has(p.replace('/api/', ''))).toBe(true);
     }
     expect(names.has(UPLOAD_PATH.replace('/api/', ''))).toBe(true);
+    expect(names.has(BATCH_UPLOAD_PATH.replace('/api/', ''))).toBe(true);
   });
 });
 
@@ -228,6 +237,22 @@ describe('the exemption is WIRED, not merely declared', () => {
     expect(body.error.code).toBe('unauthenticated');
   });
 
+  it('an anonymous caller is rejected before the batch parser too', async () => {
+    // Same case as above, for BATCH_UPLOAD_PATH's own much larger limit — the mount order
+    // (requireValidSession before express.json) is per-route, so this is not implied by the single-
+    // file case above passing.
+    const res = await fetch(`${base}${BATCH_UPLOAD_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', connection: 'close' },
+      body: JSON.stringify({
+        files: [{ filename: 'a.txt', content_base64: big(toBytes(INGEST_FILES_BODY_LIMIT) + 1_000_000) }],
+      }),
+    });
+    const body = (await res.json()) as { error: { code: string } };
+    expect(res.status, 'the batch parser buffered an anonymous body before auth ran').toBe(401);
+    expect(body.error.code).toBe('unauthenticated');
+  });
+
   it('a MALFORMED body takes the parser error path and keeps the security headers', async () => {
     // The OTHER parser throw (entity.parse.failed). Same next(err) path as the 413 asserted in the
     // control above: it skips every remaining NON-error layer and lands on the terminal error
@@ -249,6 +274,15 @@ describe('the exemption is WIRED, not merely declared', () => {
     // Upload.tsx btoa()s the raw bytes, inflating by 4/3 before JSON framing. Never asserted, though
     // it is the same schema-versus-transport question this file exists for.
     expect(toBytes(UPLOAD_BODY_LIMIT)).toBeGreaterThanOrEqual(Math.ceil(MAX_FILE_BYTES / 3) * 4);
+  });
+
+  it('INGEST_FILES_BODY_LIMIT covers MAX_BATCH_FILES max-size files at once', () => {
+    // The batch counterpart to the case above: MAX_BATCH_FILES files, each independently at
+    // UPLOAD_BODY_LIMIT's own worst case. Raising either constant without raising this fails here
+    // instead of failing a legitimate batch upload with a bare 413.
+    expect(toBytes(INGEST_FILES_BODY_LIMIT)).toBeGreaterThanOrEqual(
+      MAX_BATCH_FILES * Math.ceil(MAX_FILE_BYTES / 3) * 4,
+    );
   });
 });
 
@@ -272,6 +306,17 @@ describe('the UI mirrors of the server limits cannot drift', () => {
     expect(Number(m![1]) * Number(m![2]) * Number(m![3])).toBe(MAX_FILE_BYTES);
     // The user-facing copy must be derived, not a third hardcoded copy of the number.
     expect(src).not.toMatch(/The limit is 5 MB/);
+  });
+
+  it('BatchUpload.tsx CHUNK_SIZE matches BATCH_INGEST_CONCURRENCY', async () => {
+    // The two are independently declared literals a comment on each side says must match — one for
+    // apiLimiter efficiency (fewer dispatchOp hits per file), one for not claiming more than half the
+    // shared extraction admission gate. Raising either without the other silently breaks whichever
+    // argument the matching value was chosen for.
+    const src = await Bun.file(new URL('../web/src/components/BatchUpload.tsx', import.meta.url)).text();
+    const m = /const CHUNK_SIZE = (\d+);/.exec(src);
+    expect(m, 'CHUNK_SIZE is no longer declared in BatchUpload.tsx — this scan is vacuous').not.toBeNull();
+    expect(Number(m![1])).toBe(BATCH_INGEST_CONCURRENCY);
   });
 });
 

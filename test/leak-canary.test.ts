@@ -253,6 +253,8 @@ describe.skipIf(!live)('leak canary — a row is reachable only via workspace AN
         'mutating: rewrites chunks and spends an embedding call per run, and like delete_page it would mutate fixtures the rest of this file depends on. Covered by test/lifecycle.test.ts',
       ingest_file:
         'mutating, and its tenancy is inherited rather than independent: importFile stamps acl from aclForScope(ctx) exactly as importPage does, and the resulting page/chunks/bytes are all proven isolated by the page_sources and quarantine cases in this same file. The BYTES-not-path rule it exists to enforce is asserted by test/ingest-file.test.ts, which is where a positive control belongs',
+      ingest_files:
+        'mutating, and its tenancy is inherited rather than independent: every file in the batch is ingested via the SAME unmodified importFile(ctx, ...) call ingest_file uses, with the SAME ctx — it cannot address another tenant any more than a single ingest_file call can (see that entry, one row up). A positive control would have to spend N embedding calls mid-sweep for a property already proven at the single-file level. Covered by test/ingest-files.test.ts, which asserts every resulting page/chunk carries the calling workspace\'s id',
     };
 
     it('every non-hidden operation is either swept or explicitly allowlisted', () => {

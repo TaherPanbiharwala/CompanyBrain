@@ -28,6 +28,16 @@ export const UPLOAD_PATH = '/api/ingest_file';
 // without raising this fails the suite instead of failing a user's upload with a bare 413.
 export const UPLOAD_BODY_LIMIT = '36mb';
 
+/** The batch counterpart to UPLOAD_PATH/UPLOAD_BODY_LIMIT above — same reasoning, wider body. */
+export const BATCH_UPLOAD_PATH = '/api/ingest_files';
+
+/** Sized from MAX_BATCH_FILES x UPLOAD_BODY_LIMIT's byte value, rounded up — the worst case is that
+ *  many files each at UPLOAD_BODY_LIMIT's own worst case, buffered in one body. Not a guess:
+ *  test/body-limits.test.ts asserts the relationship the same way it does for UPLOAD_BODY_LIMIT, so
+ *  raising MAX_BATCH_FILES without raising this fails the suite instead of failing a batch upload
+ *  with a bare 413. */
+export const INGEST_FILES_BODY_LIMIT = '360mb';
+
 /** The routes that carry a pasted document body (`ingest`, `replace_page`).
  *
  *  These exist because the ops advertise `body: z.string().max(MAX_BODY_CHARS)` — 200,000 characters
@@ -86,6 +96,7 @@ export const STANDARD_BODY_LIMIT = '100kb';
 export function bodyLimitFor(path: string): string {
   const p = path.toLowerCase().replace(/\/+$/, '') || '/';
   if (p === UPLOAD_PATH) return UPLOAD_BODY_LIMIT;
+  if (p === BATCH_UPLOAD_PATH) return INGEST_FILES_BODY_LIMIT;
   if ((PASTE_PATHS as readonly string[]).includes(p)) return PASTE_BODY_LIMIT;
   return STANDARD_BODY_LIMIT;
 }
@@ -193,6 +204,7 @@ export function mountApi(app: Express, opts: MountApiOptions = {}): void {
   // described a protection the code did not have. That is the same failure mode as the CSRF comment
   // it replaced, one layer up, and it is why this now costs an indexed read.
   app.post(UPLOAD_PATH, requireValidSession, express.json({ limit: UPLOAD_BODY_LIMIT }));
+  app.post(BATCH_UPLOAD_PATH, requireValidSession, express.json({ limit: INGEST_FILES_BODY_LIMIT }));
   for (const p of PASTE_PATHS) {
     app.post(p, requireValidSession, express.json({ limit: PASTE_BODY_LIMIT }));
   }

@@ -294,6 +294,34 @@ export interface IngestFileResult {
   sha256: string;
 }
 
+/** One file's fate in an `ingest_files` batch call — the file-ingest counterpart to
+ *  BatchPageOutcome above. Reuses ErrorCode rather than a parallel taxonomy: every failure
+ *  ingest_files can report is already one of these (invalid_params, payload_too_large,
+ *  extraction_failed, unsupported_format, already_exists), the same codes a single ingest_file call
+ *  can produce. */
+export interface BatchFileOutcome {
+  filename: string;
+  slug: string;
+  ok: boolean;
+  pageId?: string;
+  chunkCount?: number;
+  format?: string;
+  unitsExtracted?: number;
+  unitsSkipped?: number;
+  degraded?: boolean;
+  sha256?: string;
+  code?: ErrorCode;
+  reason?: string;
+  suggestion?: string;
+}
+
+export interface IngestFilesResult {
+  outcomes: BatchFileOutcome[];
+  succeeded: number;
+  failed: number;
+  degraded: boolean;
+}
+
 /**
  * Confidence, derived from EVIDENCE rather than asked of the model.
  *

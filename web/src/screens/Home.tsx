@@ -109,7 +109,11 @@ export function Home({
             ) : (
               <Ask workspace={workspace} grants={who.grants} />
             ))}
-          {tab === 'add' && (
+          {/* HIDDEN, not unmounted — same reasoning as PageList below, and more load-bearing here: a
+            * batch upload can run for several minutes, and the previous `{tab==='add' && <Upload/>}`
+            * unmounted Upload (and with it BatchUpload) the instant the user glanced at another tab,
+            * silently abandoning whatever chunks had not been submitted yet. */}
+          <div className={tab === 'add' ? '' : 'hidden'}>
             <Upload
               workspace={workspace}
               onDone={() => {
@@ -119,7 +123,7 @@ export function Home({
                 setReloadKey((k) => k + 1);
               }}
             />
-          )}
+          </div>
           {/* HIDDEN, not unmounted. `{tab === 'pages' && <PageList/>}` destroyed all of PageList's
             * accumulated state on every tab switch: a user who clicked "Load more" four times (100
             * pages, 4 requests) and glanced at Ask lost all of it and paid the round trip again on

@@ -171,7 +171,7 @@ its own thing, orthogonal to the M-numbers — see the header.
 
 | | |
 |---|---|
-| ops in `operations.ts` | **14** (`rescope_pages` added; `delete_page` gained a `pageIds` batch arm) |
+| ops in `operations.ts` | **15** (`ingest_files` added — the batch form of `ingest_file`) |
 | migrations | **`0001`–`0013`**; `0008`/`0010` are `.disabled` reverts, **11 applied** |
 | `DECISIONS.md` | **104 entries, D0–D103**, no duplicate IDs (verified 0–100 gap-free; D101/D102/D103 added this pass — D102/D103 renumbered on merge from a same-day D101/D102 collision, see the footnote at D101) |
 | `doctor` | **73 checks as last measured** — `docs/m5b.md` §7 flags this against `README.md`'s 73/163 lines disputed by nothing, but CONTEXT.md's own §10 says 75; neither has been re-measured live since. One `bun run doctor` settles it. |

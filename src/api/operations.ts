@@ -19,6 +19,7 @@ import {
 } from '../ingest/lifecycle.ts';
 import { hybridSearch } from '../search/hybrid.ts';
 import { importFile, MAX_FILE_BYTES } from '../ingest/file.ts';
+import { ingestFiles, MAX_BATCH_FILES } from '../ingest/batch.ts';
 import { PACK, PACK_KINDS, DEFAULT_PACK_KIND } from '../core/pack.ts';
 import { answerQuestion } from '../answer/answer.ts';
 import { createInvite } from '../auth/invites.ts';
@@ -382,6 +383,55 @@ const replace_page = defineOp({
 // `{"path": "..."}` would let a caller name `/proc/self/environ` and have the server ingest
 // OPENAI_API_KEY, DATABASE_URL, CB_APP_DB_PASSWORD and SESSION_SECRET into a page, which `ask` would
 // then read back out on request. `bun run ingest-file` reads the file LOCALLY and sends the bytes.
+//
+// The per-file fields below (everything except kind/scope, which are batch-wide on ingest_files but
+// per-call here) are shared with BATCH_FILE, one file within an ingest_files call — ONE shape object,
+// not a second hand-written copy, for the same reason SLUG_MAX_LEN/SLUG_RE are exported rather than
+// restated: a bound with two independent copies is a bound that can silently disagree with itself.
+const FILE_FIELDS = {
+  filename: z
+    .string()
+    .min(1)
+    .max(255)
+    .describe('The name as uploaded. Display only — the format is detected from the bytes.'),
+  // DERIVED from the enforced limit, not hand-written beside it. A literal 8_000_000 advertised a
+  // bound ~35% larger than importFile actually accepts, so /api/_ops and the MCP tool list — the
+  // only contract an agent has — overstated what would succeed. base64 is 4 chars per 3 bytes,
+  // plus a little slack for padding and whitespace.
+  content_base64: z
+    .string()
+    .min(1)
+    .max(Math.ceil((MAX_FILE_BYTES * 4) / 3) + 1024)
+    .describe(`Base64-encoded file bytes. The DECODED file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`),
+  // Same constants as `ingest` above, not a second hand-written copy. The two ops share one slug
+  // rule and this file previously stated it twice — the exact drift SLUG_RE's own comment exists
+  // to prevent, and test/eval-harness.test.ts pins only the exported form.
+  slug: z.string().min(1).max(SLUG_MAX_LEN).regex(SLUG_RE, 'slug must be lowercase alphanumeric with . _ or -'),
+  title: z.string().min(1).max(300).optional().describe("Defaults to the document's own title, then the filename."),
+  tags: z.array(z.string().min(1).max(64)).max(50).optional(),
+  // Same three fields and reasoning as `ingest` above — not a second hand-written copy of the
+  // bound, just of the fields, since the two ops share no single schema object.
+  // .trim() so a pasted value's stray leading/trailing whitespace never gets stored as part of the
+  // value — the SEARCH-side comparison (src/search/hybrid.ts) additionally folds case, since a name
+  // has no canonical casing to enforce at ingest.
+  author: z.string().trim().min(1).max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
+  metadata: z
+    .record(z.unknown())
+    .optional()
+    // Buffer.byteLength, not .length: .length counts UTF-16 code units, and this bound is a
+    // storage-byte one (migration 0014's column comment: "Bounded to 10KB"). A CJK/emoji-heavy
+    // payload can pass a code-unit check at up to ~3x its intended byte size — '日'.repeat(4900) is
+    // .length 4908 but 14,708 UTF-8 bytes. Matches how this codebase already bounds text elsewhere
+    // (src/ingest/chunk.ts, src/ingest/extract/index.ts both use Buffer.byteLength for the same reason).
+    .refine((m) => !m || Buffer.byteLength(JSON.stringify(m), 'utf8') <= 10_000, 'metadata too large (10KB limit)')
+    .describe('Unstructured metadata bag, up to 10KB serialized.'),
+  effectiveDate: z
+    .string()
+    .date()
+    .optional()
+    .describe('ISO date (YYYY-MM-DD) this document is ABOUT. Omit to default to today; used by search/ask\'s since/until filters.'),
+};
+
 const ingest_file = defineOp({
   name: 'ingest_file',
   description:
@@ -389,28 +439,10 @@ const ingest_file = defineOp({
     'text. The format is detected from the CONTENT, not the filename. Chunks carry the page or cell ' +
     'range they came from, so answers can cite a position, and the original file is retained so that ' +
     'citation can be opened. Send base64 — there is deliberately no way to name a server-side path. ' +
-    `The decoded file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`,
+    `The decoded file must be at most ${MAX_FILE_BYTES / 1_048_576} MB. For more than one file in a ` +
+    'single call, use ingest_files.',
   params: z.object({
-    filename: z
-      .string()
-      .min(1)
-      .max(255)
-      .describe('The name as uploaded. Display only — the format is detected from the bytes.'),
-    // DERIVED from the enforced limit, not hand-written beside it. A literal 8_000_000 advertised a
-    // bound ~35% larger than importFile actually accepts, so /api/_ops and the MCP tool list — the
-    // only contract an agent has — overstated what would succeed. base64 is 4 chars per 3 bytes,
-    // plus a little slack for padding and whitespace.
-    content_base64: z
-      .string()
-      .min(1)
-      .max(Math.ceil((MAX_FILE_BYTES * 4) / 3) + 1024)
-      .describe(`Base64-encoded file bytes. The DECODED file must be at most ${MAX_FILE_BYTES / 1_048_576} MB.`),
-    // Same constants as `ingest` above, not a second hand-written copy. The two ops share one slug
-    // rule and this file previously stated it twice — the exact drift SLUG_RE's own comment exists
-    // to prevent, and test/eval-harness.test.ts pins only the exported form.
-    slug: z.string().min(1).max(SLUG_MAX_LEN).regex(SLUG_RE, 'slug must be lowercase alphanumeric with . _ or -'),
-    title: z.string().min(1).max(300).optional().describe("Defaults to the document's own title, then the filename."),
-    tags: z.array(z.string().min(1).max(64)).max(50).optional(),
+    ...FILE_FIELDS,
     kind: z.enum(PACK_KINDS).default(DEFAULT_PACK_KIND),
     scope: z
       .enum(PAGE_SCOPES)
@@ -420,27 +452,6 @@ const ingest_file = defineOp({
           "every member. 'private': only you — enforced by the database, and it covers the stored " +
           'original bytes too, not just the text.',
       ),
-    // Same three fields and reasoning as `ingest` above — not a second hand-written copy of the
-    // bound, just of the fields, since the two ops share no single schema object.
-    // .trim() so a pasted value's stray leading/trailing whitespace never gets stored as part of the
-    // value — the SEARCH-side comparison (src/search/hybrid.ts) additionally folds case, since a name
-    // has no canonical casing to enforce at ingest.
-    author: z.string().trim().min(1).max(200).optional().describe('Who WROTE the document — not who is uploading it.'),
-    metadata: z
-      .record(z.unknown())
-      .optional()
-      // Buffer.byteLength, not .length: .length counts UTF-16 code units, and this bound is a
-      // storage-byte one (migration 0014's column comment: "Bounded to 10KB"). A CJK/emoji-heavy
-      // payload can pass a code-unit check at up to ~3x its intended byte size — '日'.repeat(4900) is
-      // .length 4908 but 14,708 UTF-8 bytes. Matches how this codebase already bounds text elsewhere
-      // (src/ingest/chunk.ts, src/ingest/extract/index.ts both use Buffer.byteLength for the same reason).
-      .refine((m) => !m || Buffer.byteLength(JSON.stringify(m), 'utf8') <= 10_000, 'metadata too large (10KB limit)')
-      .describe('Unstructured metadata bag, up to 10KB serialized.'),
-    effectiveDate: z
-      .string()
-      .date()
-      .optional()
-      .describe('ISO date (YYYY-MM-DD) this document is ABOUT. Omit to default to today; used by search/ask\'s since/until filters.'),
   }),
   requiredRole: 'member',
   mutating: true,
@@ -471,6 +482,44 @@ const ingest_file = defineOp({
       effectiveDate: params.effectiveDate,
     });
   },
+});
+
+// One file within an ingest_files call. A z.object nested inside z.array needs its OWN .strict() —
+// the registry's auto-.strict() pass (see `strict` below) only reaches the top-level params object,
+// not an object nested a level deeper inside an array, so without this a per-file typo (e.g.
+// "slugg") would silently strip instead of erroring, exactly what .strict() elsewhere in this
+// registry exists to prevent.
+const BATCH_FILE = z.object(FILE_FIELDS).strict();
+
+const ingest_files = defineOp({
+  name: 'ingest_files',
+  description:
+    `Ingest up to ${MAX_BATCH_FILES} documents in one call — the batch form of ingest_file, for a ` +
+    'folder of documents rather than one at a time. Send base64 bytes per file, same as ingest_file ' +
+    '— no server-side path. `scope` and ' +
+    '`kind` apply to EVERY file in this call; every other field is per file. Once processing starts, ' +
+    "never aborts on one bad file's CONTENT: the response is a per-file outcome list, each carrying " +
+    "a machine-readable `code` when it failed (the same codes a single ingest_file call can produce " +
+    '— invalid_params, payload_too_large, extraction_failed, unsupported_format, already_exists, ' +
+    'rate_limited) plus prose. When two files in the same call are byte-identical, the first is ' +
+    'ingested normally and later copies are reported already_exists without being embedded. A ' +
+    'malformed FIELD on any one file (a slug that fails the regex, an oversized title) still rejects ' +
+    'the whole call before any file runs — the same schema-validation boundary ingest_file itself has.',
+  params: z.object({
+    files: z.array(BATCH_FILE).min(1).max(MAX_BATCH_FILES),
+    kind: z.enum(PACK_KINDS).default(DEFAULT_PACK_KIND),
+    scope: z
+      .enum(PAGE_SCOPES)
+      .default(DEFAULT_PAGE_SCOPE)
+      .describe(
+        "Who can read every file in this batch. 'workspace' (used when omitted): every member. " +
+          "'private': only you.",
+      ),
+  }),
+  requiredRole: 'member',
+  mutating: true,
+  handler: async (ctx, params) =>
+    ingestFiles(ctx, { files: params.files, scope: params.scope, kind: params.kind }),
 });
 
 // ── Search (M3) ───────────────────────────────────────────────────────────
@@ -577,6 +626,7 @@ const declared: Operation[] = [
   rescope_pages,
   replace_page,
   ingest_file,
+  ingest_files,
   get_page,
   search,
   create_invite,

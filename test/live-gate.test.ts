@@ -205,6 +205,10 @@ const REQUIRED_LIVE_SUITES = [
   // at the bottom of this test is what caught their absence — the list was written against a tree
   // where they did not exist yet, and would otherwise have quietly pinned 9 of 12.
   'ingest-file',
+  // ingest_files, the batch form. leak-canary.test.ts's allowlist entry for ingest_files points here
+  // for its positive control, same as lifecycle-batch above does for rescope_pages — letting this go
+  // quiet would hollow out that exemption too.
+  'ingest-files',
   'invites',
   'leak-canary',
   'lifecycle',
