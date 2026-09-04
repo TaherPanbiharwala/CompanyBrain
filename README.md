@@ -25,6 +25,10 @@ for M6+ (ingestion enrichment, retrieval intelligence, gbrain-comparative gap an
 [`DECISIONS.md`](DECISIONS.md); auth setup in [`docs/auth-setup.md`](docs/auth-setup.md);
 retrieval/hallucination evaluation in [`docs/eval-rag.md`](docs/eval-rag.md).
 
+For an eight-session, plain-English tour of the current product and the gap from
+today's secure document Q&A system to an enterprise shared-SaaS offering, read
+[`docs/enterprise-learning-roadmap.md`](docs/enterprise-learning-roadmap.md).
+
 ## The one thing that must never break
 
 Cross-tenant isolation. Every content/tenancy row carries `workspace_id` (the identity plane —
