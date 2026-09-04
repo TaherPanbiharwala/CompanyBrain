@@ -166,27 +166,42 @@ export function extractCsv(bytes: Uint8Array): Extracted {
   const raw = decode(bytes).replace(/\r\n/g, '\n').trim();
   const delim = raw.includes('\t') && !raw.slice(0, 2000).includes(',') ? '\t' : ',';
 
-  // Minimal RFC-4180 splitter: quoted fields may contain the delimiter and doubled quotes.
-  const splitLine = (line: string): string[] => {
-    const out: string[] = [];
-    let cur = '';
-    let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i]!;
-      if (inQ) {
-        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-        else if (ch === '"') inQ = false;
-        else cur += ch;
-      } else if (ch === '"') inQ = true;
-      else if (ch === delim) { out.push(cur); cur = ''; }
+  // SILENT-CORRUPTION CLASS: an embedded newline inside a quoted field.
+  //
+  // Minimal RFC-4180 parser, run over the WHOLE buffer in one pass so quote state carries across
+  // '\n'. A quoted field may legally contain the delimiter, a doubled quote, and — the case that
+  // matters here — a literal newline: any notes/body/description column exported from Excel or
+  // Google Sheets is full of these. This used to split on '\n' FIRST and run a quote-aware parser on
+  // each resulting line, which gets the order backwards: the outer split runs before any quote state
+  // exists, so an embedded newline breaks one logical row into several garbage partial rows, each
+  // parsed as if it were independent. The file still ingests and reports success — no error, no
+  // `degraded` flag — which is exactly the class of bug this codebase has been bitten by before (see
+  // MAX_COLS_PER_ROW below, and the empty-cell note on joinRow in blocks.ts).
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inQ) {
+      if (ch === '"' && raw[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQ = false;
       else cur += ch;
-    }
-    out.push(cur);
-    return out.map((s) => s.trim());
-  };
+    } else if (ch === '"') inQ = true;
+    else if (ch === delim) { row.push(cur); cur = ''; }
+    else if (ch === '\n') { row.push(cur); rows.push(row); cur = ''; row = []; }
+    else cur += ch;
+  }
+  // A trailing '\n' already flushed the last row in the loop above, leaving cur/row both empty —
+  // pushing again here would add a phantom blank row. A file with no trailing newline never flushed
+  // its last field or row, so it needs this final push.
+  if (cur !== '' || row.length > 0) { row.push(cur); rows.push(row); }
 
-  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length === 0) {
+  const dataRows = rows
+    .map((cells) => cells.map((c) => c.trim()))
+    .filter((cells) => cells.some((c) => c !== ''));
+
+  if (dataRows.length === 0) {
     return { format: 'csv', blocks: [], meta: {}, unitsExtracted: 0, unitsSkipped: 1 };
   }
 
@@ -202,12 +217,12 @@ export function extractCsv(bytes: Uint8Array): Extracted {
 
   // joinRow, not `.filter(Boolean).join(' | ')`: an interior empty cell holds its column, or every
   // value after it reads under the wrong header name. See the note on joinRow in blocks.ts.
-  const headerCells = splitLine(lines[0]!);
+  const headerCells = dataRows[0]!;
   colsDropped = Math.max(0, headerCells.length - MAX_COLS_PER_ROW);
   const header = joinRow(clamp(headerCells));
   const blocks: Block[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = splitLine(lines[i]!);
+  for (let i = 1; i < dataRows.length; i++) {
+    const cells = dataRows[i]!;
     colsDropped = Math.max(colsDropped, cells.length - MAX_COLS_PER_ROW);
     const text = joinRow(clamp(cells));
     if (text === '') continue; // every cell blank — the row carries nothing

@@ -364,6 +364,36 @@ describe('an empty cell holds its column (the sixth corruption class)', () => {
   });
 });
 
+// A SEVENTH silent-corruption class: a quoted CSV field containing an embedded newline. Any
+// notes/body/description column exported from Excel or Google Sheets is routinely full of these.
+//
+// Before the fix, extractCsv split the raw buffer on '\n' BEFORE running its quote-aware field
+// splitter, so the outer split ran with no quote state at all. One logical row with an embedded
+// newline came apart into several independent, garbage partial rows — still ingested, still
+// reported success, no error and no `degraded` flag. Compare src/ingest/extract/xlsx.ts, which
+// never had this bug: SheetJS's parser is quote-aware across the whole buffer, not per pre-split
+// line.
+describe('an embedded newline in a quoted CSV field does not shred the row', () => {
+  it('keeps a multi-line quoted field as ONE row, not several', async () => {
+    const csv = 'Item,Notes\n"Robot arm","Line one\nLine two\nLine three"\nGripper,fine\n';
+    const out = await extractFile(new TextEncoder().encode(csv), 'notes.csv');
+
+    expect(out.blocks).toHaveLength(2);
+    expect(out.blocks[0]!.header).toBe('Item | Notes');
+    expect(out.blocks[0]!.text).toBe('Robot arm | Line one\nLine two\nLine three');
+    expect(out.blocks[1]!.text).toBe('Gripper | fine');
+    expect(out.unitsExtracted).toBe(2);
+  }, 60_000);
+
+  it('a doubled quote still resolves correctly inside a field that also spans lines', async () => {
+    const csv = 'Item,Notes\n"Robot arm","He said ""hi""\nthen left"\n';
+    const out = await extractFile(new TextEncoder().encode(csv), 'notes2.csv');
+
+    expect(out.blocks).toHaveLength(1);
+    expect(out.blocks[0]!.text).toBe('Robot arm | He said "hi"\nthen left');
+  }, 60_000);
+});
+
 // The locator invariant, added after a real regression: when fenced code blocks gained their own
 // block kind, the code path recorded `from` as the offset of the opening ``` LINE while `text` held
 // only the content between the fences. `slice(from, from + text.length)` therefore ran off the end
