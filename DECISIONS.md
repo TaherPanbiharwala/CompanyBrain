@@ -1659,3 +1659,53 @@ tip (`a1e390a`) rather than through a second PR — `057b55e` (PR #4's merge) wa
 ancestor-vs.-branch divergence, so the fast-forward was conflict-free by construction, confirmed with
 `git merge-base --is-ancestor` before pushing. `HANDOVER.md` is rewritten in the same commit to reflect
 both this and D106.
+
+## D108 — CompanyBrain's target is an enterprise shared-SaaS knowledge product (2026-09-03)
+
+Founder direction: CompanyBrain is for mid-to-large enterprises, beginning with internal knowledge
+teams that need trusted answers across policies, project documents, and meeting notes. The product
+will remain a shared SaaS initially; stronger residency or isolation options are a future evolution,
+not a premise for the first enterprise pilot. Direct upload remains a core entry point, but the
+product direction includes permission-preserving connectors rather than an uploads-only strategy.
+
+This does not claim that the current product is enterprise-ready. The existing Google OIDC,
+workspace memberships, RLS boundary, cited answers, and document lifecycle are the foundation.
+Enterprise SSO/SCIM, group-based access, audited administration, remote agent credentials, and
+permission-synchronised Google Drive, Slack, and Confluence connectors remain future work. The
+learning guide at `docs/enterprise-learning-roadmap.md` records the intended priority order so the
+gbrain comparison is used as a capability reference rather than as a reason to weaken the tenancy
+architecture.
+
+## D109 — Railway outage: `DB_SSL=verify-full` set with no CA ever wired in, breaking every DB call — mitigated, real fix deferred (2026-09-03)
+
+**Symptom.** Sign-in on the Railway `CompanyBrain` service (project `easygoing-liberation`, env
+`production`) returned the generic `internal_error` envelope. Production logs for the failing
+request (`railway logs -s CompanyBrain -e production --filter <reqId>`) showed the real cause never
+reached the client: `error: self signed certificate in certificate chain` / code
+`SELF_SIGNED_CERT_IN_CHAIN`, thrown inside `postgres`'s `Query` constructor, caught by
+`verifyPoolRole` (`src/db/client.ts:143`), reached from `src/auth/routes.ts:51` during `onboard()`'s
+`authLane()` call.
+
+**Root cause.** The service had `DB_SSL=verify-full` set — following the boot-time advisory in
+`src/config.ts:205`, which tells an operator in `NODE_ENV=production` to "Set DB_SSL=verify-full with
+the Supabase CA." But `sslOption()` (`src/db/client.ts:15-28`) only ever hands the `postgres` driver
+the bare mode string — no `ca` is supplied to `appSql`, `authSql`, or `adminSql`'s pool constructors.
+Under `verify-full` with no `ca`, Node validates Supabase's pooler certificate chain against its own
+default trusted-root store, which does not include Supabase's chain, so every connection attempt
+fails identically. This was never sign-in-specific — it would have broken every DB-touching request
+from this service, not just `/auth/google/callback`.
+
+Likely new rather than a regression: this project's Railway environment had previously been found
+deleted, so its variables were re-entered from scratch, and whoever set them followed the boot
+warning literally without realizing the CA-loading half of it was never implemented in code.
+
+**Mitigation applied this session:** `DB_SSL` set to `require` on the Railway service — the same
+posture `.env`/`.env.example` already use for local dev: encrypts the connection, does not verify the
+chain. This restores the service but does not close the underlying gap; `src/config.ts:205`'s warning
+will keep firing at every boot until the real fix lands.
+
+**Deferred, not yet done:** wire an actual Supabase CA certificate into `sslOption()` and each pool
+constructor — `ssl: { rejectUnauthorized: true, ca: <pem> }` in place of the bare `'verify-full'`
+string — so `verify-full` genuinely verifies instead of crashing outright. Until this lands, `DB_SSL`
+must stay at `require` in every environment that talks to Supabase; do not flip it back to
+`verify-full` without doing this work first, or this exact outage repeats.
