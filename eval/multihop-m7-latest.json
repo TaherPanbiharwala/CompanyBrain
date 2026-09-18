@@ -1,0 +1,156 @@
+{
+  "contract": {
+    "rowSchemaVersion": 1,
+    "dataset": "multihop",
+    "datasetHash": "89eca3ff19c65d1ca1eb70e9004ea195bb9aabf752fe1da5fd1c637ccfad718a",
+    "splitSeed": 42,
+    "tuningFraction": 0.7,
+    "tuningCount": 1579,
+    "holdoutCount": 676,
+    "tuningIdHash": "fd613a8b81efea8fd08c4c23a97bf0d82426a4c5d8da0536f6d1b847e299cda4",
+    "holdoutIdHash": "dd765051a8fc3177da7a73d86a419e7315b8654cd3e7ea42865ff22aeb36c2ad",
+    "recencyAsOf": "2023-12-26",
+    "variant": "plain",
+    "reportKs": [
+      4,
+      8,
+      12,
+      16,
+      20
+    ],
+    "poolK": 60,
+    "configHashes": {
+      "baseline": "ad7e6a835e31266b856556f315f07b79c666e6518b914097d01d7864769e980c",
+      "gbrain-exact-only": "39079f2897d654a7eed3cfda25af04c878e0b448279fbc9b4c1bae4f38de9192",
+      "gbrain-fusion-only": "2dbde17c74803bd2a01cc3ceba1c95597be7c92f4bae46c89bf3f2f7cfcfd6a9",
+      "gbrain-intent": "bfcbaa2d16769310a56dc7c40e3f4024d54314b1822fdb8b0b6c0be850cb9a86",
+      "recency-auto-only": "b9919135f95e521bc544398b9f086c14205a5d529baa95a3b6778228bad8c720",
+      "gbrain-intent-auto-recency": "40814af93bd25d0bb489efdef5887ba41a0ea75576c875dc8f7d776e76a766a2",
+      "gbrain-intent-recency-on": "f9f5d3b24d774534c2ba8a7651958296b4b135f6b2f4cd437fcb7fbbb9794dac",
+      "gbrain-intent-recency-strong": "e20b6d0957cdf9e2142d748e4ab8fa1d94b52f7b34b81276575ef69291df5cfb"
+    },
+    "configDefinitionHash": "3ad5b8f2b0cac531c77bf9c21e96cb6b644e42630f9806bcb259f00871b9a085",
+    "embeddingModel": "openai:text-embedding-3-small",
+    "bootstrapResamples": 10000,
+    "plannedComparisons": 12
+  },
+  "runId": "2026-09-06T17-08-17-194Z-297c8ca-m7",
+  "startedAt": "2026-09-06T17:08:17.231Z",
+  "winner": "gbrain-fusion-only",
+  "gate": {
+    "passed": false,
+    "winner": "gbrain-fusion-only",
+    "overall": {
+      "meanDelta": 0.004437869822485207,
+      "confidenceLow": 0,
+      "confidenceHigh": 0.013313609467455622,
+      "rawP": 0.0996,
+      "adjustedP": 1,
+      "significantImprovement": false,
+      "significantRegression": false
+    },
+    "subgroups": {
+      "type:comparison_query": {
+        "meanDelta": 0.00390625,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.01953125,
+        "rawP": 0.7258,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "type:inference_query": {
+        "meanDelta": 0.004081632653061225,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.02040816326530612,
+        "rawP": 0.722,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "type:temporal_query": {
+        "meanDelta": 0.005714285714285714,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.02857142857142857,
+        "rawP": 0.7448,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "hop:2": {
+        "meanDelta": 0.008571428571428572,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.025714285714285714,
+        "rawP": 0.1022,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "hop:3": {
+        "meanDelta": 0,
+        "confidenceLow": 0,
+        "confidenceHigh": 0,
+        "rawP": 1,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "hop:4": {
+        "meanDelta": 0,
+        "confidenceLow": 0,
+        "confidenceHigh": 0,
+        "rawP": 1,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "intent:entity": {
+        "meanDelta": 0.010101010101010102,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.050505050505050504,
+        "rawP": 0.7056,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "intent:event": {
+        "meanDelta": 0.008333333333333333,
+        "confidenceLow": 0,
+        "confidenceHigh": 0.029166666666666667,
+        "rawP": 0.2818,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "intent:general": {
+        "meanDelta": 0,
+        "confidenceLow": 0,
+        "confidenceHigh": 0,
+        "rawP": 1,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      },
+      "intent:temporal": {
+        "meanDelta": 0,
+        "confidenceLow": 0,
+        "confidenceHigh": 0,
+        "rawP": 1,
+        "adjustedP": 1,
+        "significantImprovement": false,
+        "significantRegression": false
+      }
+    },
+    "significantRegressions": [],
+    "baselineP95LatencyMs": 2107.5066669993103,
+    "candidateP95LatencyMs": 1816.4674579994753,
+    "latencyRatio": 0.8619035405405291,
+    "zeroDegradedAndErrored": true,
+    "fixed": 3,
+    "broken": 0,
+    "reasons": [
+      "overall adjusted confidence interval/p-value gate did not pass"
+    ]
+  },
+  "completedAt": "2026-09-06T18:37:57.171Z"
+}

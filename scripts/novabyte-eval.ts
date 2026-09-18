@@ -7,8 +7,9 @@
 //
 // SMOKE=1 runs a tiny slice of everything to validate the harness before the full (slow, real-money)
 // run. Real OpenAI embeddings + real chat completions throughout — no stubs.
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { adminSql, closePools, withScopedTx } from '../src/db/client.ts';
 import { buildContext, resolveGrants, type OperationContext } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
@@ -16,12 +17,54 @@ import { answerQuestion } from '../src/answer/answer.ts';
 import { hybridSearch } from '../src/search/hybrid.ts';
 import { scoreRetrieval, type QrelQuestion } from '../src/search/eval-score.ts';
 import { normalizeEmail } from '../src/auth/normalize.ts';
+import {
+  BASELINE_RETRIEVAL_KNOBS,
+  retrievalKnobHash,
+  type DeepReadonly,
+  type RetrievalKnobs,
+} from '../src/search/retrieval-knobs.ts';
+import { RETRIEVAL_SWEEP_CONFIGS } from '../src/eval/retrieval-sweep.ts';
+import { config } from '../src/config.ts';
 
 // Point at your checkout of the NovaByte multi-tenant test dataset. Not vendored here: it is a
 // separate ~105-page corpus with its own tooling, and copying it in would fork it.
 const DATASET = process.env.DATASET ?? `${process.env.HOME}/Desktop/novabyte-test-dataset`;
 const OUT_DIR = new URL('..', import.meta.url).pathname;
 const SMOKE = process.env.SMOKE === '1';
+
+function valueFlag(name: string): string | undefined {
+  const prefix = `--${name}=`;
+  const inline = process.argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = process.argv.indexOf(`--${name}`);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+const SETUP_ONLY = process.argv.includes('--setup-only');
+const PROFILE_REQUEST = valueFlag('retrieval-profile') ?? 'baseline';
+
+function candidateName(): string {
+  const explicit = valueFlag('candidate-config');
+  if (explicit) return explicit;
+  const latest = join(OUT_DIR, 'eval', 'multihop-m7-latest.json');
+  if (!existsSync(latest)) {
+    throw new Error('--retrieval-profile candidate requires --candidate-config or a completed eval/multihop-m7-latest.json');
+  }
+  const parsed = JSON.parse(readFileSync(latest, 'utf8')) as { winner?: string };
+  if (!parsed.winner) throw new Error(`${latest} has no tuning winner`);
+  return parsed.winner;
+}
+
+const PROFILE_NAME = PROFILE_REQUEST === 'candidate' ? candidateName() : PROFILE_REQUEST;
+const RETRIEVAL_KNOBS: DeepReadonly<RetrievalKnobs> = PROFILE_NAME === 'baseline'
+  ? BASELINE_RETRIEVAL_KNOBS
+  : RETRIEVAL_SWEEP_CONFIGS[PROFILE_NAME] ?? (() => { throw new Error(`unknown retrieval profile "${PROFILE_NAME}"`); })();
+const OUTPUT_PATH = valueFlag('output') ?? join(
+  OUT_DIR,
+  'eval',
+  'runs',
+  SMOKE ? `novabyte-${PROFILE_REQUEST}-smoke.json` : `novabyte-${PROFILE_REQUEST}.json`,
+);
 
 type Page = {
   slug: string; title: string; path: string; workspace: string; workspace_id: string;
@@ -102,19 +145,26 @@ async function seedIdentity() {
 }
 
 // ── PHASE 2: ingest workspace+private pages via the real importPage waist ───
-async function ingestPages(): Promise<{ imported: number; failed: { slug: string; error: string }[] }> {
+async function ingestPages(): Promise<{ imported: number; reused: number; failed: { slug: string; error: string }[] }> {
   let pages = manifest.pages.filter((p) => p.scope !== 'team');
   if (SMOKE) pages = pages.slice(0, 6);
   console.log(`  ingesting ${pages.length} pages (scope != team)${SMOKE ? ' [SMOKE]' : ''}`);
 
   const failed: { slug: string; error: string }[] = [];
   let imported = 0;
+  let reused = 0;
   await pMap(pages, 4, async (page) => {
     const ownerKey = manifest.principals.find((p) => p.id === page.owner_principal)?.key ?? page.owner;
     const ctx = ctxFor(ownerKey);
     const raw = readFileSync(join(DATASET, page.path), 'utf8');
     const body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim();
     try {
+      const existing = await withScopedTx(ctx, (tx) => tx<{ id: string }[]>`
+        select id from pages where slug = ${page.slug} limit 1`);
+      if (existing.length > 0) {
+        reused++;
+        return;
+      }
       await importPage(ctx, { slug: page.slug, title: page.title, body, tags: page.tags, scope: page.scope as 'workspace' | 'private' });
       imported++;
       if (imported % 10 === 0) console.log(`    imported ${imported}/${pages.length}`);
@@ -122,9 +172,44 @@ async function ingestPages(): Promise<{ imported: number; failed: { slug: string
       failed.push({ slug: `${page.workspace}/${page.slug}`, error: (e as Error).message });
     }
   });
-  console.log(`  pages: ${imported} imported, ${failed.length} failed`);
+  console.log(`  pages: ${imported} imported, ${reused} reused, ${failed.length} failed`);
   for (const f of failed) console.error(`    ✗ ${f.slug}: ${f.error}`);
-  return { imported, failed };
+  return { imported, reused, failed };
+}
+
+async function verifyCorpus(): Promise<{ expected: number; found: number; fingerprint: string }> {
+  let pages = manifest.pages.filter((page) => page.scope !== 'team');
+  if (SMOKE) pages = pages.slice(0, 6);
+  // rls-exempt: structural corpus census only (IDs, workspace, slug, timestamp, chunk count; no
+  // content). A workspace owner
+  // cannot see private pages owned by another principal, so an RLS-scoped completeness check would
+  // falsely call a healthy corpus partial. Search/answer evaluation remains exclusively scoped.
+  const workspaceIds = manifest.workspaces.map((workspace) => workspace.id);
+  const present = await adminSql()<{
+    id: string; workspace_id: string; slug: string; updated_at: string; chunks: number;
+  }[]>`
+    select p.id, p.workspace_id, p.slug, p.updated_at::text,
+           count(c.id)::int as chunks
+    from pages p
+    left join content_chunks c on c.page_id = p.id and c.workspace_id = p.workspace_id
+    where p.workspace_id = any(${workspaceIds}::uuid[])
+    group by p.id, p.workspace_id, p.slug, p.updated_at`;
+  const keys = new Set(present.map((row) => `${row.workspace_id}\u0000${row.slug}`));
+  const found = pages.filter((page) => keys.has(`${page.workspace_id}\u0000${page.slug}`)).length;
+  if (found !== pages.length) {
+    throw new Error(`NovaByte corpus incomplete: found ${found}/${pages.length} runnable pages; run bun run eval:novabyte:setup`);
+  }
+  const wanted = new Set(pages.map((page) => `${page.workspace_id}\u0000${page.slug}`));
+  const fingerprint = createHash('sha256').update(JSON.stringify(present
+    .filter((row) => wanted.has(`${row.workspace_id}\u0000${row.slug}`))
+    .sort((a, b) => {
+      const left = `${a.workspace_id}/${a.slug}`;
+      const right = `${b.workspace_id}/${b.slug}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    })
+    .map((row) => [row.id, row.workspace_id, row.slug, row.updated_at, row.chunks])))
+    .digest('hex');
+  return { expected: pages.length, found, fingerprint };
 }
 
 // Authoritative sweep, run AFTER ingestion regardless of which individual imports succeeded —
@@ -233,7 +318,7 @@ interface CaseResult {
 
 async function gradeOne(suite: string, caseId: string, principalKey: string, question: string, spec: GradeSpec): Promise<CaseResult> {
   try {
-    const { answer, cited } = await answerQuestion(ctxFor(principalKey), question);
+    const { answer, cited } = await answerQuestion(ctxFor(principalKey), question, { knobs: RETRIEVAL_KNOBS });
     const refs: CitedRef[] = cited.map((c) => ({ slug: c.slug, pageId: c.pageId }));
     const { pass, reasons } = gradeAnswer(spec, answer, refs);
     return { suite, caseId, asker: principalKey, question, pass, reasons, answer, citedSlugs: refs.map((r) => r.slug) };
@@ -334,7 +419,7 @@ async function runQrels(): Promise<{ summary: ReturnType<typeof scoreRetrieval> 
 
   const searchFn = async (question: string): Promise<string[]> => {
     const row = byQuestion.get(question)!;
-    const { hits } = await hybridSearch(ctxFor(row.askerPrincipal), question);
+    const { hits } = await hybridSearch(ctxFor(row.askerPrincipal), question, { knobs: RETRIEVAL_KNOBS });
     return [...new Set(hits.map((h) => h.slug))];
   };
   const summary = await scoreRetrieval(qq, searchFn);
@@ -344,7 +429,7 @@ async function runQrels(): Promise<{ summary: ReturnType<typeof scoreRetrieval> 
   await pMap(rows, 4, async (row) => {
     const leaked: string[] = [];
     for (const barredKey of row.unreachableFor ?? []) {
-      const { hits } = await hybridSearch(ctxFor(barredKey), row.question, { topK: 20 });
+      const { hits } = await hybridSearch(ctxFor(barredKey), row.question, { topK: 20, knobs: RETRIEVAL_KNOBS });
       const gotSlugs = new Set(hits.map((h) => h.slug));
       for (const rel of row.relevantSlugs) {
         if (gotSlugs.has(rel)) leaked.push(`${barredKey} retrieved "${rel}"`);
@@ -360,29 +445,41 @@ async function runQrels(): Promise<{ summary: ReturnType<typeof scoreRetrieval> 
 // ── main ──────────────────────────────────────────────────────────────────
 async function main() {
   const startedAt = new Date().toISOString();
-  console.log(`=== NovaByte eval against company-brain M3 (workspace+private scope only) ===`);
+  console.log(`=== NovaByte ${SETUP_ONLY ? 'setup' : 'eval'} (workspace+private scope only) ===`);
   console.log(SMOKE ? '*** SMOKE MODE ***' : '*** FULL RUN ***');
+  console.log(`retrieval: ${PROFILE_REQUEST} -> ${PROFILE_NAME} (${retrievalKnobHash(RETRIEVAL_KNOBS)})`);
 
-  console.log('\n[1/6] identity');
-  await seedIdentity();
+  if (SETUP_ONLY) {
+    console.log('\n[1/3] identity');
+    await seedIdentity();
+    console.log('\n[2/3] ingest or reuse');
+    const ingestResult = await ingestPages();
+    console.log('\n[3/3] verify corpus and ACL');
+    await buildPageWorkspaceMap();
+    const corpus = await verifyCorpus();
+    const aclMismatches = await verifyAcl();
+    console.log(`setup: ${ingestResult.imported} imported, ${ingestResult.reused} reused, ${ingestResult.failed.length} failed`);
+    console.log(`corpus: ${corpus.found}/${corpus.expected}; ACL mismatches: ${aclMismatches}`);
+    await closePools({ timeout: 5 });
+    if (ingestResult.failed.length || aclMismatches) process.exitCode = 1;
+    return;
+  }
 
-  console.log('\n[2/6] ingest');
-  const ingestResult = await ingestPages();
+  console.log('\n[1/5] corpus verification');
   await buildPageWorkspaceMap();
-
-  console.log('\n[2.5/6] acl verification');
+  const corpus = await verifyCorpus();
   const aclMismatches = await verifyAcl();
 
-  console.log('\n[3/6] visibility_matrix');
+  console.log('\n[2/5] visibility_matrix');
   const vmResults = await runVisibilityMatrix();
 
-  console.log('\n[4/6] leak_canary');
+  console.log('\n[3/5] leak_canary');
   const lcResults = await runLeakCanary();
 
-  console.log('\n[5/6] injection_suite');
+  console.log('\n[4/5] injection_suite');
   const injResults = await runInjectionSuite();
 
-  console.log('\n[6/6] qrels');
+  console.log('\n[5/5] qrels');
   const { summary: qrelSummary, leakChecks } = await runQrels();
 
   const allCaseResults = [...vmResults, ...lcResults, ...injResults];
@@ -393,7 +490,19 @@ async function main() {
     startedAt,
     finishedAt: new Date().toISOString(),
     smoke: SMOKE,
-    ingest: ingestResult,
+    corpusManifest: {
+      datasetHash: createHash('sha256').update(readFileSync(join(DATASET, 'manifest.json'))).digest('hex'),
+      expectedPages: corpus.expected,
+      foundPages: corpus.found,
+      corpusFingerprint: corpus.fingerprint,
+      chatModel: config.CHAT_MODEL,
+      embeddingModel: config.EMBEDDING_MODEL,
+    },
+    retrieval: {
+      requestedProfile: PROFILE_REQUEST,
+      resolvedProfile: PROFILE_NAME,
+      knobHash: retrievalKnobHash(RETRIEVAL_KNOBS),
+    },
     aclMismatches,
     suites: {
       visibility_matrix: { total: vmResults.length, passed: vmResults.filter((r) => r.pass).length },
@@ -405,24 +514,25 @@ async function main() {
         hitAt3Rate: qrelSummary.hitAt3Rate,
         mrr: qrelSummary.mrr,
         leaks: leakChecks.filter((l) => l.leaked.length > 0),
+        perQuestion: leakChecks,
       },
     },
     failures: allCaseResults.filter((r) => !r.pass),
     allResults: allCaseResults,
   };
 
-  const outFile = join(OUT_DIR, SMOKE ? 'novabyte-eval-smoke.json' : 'novabyte-eval-results.json');
-  writeFileSync(outFile, JSON.stringify(report, null, 2));
+  mkdirSync(join(OUT_DIR, 'eval', 'runs'), { recursive: true });
+  writeFileSync(OUTPUT_PATH, JSON.stringify(report, null, 2));
 
   console.log('\n=== SUMMARY ===');
-  console.log(`ingest:            ${ingestResult.imported} imported, ${ingestResult.failed.length} failed`);
+  console.log(`corpus:            ${corpus.found}/${corpus.expected} pages verified`);
   console.log(`acl check:         ${aclMismatches === 0 ? 'OK' : `${aclMismatches} MISMATCHES`}`);
   console.log(`visibility_matrix: ${passRate(bySuite('visibility_matrix'))}`);
   console.log(`leak_canary:       ${passRate(bySuite('leak_canary'))}`);
   console.log(`injection_suite:   ${passRate(bySuite('injection_suite'))}`);
   console.log(`qrels:             hit@1=${(qrelSummary.hitAt1Rate * 100).toFixed(0)}% hit@3=${(qrelSummary.hitAt3Rate * 100).toFixed(0)}% mrr=${qrelSummary.mrr.toFixed(3)}`);
   console.log(`qrels leaks:       ${leakChecks.filter((l) => l.leaked.length > 0).length}`);
-  console.log(`\nfull report: ${outFile}`);
+  console.log(`\nfull report: ${OUTPUT_PATH}`);
 
   if (report.failures.length > 0) {
     console.log(`\n=== FAILURES (${report.failures.length}) ===`);
@@ -443,7 +553,9 @@ async function main() {
   }
 
   await closePools({ timeout: 5 });
-  process.exit(ingestResult.failed.length || aclMismatches || report.failures.length ? 1 : 0);
+  if (aclMismatches || report.failures.length || leakChecks.some((row) => row.leaked.length > 0)) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch(async (e) => {

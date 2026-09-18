@@ -4,8 +4,9 @@
 // scorer or the report changes — that separation is the entire reason the adapter seam exists.
 import type { DatasetAdapter } from '../types.ts';
 import { multihopAdapter } from './multihop.ts';
+import { ragtestAdapter } from './ragtest.ts';
 
-const ADAPTERS: DatasetAdapter[] = [multihopAdapter];
+const ADAPTERS: DatasetAdapter[] = [multihopAdapter, ragtestAdapter];
 
 export const DEFAULT_DATASET = 'multihop';
 
@@ -23,4 +24,4 @@ export function resolveAdapter(name: string): DatasetAdapter {
   return found;
 }
 
-export { multihopAdapter };
+export { multihopAdapter, ragtestAdapter };

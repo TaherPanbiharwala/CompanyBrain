@@ -132,7 +132,7 @@ export function scoreMultiHop(
  * Was every gold document present in the PRE-FUSION candidate pool?
  *
  * This is the metric that makes a flat recall curve interpretable. Every retrieval arm is capped
- * independently of topK (ARM_LIMIT 20, KW_AND_SLOTS 20, KW_OR_SLOTS 10, TITLE_LIMIT 10), so fusion
+ * independently of topK (the baseline candidatePool vector/AND/OR/title limits are 20/20/10/10), so fusion
  * never sees more than ~60 candidates at any k. Without this number, "recall did not improve as k
  * grew" is equally consistent with two causes that have opposite fixes:
  *

@@ -1,5 +1,6 @@
 // Env-driven config. Bun auto-loads .env. The /health path needs no secrets and boots without one.
 import { z } from 'zod';
+import { resolveEnvironmentRetrievalKnobs } from './search/retrieval-knobs.ts';
 
 const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
@@ -97,6 +98,11 @@ const EnvSchema = z.object({
   // Multi-query expansion: paraphrase the question with the chat model and widen the KEYWORD arm
   // with the extra terms. 0 = off. Also a paid call on the ask path, also unmeasurable here.
   QUERY_EXPANSION: z.coerce.number().default(0),
+
+  // M7: trusted server-wide retrieval-policy overrides. Parsed and fully validated here so malformed
+  // JSON, unknown fields, or unsafe bounds fail during startup rather than changing ranking silently.
+  // Per-workspace settings remain a reserved (empty) resolver layer and are not exposed publicly.
+  CB_RETRIEVAL_KNOBS_JSON: z.string().default(''),
 
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
@@ -196,6 +202,7 @@ export function parseConfig(env: Record<string, string | undefined>) {
     nodeEnvExplicit: env.NODE_ENV !== undefined && env.NODE_ENV !== '',
     appBaseIsLoopback: loopbackHost(appBaseUrl),
     appBaseIsHttps: httpsBase(appBaseUrl),
+    retrievalKnobs: resolveEnvironmentRetrievalKnobs(d.CB_RETRIEVAL_KNOBS_JSON),
   } as const;
 }
 

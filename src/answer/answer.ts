@@ -4,7 +4,12 @@
 // persisted synthesis_evidence rows (M3/M7 concerns).
 import type { OperationContext } from '../core/context.ts';
 import { chat, withRouterScope } from '../ai/router.ts';
-import { hybridSearch, type ChunkHit, type SearchDegradation } from '../search/hybrid.ts';
+import {
+  hybridSearch,
+  type ChunkHit,
+  type HybridSearchOptions,
+  type SearchDegradation,
+} from '../search/hybrid.ts';
 import { ANSWER_SYSTEM_PROMPT, buildAnswerUserMessage } from './prompt.ts';
 
 export interface AnswerResult {
@@ -133,14 +138,20 @@ export interface AskFilters {
   author?: string;
 }
 
+/** Internal answer-pipeline controls used by evaluation. HTTP/MCP only construct AskFilters. */
+export interface AnswerQuestionOptions extends AskFilters {
+  knobs?: HybridSearchOptions['knobs'];
+  recencyAsOf?: string;
+}
+
 export async function answerQuestion(
   ctx: OperationContext,
   question: string,
-  filters?: AskFilters,
+  options?: AnswerQuestionOptions,
 ): Promise<AnswerResult> {
   // Retrieval runs in its own withScopedTx (inside hybridSearch); the model call below runs
   // OUTSIDE any tx (D6) — chat() must never be called while a pooled connection is held open.
-  const { hits: sources, degraded } = await hybridSearch(ctx, question, filters);
+  const { hits: sources, degraded } = await hybridSearch(ctx, question, options);
 
   const raw = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
     chat({

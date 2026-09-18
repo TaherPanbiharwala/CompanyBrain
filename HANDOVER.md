@@ -1,197 +1,128 @@
 # Handover
 
-**This file is rewritten at the end of each session it makes sense to hand off from — it is a
-snapshot, not a running log.** If you are reading an old copy (check the branch/commit line below
-against `git log -1 origin/master`), the current one supersedes it entirely; do not merge the two by
-hand. `CONTEXT.md` §8 records specific corrections made to *earlier* versions of this file, kept
-because those facts about the code are still true even though that version's text is gone.
+This is a snapshot, not a running log. Read `AGENTS.md` first, then fetch origin before trusting the
+branch line below.
 
-**New this session: read `AGENTS.md` first if you haven't.** It's the short cross-tool entry point
-(D107) — this file, `CONTEXT.md`, and `DECISIONS.md` are what it points you at, in the order that
-actually gets you oriented fastest.
+**Branch/commit at write time:** `codex/intent_classifier`, based on freshly fetched
+`origin/master` `297c8cacc93c4ced7a7eaae09221f63d066f3cec`. M7 is committed on this branch (`git log -1`
+for the exact SHA) and merged to `master` in the same session this line was last edited.
 
-**Branch/commit at write time:** `master` @ `a1e390a`, pushed there directly (no second PR — see §2).
-**Read `git fetch origin && git log -1 origin/master` before doing anything** — this repo has hit the
-same "a concurrent session merged past this exact point and nobody noticed" failure mode on multiple
-occasions (`CONTEXT.md` §1's fourth lesson). Do not trust a local ref you haven't just re-fetched.
+## Current outcome
 
----
+Milestone 7's gbrain retrieval-intelligence port is implemented behind the baseline default. The
+behavioral source is pinned to upstream commit `8c70f6255047a7647adb30b1d6333a48068d9fa5` and covered
+by the repo's existing MIT attribution. The five-intent classifier, intent-specific effective RRF k,
+exact matching, optional recency, immutable policy resolver/hash, one-statement SQL integration,
+held-out MultiHop sweep, and strict NovaByte comparator are built.
 
-## 0. Two things that look like regressions and aren't — check these before you chase either
+**Production ranking has not been promoted, and now has a measured reason why.**
+`DEFAULT_RETRIEVAL_KNOBS` still aliases `BASELINE_RETRIEVAL_KNOBS`; recency is off. The preregistered
+MultiHop holdout sweep (blocked on data-egress approval when this section was first written) has since
+run to completion and its promotion gate **failed**: see D110 and `eval/multihop-m7-latest.md`. The
+tuning-split nominal winner (`gbrain-fusion-only`) did not reach significance on the untouched holdout
+(Bonferroni-adjusted p=1). Per this milestone's own rule — a failed or unrun gate means baseline stays
+selected — that is the correct, final outcome of this sweep attempt, not an open blocker. NovaByte was
+not run; the holdout gate already vetoed promotion on its own.
 
-**The DB connectivity fault named by the previous two handovers is still resolved.** Nobody touched the
-credential or the Supabase project this session either; `bun run doctor`, `bun run migrate`, and the test
-suite all ran against the shared project with no connection errors. Still "confirmed-fixed, cause
-unconfirmed" — if it comes back, check `.env` and the project reference fresh rather than assuming it's
-the same root cause as before.
+## What changed
 
-**New: some sandboxed environments cannot read `~/Desktop/Datasets/MultiHopRAG`.** `ls` on that directory
-returns `EPERM: operation not permitted` — an OS-level permission wall (macOS TCC / Desktop-folder
-protection on whatever process is running the tools), not anything wrong with the repo or the dataset.
-This breaks two things: `bun run load:eval` (can't reload the corpus) and `test/eval-harness.test.ts`'s
-"MultiHop adapter, against the real files" suite (10 tests, all failing with the identical `EPERM` stack
-trace bottoming out in `readJsonArray` — `src/eval/adapters/multihop.ts:103`). **This is why the full
-suite may show `730 pass / 19 skip / 10 fail` instead of the `740 pass / 0 fail` reported earlier in this
-same session** — that earlier count was inherited from a pre-compaction summary rather than freshly
-re-verified, and the discrepancy was never reconciled; treat `740/0` as unconfirmed and the `EPERM`-caused
-`730/19/10` as what was actually, directly observed this session. If you hit this: check `ls
-~/Desktop/Datasets/MultiHopRAG` first, before assuming any code change broke something. Fix is either
-granting the running process Desktop/Full-Disk access, or re-downloading the dataset somewhere readable
-and pointing `--dir` / `MULTIHOP_DIR` at it (see `AGENTS.md` / the script's own `--help`).
+- `src/search/query-intent.ts`, `recency-decay.ts`, and `retrieval-knobs.ts` own the pure M7 policy.
+  The resolver order is code default → reserved workspace insertion point → strict
+  `CB_RETRIEVAL_KNOBS_JSON` → trusted internal call override. Public HTTP/MCP schemas are unchanged.
+- `src/search/hybrid.ts` now reads one policy object. It keeps embedding and reranking outside
+  `withScopedTx` and applies intent-aware fusion, exact match, recency, adjusted duplicate selection,
+  and final limiting inside one SQL statement. The dynamic shortlist fully rescales every admitted
+  arm candidate under the validated 400-candidate ceiling.
+- `src/search/rrf.ts` has a backward-compatible additive helper for a distinct k per list.
+- `answerQuestion` accepts internal-only policy/clock overrides so NovaByte exercises the exact answer
+  pipeline. Search/ask clients cannot set them.
+- `src/eval/core.ts`, `src/eval/retrieval-sweep.ts`, and `scripts/run-retrieval-sweep.ts` implement the
+  seed-42 joint stratified split, eight registered profiles, immutable checkpoint contract, tuning
+  selection, untouched holdout, 10,000-sample paired bootstrap, Bonferroni gate, latency/error/degrade
+  gates, and reports at k 4/8/12/16/20.
+- `scripts/novabyte-eval.ts` separates setup from evaluation, labels policy outputs, fingerprints the
+  actual loaded corpus, and reuses it. `compare:novabyte` is the strict regression gate.
+  `compare:a17-top8` is the correctly named A17 comparator; `score:top8` remains an alias.
+- D110, `CONTEXT.md`, `docs/pipeline-roadmap.md`, `docs/eval-rag.md`, and `.env.example` record the
+  implementation and the non-promotion boundary.
 
-`bun run doctor` is **82/82** as of this session, verified freshly (up from the 81 the last handover
-named — the increment happened somewhere in the findings-4-10 fix batches between then and now; D106's
-own migration is comment-only and added no check itself). Don't re-derive which exact commit added the
-82nd check; it isn't load-bearing, and doctor.ts's checks run inside loops, so a source-line count won't
-match the runtime total anyway.
+## Fresh validation on this diff
 
----
-
-## 1. What's true right now, verified this session
-
-```
-bun run typecheck                          clean
-bun run build:web                          not re-run this session; no reason to expect drift
-bun run migrate (repeated)                 idempotent, applies 0014-0019 cleanly
-bun run doctor                             82/82
-bun run test (full suite)                  730 pass / 19 skip / 10 fail — all 10 the SAME §0 EPERM,
-                                            not a code regression (see §0 before re-deriving this)
-bun run explain:search --since/--until/--author
-                                            now genuinely exercises the filtered query shape (D105's
-                                            finding #4 fix); read D106 before trusting or re-litigating
-                                            what it shows about idx_chunks_ws_effdate
+```text
+bun run typecheck                                      clean
+bun run test                                           812 pass / 17 intentional skip / 0 fail
+bun run doctor                                         82/82
+CB_RUN_PERF_TESTS=1 bun test test/perf-recall.test.ts  10 pass / 0 fail
+git diff --check                                       clean
 ```
 
----
+The complete suite used the valid seeded eval identity below because the repo's `.env` MCP pair is
+stale. The first sandboxed attempt could not resolve the database host; the escalated rerun above is
+the authoritative result.
 
-## 2. What happened since the last handover, in one paragraph each
+The live SQL-versus-TypeScript equivalence check and expanded hybrid integration coverage pass,
+including baseline equivalence, exact/recency promotion, adjusted duplicate survivor selection,
+filters on every arm, keyword-only degradation, cross-tenant isolation, and a 200-candidate case past
+the old fixed 100-row boundary. A local-vector `explain:search` on the small singletopic workspace
+kept the lateral `offset 0` hydration fence; PostgreSQL chose an exact tenant index plus sort at that
+size. Doctor confirms the stored FTS GIN and vector HNSW indexes exist. The real MultiHop plan was
+inspected after corpus load as part of the sweep sequence below; see the holdout-gate result in
+`DECISIONS.md` D110 rather than re-deriving it here.
 
-Full reasoning for every claim below is in `DECISIONS.md` (append-only, D0–D107) and `CONTEXT.md` (the
-living snapshot, **not updated this session** — see the note near the end of this section).
+**Re-verification in a later, separate sandbox could not reproduce the DB-touching half of this.**
+`bun run typecheck` was still clean and every M7-specific test file (`query-intent`, `retrieval-knobs`,
+`rrf-intent`, `recency-decay`, `retrieval-sweep`, `novabyte-compare`, `ragtest-adapter`) still passed
+with no DB involved. But `bun run doctor` and all 52 DB-touching tests failed there with `tenant/user
+postgres.gyscmykxazysahsbokll not found` (ENOTFOUND) — every one of the 52 failures was in a
+pre-existing suite (`M2 auth`, `RLS smoke`, `hybridSearch — live`, etc.), none in a new M7 file, so this
+does not look like a regression from this work. It matches this repo's recurring, previously
+"confirmed-fixed, cause unconfirmed" DB connectivity fault (see older `HANDOVER.md` history via
+`git log`). Treat the `doctor 82/82` and live-hybridSearch results above as unverified-in-that-later-
+environment rather than contradicted; re-check Supabase project status / `.env` freshness before
+trusting either number again from a new sandbox.
 
-**All ten findings from M6's adversarial review (D105) are now fixed — the previous handover's "three
-fixed, seven open" is stale.** The seven left open at that point (UTF-16-vs-bytes size cap,
-un-normalized `author` filter, `explain-search.ts` unable to exercise a filtered query, duplicated
-provenance-derivation logic, duplicated SQL predicate across three `hybridQuery` arms, `soft_delete_*`
-hand-copying `current_grants()`'s parsing, and `load-eval-corpus.ts` never wiring dataset metadata into
-ingest) were fixed in two follow-up commits, each independently typechecked, doctor'd, and full-suite
-tested before landing. `ReportFindings` was re-called after each batch with `outcome: fixed`, so the
-review's own record — not just this prose — reflects that all 10 are closed.
+## Seeded evaluation state
 
-**D106 — the one thing D105 deliberately left as a *question* rather than a finding — is now answered
-by measurement, not left to rot as an "unverified" comment forever.** `idx_chunks_ws_effdate` (0015) is
-proven correct exactly where `since`/`until`/`author` filters are normally narrow relative to a
-workspace: a highly selective filter produces a genuine `Index Cond`. At broad (~1/6+) selectivity the
-planner skips it — reproduced with a synthetic, in-transaction-only date spread (rolled back, never
-persisted; the loaded eval corpus itself still has zero date variance, see below) because the loaded
-corpus can't yet produce that middle case on its own. That skip is 0013's already-documented
-workspace_id/acl cardinality misestimation recurring for a new column, not a new defect, and Postgres's
-extended statistics don't cover the array-overlap operator that would need correcting — so there's no
-cheap fix, and the decision (0019, comment-only) is to keep the index as shipped and stop chasing it
-further unless a real workspace's own numbers disagree.
+The approved non-production database has DB-only MultiHop identities/workspaces. The corpus has since
+been loaded and swept (see above) — this section originally listed the identities pre-load:
 
-**The eval corpus's provenance is still synthetic, not real — that's a live gap for whoever picks up
-retrieval-quality work next.** `provenanceFor()` (the findings-8-10 fix) is wired correctly end-to-end —
-verified by direct execution against four hand-built cases — but the *currently loaded* 2,829 chunks in
-`multihop eval (plain/meta)` all predate that fix and still carry one identical upload-time
-`effective_date` and no `author` at all. A reload would fix this but is blocked by §0's `~/Desktop`
-permission wall in this environment; it may not be blocked in yours.
-
-**`master` was fast-forwarded directly to this branch's tip, not merged through a second PR.** PR #4
-already covered and merged the first commit on this branch (`744ae60`); the five commits after it (three
-review-fix batches, the HANDOVER/D105 rewrite, and D106) sat unmerged on the branch until this session
-pushed `claude/review-handover-decisions-context-9f5d31:master` directly. `git merge-base
---is-ancestor origin/master <branch>` confirmed master had not diverged, so this was a true fast-forward
-with zero conflict risk — worth knowing if you're wondering why there's no second merge commit for this
-work.
-
-**`AGENTS.md` is new (D107)** — a short cross-tool entry point (Codex, per D103, and any other agent
-that reads it by convention), pointing at this file, `CONTEXT.md`, and `DECISIONS.md` rather than
-duplicating them.
-
-**`CONTEXT.md` was not touched this session** (same as last time). Given two sessions' worth of changes
-have now landed since it was last checked, treat its specifics as more likely stale than usual, not less.
-
-**Everything from before that wasn't touched is presumed still accurate**: the leak canary (D102, still
-zero steps executed), Codex's status (D103 — auth works, dual-voice review still blocked on CLI/model
-version), and the two founder rulings in D104 (spend accounting at M8, team scope out of v0).
-
----
-
-## 3. Working in this repo — for either agent
-
-**Start at `AGENTS.md`, not here, if this is your first time in this repo.** This section is the parts
-of that orientation worth restating with more context.
-
-**The three documents that matter are append-only vs. living vs. snapshot, and mixing up which is which
-causes real damage:**
-
-- **`DECISIONS.md` is append-only.** Never edit a past entry's reasoning — fix it *forward* with a new
-  entry and a one-line pointer in the old one. **Next available number: D108.** This numbering has
-  collided across concurrent sessions more than once — **fetch `origin` and check `DECISIONS.md`'s
-  actual tail on `origin/master`** before allocating a number, merge if it's moved, only then append.
-- **`CONTEXT.md` is a living snapshot**, corrected in place, not appended to. **Not updated for two
-  sessions running now** (M6 and this one) — treat any specific number or line-citation in it as a claim
-  to re-verify, more so than usual.
-- **`docs/m5b.md` has its own refresh methodology**, untouched this session; M6 (and this session's
-  follow-ups) are `docs/pipeline-roadmap.md` territory, not M5b's.
-- **This file gets rewritten, not appended to.**
-
-**Two conventions worth carrying into any process, regardless of which agent is running it:**
-
-- **Break a guard on purpose before trusting it, or measure instead of reasoning about whether something
-  could occur.** M6's own RLS design was live-reproduced wrong (a real `42501`), not theorized wrong; D106
-  answered "does the new index actually get used" the same way, with `EXPLAIN`, not by re-reading the
-  migration's comment and deciding it sounded plausible.
-- **An adversarial review pass is worth running on any RLS/security-relevant change before it merges, not
-  just at milestone boundaries.** M6's review found three real, live-reproducible bugs (and seven smaller
-  ones, all now fixed) that a normal review and a passing test suite had already missed.
-
----
-
-## 4. Commands
-
-```bash
-bun run typecheck                        # clean
-bun run migrate && bun run migrate       # idempotent; doctor.ts:9's own stated precondition
-bun run doctor                           # 82/82 as of this session
-bun run test                             # 730 pass / 19 skip / 10 fail here — §0 before you trust
-                                          # either that count or the 740/0 figure from earlier
-bun run explain:search --since <date> --until <date> --author "<name>"
-                                          # exercises the filtered query shape; D106 has the verified
-                                          # verdict on what you should expect to see
-bun run eval:rag --dataset multihop      # docs/eval-rag.md has the full flag surface. Remember: the
-                                          # loaded corpus's provenance is still synthetic (see §2)
+```text
+principal       944063a3-03dc-4e3d-8ccc-5cbe2b41391a
+plain workspace e8694551-127b-48a1-b543-1e0b889bef06
+meta workspace  16936155-9348-4664-8a64-aea6a8587459
 ```
 
-`.env` at the repo root is a **symlink to the main worktree's file**, shared across every worktree. It
-is gitignored. Never copy over it, never print it. (If a worktree is missing it entirely rather than
-having it as a broken symlink, that's just because nobody created the symlink there yet — `ln -s
-/path/to/main-worktree/.env .env` fixes it; this happened at least once this session.)
+State is in ignored `eval/.eval-workspaces.json`. Both local datasets are readable.
 
----
+## What happened after data-egress approval, and where M7 actually landed
 
-## 5. Where to pick up
+The sequence below (steps 1-6, as originally planned) ran to completion once data-egress approval was
+granted; this section originally described it as a future plan and is rewritten now that it is history.
 
-**M6's adversarial review (D105) is fully closed — all 10 findings fixed, the one open question (D106)
-answered.** There is no remaining findings list from that review; don't go looking for one.
+1-3. `dump:top8 --check`, `load:eval --dataset multihop`, and `explain:search` all ran; no cross-tenant
+   HNSW/planner drift was found, and the real MultiHop plan matched the pre-load expectation (stored
+   FTS/GIN, vector HNSW where the planner chooses it, bounded lateral hydration).
+4. `bun run eval:sweep --dataset multihop --variant plain` ran the full preregistered 8-config sweep.
+   Full results: `eval/multihop-m7-latest.md` / `.json`. **The holdout gate failed** — see D110 for the
+   numbers. Nothing was tuned on holdout and no winner was hand-selected; the artifact stands as run.
+5. NovaByte setup/comparison (step 5) was **not run** — the holdout gate already failed on its own,
+   which already forces step 6's "otherwise retain baseline" branch regardless of what NovaByte would
+   say. Re-run it only if a future sweep attempt's holdout gate actually passes.
+6. Gate did not pass, so `DEFAULT_RETRIEVAL_KNOBS` was correctly **not** changed. It still resolves to
+   `BASELINE_RETRIEVAL_KNOBS`.
 
-**The most concrete near-term item is §0's `~/Desktop` permission wall**, if you're in an environment
-that hits it: it blocks reloading the eval corpus with real provenance, which in turn blocks ever
-observing `idx_chunks_ws_effdate` at realistic (not synthetic, not degenerate) selectivity, and blocks
-10 tests in `test/eval-harness.test.ts`. Either grant the running process Desktop access, or get the
-MultiHop dataset onto a path it can read and point `MULTIHOP_DIR` there.
+**If picking this back up to try for a passing gate:** the loaded MultiHop corpus still carries the
+synthetic, upload-time-only `effective_date`/no-`author` limitation D106 already documented — recency
+tuning is working against degenerate metadata, which plausibly caps what `recency-auto-only` and the
+`-recency-on`/`-strong` profiles could ever show. A reload with real per-article provenance (blocked
+previously by a `~/Desktop` sandbox permission wall, per older `HANDOVER.md` history — may not be
+blocked in every environment) would be the highest-leverage next attempt before assuming the intent
+table itself is the wrong idea. Per `docs/pipeline-roadmap.md`'s own recommendation, M9 (link
+extraction/backlinks, written as a plain script rather than building M8's cycle engine) is the other
+reasonable next step and does not depend on this gate passing.
 
-**Unchanged from the last two handovers, still not in scope for any recent session:**
+## Working-tree cautions
 
-1. **The leak canary has never run on a CI runner.** D102's six-step sequence is still fully unexecuted.
-   `docs/ci-setup.md` has the secret checklist.
-2. **Codex** — auth works (D103), dual-voice review still blocked on `codex-cli` rejecting every model
-   tried. A CLI upgrade is the plausible next step, deliberately not attempted without a founder ask.
-3. The two founder rulings in D104 (spend accounting stays at M8, team scope stays out of v0) — settled,
-   not action items, carried forward for context only.
-
-**`docs/pipeline-roadmap.md`'s M7 (retrieval intelligence) still has its stated dependency satisfied** —
-`effective_date` exists and, per D106, its supporting index behaves correctly where it's meant to. M7 is
-a reasonable next milestone if the founder wants to keep going in that direction, but the roadmap itself
-says this competes with M5b for the same weeks — still the founder's call, not this document's.
+The untracked `.claude/` directory and `docs/enterprise-learning-roadmap.md` predate this work and
+belong to the user; they were not edited. No migration was added or changed. Keep the transaction
+handle literally named `tx`, and never weaken the RLS boundary while resolving evaluation issues.

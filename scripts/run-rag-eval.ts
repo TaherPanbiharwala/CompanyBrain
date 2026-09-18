@@ -23,10 +23,7 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closePools, withScopedTx } from '../src/db/client.ts';
 import { config } from '../src/config.ts';
-import {
-  hybridSearch, AUTOCUT_RATIO, DEFAULT_TOP_K, MAX_PER_PAGE,
-  ARM_LIMIT, KW_AND_SLOTS, KW_OR_SLOTS, TITLE_LIMIT,
-} from '../src/search/hybrid.ts';
+import { hybridSearch, DEFAULT_TOP_K } from '../src/search/hybrid.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
 import { isRerankEnabled, isExpansionEnabled } from '../src/ai/router.ts';
 import { scoreMultiHop, scoreCandidateRecall, type MultiHopScore } from '../src/search/eval-score.ts';
@@ -48,8 +45,8 @@ const REPORT_KS = [4, 8, 12, 16, 20];
  * One retrieval per question, at a topK generous enough to be BOTH the ranked list we slice and the
  * candidate pool we measure against.
  *
- * Every arm is capped independently of topK (ARM_LIMIT 20, KW_AND_SLOTS 20, KW_OR_SLOTS 10,
- * TITLE_LIMIT 10), so fusion never sees more than ~60 chunks. Asking for 60 therefore returns
+ * Every baseline arm is capped independently of topK (candidatePool vector/AND/OR/title =
+ * 20/20/10/10), so fusion never sees more than ~60 chunks. Asking for 60 therefore returns
  * everything that survived fusion, which is the pool `candidate-recall` needs. The REPORTED cutoffs
  * stay 4..20; the tail past 20 is used only to answer "was the gold document ever a candidate at
  * all", never quoted as a production recall number.
@@ -280,15 +277,16 @@ async function main(): Promise<void> {
   const args: CommonArgs = parseArgs(argv);
   const adapter = resolveAdapter(args.dataset);
   const { docs, questions: allQuestions } = await adapter.load(args.dir);
+  const retrievalKnobs = config.retrievalKnobs;
 
   // ── Preflight: refuse before doing anything expensive or misleading ────────
 
   // Slicing one ranked list at several k is valid ONLY while autocut is off. Autocut runs AFTER the
   // topK slice, so with it enabled a k=20 run and a real k=8 run drop different tails and every
   // sliced number would describe a result set no query would ever return.
-  if (AUTOCUT_RATIO !== 0) {
+  if (retrievalKnobs.fusion.autocutRatio !== 0) {
     throw new Error(
-      `AUTOCUT_RATIO is ${AUTOCUT_RATIO}, not 0. This harness slices ONE k=${POOL_K} retrieval to ` +
+      `retrieval autocutRatio is ${retrievalKnobs.fusion.autocutRatio}, not 0. This harness slices ONE k=${POOL_K} retrieval to ` +
         `produce recall at k=${REPORT_KS.join('/')}, which autocut invalidates — it runs after the ` +
         `topK slice, so the sliced numbers would describe result sets no real query returns.`,
     );
@@ -298,19 +296,24 @@ async function main(): Promise<void> {
   // silently truncates, making `candidateRecall` an undetected underestimate. That number is the sole
   // basis for telling a ranking failure apart from arm starvation, so a quiet underestimate would
   // send the whole diagnosis the wrong way.
-  const armSum = ARM_LIMIT + KW_AND_SLOTS + KW_OR_SLOTS + TITLE_LIMIT;
+  const armSum = retrievalKnobs.candidatePool.vectorLimit +
+    retrievalKnobs.candidatePool.keywordAndLimit +
+    retrievalKnobs.candidatePool.keywordOrLimit +
+    retrievalKnobs.candidatePool.titleLimit;
   if (armSum > POOL_K) {
     throw new Error(
       `arm caps sum to ${armSum} but POOL_K is ${POOL_K}, so the retrieval pool this harness reads ` +
         `is truncated and candidateRecall would silently understate. Raise POOL_K to at least ` +
-        `${armSum} (ARM_LIMIT=${ARM_LIMIT}, KW_AND_SLOTS=${KW_AND_SLOTS}, ` +
-        `KW_OR_SLOTS=${KW_OR_SLOTS}, TITLE_LIMIT=${TITLE_LIMIT}).`,
+        `${armSum} (vectorLimit=${retrievalKnobs.candidatePool.vectorLimit}, ` +
+        `keywordAndLimit=${retrievalKnobs.candidatePool.keywordAndLimit}, ` +
+        `keywordOrLimit=${retrievalKnobs.candidatePool.keywordOrLimit}, ` +
+        `titleLimit=${retrievalKnobs.candidatePool.titleLimit}).`,
     );
   }
   if (isRerankEnabled()) {
     throw new Error(
       `RERANK_MODEL is set (${config.RERANK_MODEL}). Reranking makes fetchK depend on topK ` +
-        `(fetchK = topK * RERANK_OVERFETCH), so the top-8 of a k=${POOL_K} run is NOT a k=8 run and ` +
+        `(fetchK = topK * candidatePool.rerankOverfetch), so the top-8 of a k=${POOL_K} run is NOT a k=8 run and ` +
         `the sweep would be measuring the reranker rather than retrieval. Re-run with ` +
         `RERANK_MODEL= bun run eval:rag …`,
     );
@@ -409,12 +412,15 @@ async function main(): Promise<void> {
     defaultTopK: DEFAULT_TOP_K,
     poolK: POOL_K,
     reportKs: REPORT_KS,
-    maxPerPage: MAX_PER_PAGE,
+    maxPerPage: retrievalKnobs.candidatePool.maxPerPage,
     armCaps: {
-      armLimit: ARM_LIMIT, kwAndSlots: KW_AND_SLOTS,
-      kwOrSlots: KW_OR_SLOTS, titleLimit: TITLE_LIMIT, sum: armSum,
+      armLimit: retrievalKnobs.candidatePool.vectorLimit,
+      kwAndSlots: retrievalKnobs.candidatePool.keywordAndLimit,
+      kwOrSlots: retrievalKnobs.candidatePool.keywordOrLimit,
+      titleLimit: retrievalKnobs.candidatePool.titleLimit,
+      sum: armSum,
     },
-    autocutRatio: AUTOCUT_RATIO,
+    autocutRatio: retrievalKnobs.fusion.autocutRatio,
     rerankModel: config.RERANK_MODEL || '(off)',
     queryExpansion: config.QUERY_EXPANSION,
     chunkSize: 'chunkText: 300 words, overlap 50, maxChars 6000',

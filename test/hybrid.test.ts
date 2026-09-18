@@ -6,11 +6,15 @@ import { liveOrFail, hasDbEnv } from './helpers/live.ts';
 import { adminSql, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants } from '../src/core/context.ts';
 import { importPage } from '../src/ingest/import.ts';
+import { hybridSearch, keywordQueryText } from '../src/search/hybrid.ts';
+import { rrfFusePerList } from '../src/search/rrf.ts';
 import {
-  hybridSearch, keywordQueryText, MAX_PER_PAGE,
-  W_KW_AND, W_KW_OR, W_VEC, W_TITLE, BLEND_RRF, BLEND_COS,
-} from '../src/search/hybrid.ts';
-import { rrfFuseWeighted } from '../src/search/rrf.ts';
+  BASELINE_RETRIEVAL_KNOBS,
+  GBRAIN_RETRIEVAL_KNOBS,
+  effectiveIntentWeights,
+  retrievalKnobHash,
+} from '../src/search/retrieval-knobs.ts';
+import { classifyQueryIntent } from '../src/search/query-intent.ts';
 import { toVectorLiteral } from '../src/ai/vector.ts';
 import { embed, withRouterScope } from '../src/ai/router.ts';
 import { withScopedTx } from '../src/db/client.ts';
@@ -23,6 +27,7 @@ const RUN = crypto.randomUUID().slice(0, 8);
 
 const live = liveOrFail('hybrid', hasDbEnv());
 const mutableConfig = config as unknown as Record<string, unknown>;
+const MAX_PER_PAGE = BASELINE_RETRIEVAL_KNOBS.candidatePool.maxPerPage;
 
 describe.skipIf(!live)('hybridSearch — live', () => {
   let ws1 = '';
@@ -116,10 +121,10 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     // The arms are reproduced from the SQL, not re-derived — the thing under test is the FUSION, not
     // the arm definitions. The weights come from hybrid.ts itself so the two cannot diverge silently.
     const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
-    const query = 'zebra salt flats zzzqqqmarker bread';
+    const query = 'news about zebra salt flats zzzqqqmarker bread';
     const orQuery = keywordQueryText(query);
 
-    const { hits: viaSql } = await hybridSearch(ctx, query);
+    const { hits: viaSql } = await hybridSearch(ctx, query, { knobs: GBRAIN_RETRIEVAL_KNOBS });
 
     const [qv] = await withRouterScope({ workspaceId: ws1, zdr: false }, () => embed([query]));
     const lit = toVectorLiteral(qv!);
@@ -167,10 +172,16 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     // Positional against the union order in hybridSearch: kw_and, kw_or, vec, title. A transposed
     // weight vector is invisible here — both sides would be equally wrong — so this line is read,
     // not asserted.
-    const fused = rrfFuseWeighted(
-      [kwAnd.map((r) => r.id), kwOr.map((r) => r.id), vec.map((r) => r.id), title.map((r) => r.id)],
-      [W_KW_AND, W_KW_OR, W_VEC, W_TITLE],
-    );
+    const policy = GBRAIN_RETRIEVAL_KNOBS;
+    const intentWeights = effectiveIntentWeights(policy, classifyQueryIntent(query));
+    const keywordK = policy.fusion.rrfK / intentWeights.keywordWeight;
+    const vectorK = policy.fusion.rrfK / intentWeights.vectorWeight;
+    const fused = rrfFusePerList([
+      { ids: kwAnd.map((r) => r.id), weight: policy.fusion.keywordAndWeight, k: keywordK },
+      { ids: kwOr.map((r) => r.id), weight: policy.fusion.keywordOrWeight, k: keywordK },
+      { ids: vec.map((r) => r.id), weight: policy.fusion.vectorWeight, k: vectorK },
+      { ids: title.map((r) => r.id), weight: policy.fusion.titleWeight, k: keywordK },
+    ]);
 
     const pageOf = new Map<string, string>();
     for (const r of [...kwAnd, ...kwOr, ...vec, ...title]) pageOf.set(r.id, r.page_id);
@@ -187,33 +198,36 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     // similarity refines how the shortlist is sorted. Reproducing it here is what keeps this a
     // specification check rather than a check of two thirds of the pipeline.
     // The SQL collapses byte-identical chunk text before scoring, keeping the best-scoring copy.
-    const bestByContent = new Map<string, { id: string; score: number }>();
-    const contentRows = await withScopedTx(ctx, (tx) => tx<{ id: string; h: string }[]>`
-      select c.id, md5(c.content) as h from content_chunks c
-      where c.id = any(${capped.map((r) => r.id)}::uuid[])`);
-    const hashOf = new Map(contentRows.map((r) => [r.id, r.h]));
-    for (const r of capped) {
-      const h = hashOf.get(r.id)!;
-      const cur = bestByContent.get(h);
-      if (!cur || r.score > cur.score || (r.score === cur.score && r.id < cur.id)) bestByContent.set(h, r);
-    }
-    const survivors = capped.filter((r) => bestByContent.get(hashOf.get(r.id)!)!.id === r.id);
-
+    const maxRrf = Math.max(...capped.map((r) => r.score));
     const cos = new Map<string, number>();
     const cosRows = await withScopedTx(ctx, (tx) => tx<{ id: string; cos_sim: number }[]>`
       select c.id, coalesce(1 - (c.embedding <=> ${lit}::vector), 0)::float8 as cos_sim
       from content_chunks c
-      where c.id = any(${survivors.map((r) => r.id)}::uuid[])`);
+      where c.id = any(${capped.map((r) => r.id)}::uuid[])`);
     for (const r of cosRows) cos.set(r.id, r.cos_sim);
+    const scored = capped.map((r) => ({
+      id: r.id,
+      score: r.score,
+      blended: policy.fusion.rrfBlend * (r.score / maxRrf) +
+        policy.fusion.cosineBlend * (cos.get(r.id) ?? 0),
+    }));
+    const bestByContent = new Map<string, { id: string; score: number; blended: number }>();
+    const contentRows = await withScopedTx(ctx, (tx) => tx<{ id: string; h: string }[]>`
+      select c.id, md5(c.content) as h from content_chunks c
+      where c.id = any(${capped.map((r) => r.id)}::uuid[])`);
+    const hashOf = new Map(contentRows.map((r) => [r.id, r.h]));
+    for (const r of scored) {
+      const h = hashOf.get(r.id)!;
+      const cur = bestByContent.get(h);
+      if (!cur || r.blended > cur.blended || (r.blended === cur.blended && r.id < cur.id)) bestByContent.set(h, r);
+    }
+    const survivors = scored.filter((r) => bestByContent.get(hashOf.get(r.id)!)!.id === r.id);
 
     // Normalised by the best RRF score in the candidate set, exactly as the SQL's
     // `max(rrf) over ()` does — an unnormalised RRF sum of ~1/60 terms would be swamped by a
     // cosine of ~0.8 and the blend would quietly become a pure vector sort.
-    // Normalised over the SURVIVORS, not the pre-dedup set: Postgres evaluates WHERE before window
-    // functions, so the SQL's `max(rrf) over ()` already sees only the deduped rows.
-    const maxRrf = Math.max(...survivors.map((r) => r.score));
     const viaTs = survivors
-      .map((r) => ({ id: r.id, blended: BLEND_RRF * (r.score / maxRrf) + BLEND_COS * (cos.get(r.id) ?? 0) }))
+      .map((r) => ({ id: r.id, blended: r.blended }))
       .sort((a, b) => b.blended - a.blended || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .slice(0, 8)
       .map((r) => r.id);
@@ -277,6 +291,46 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     // Descending, and strictly ordered — the caller ranks on this.
     for (let i = 1; i < hits.length; i++) expect(hits[i - 1]!.score).toBeGreaterThanOrEqual(hits[i]!.score);
   }, 30_000);
+
+  it('explicit baseline policy reproduces the selected default exactly', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const implicit = await hybridSearch(ctx, 'zzzqqqmarker bread');
+    const explicit = await hybridSearch(ctx, 'zzzqqqmarker bread', { knobs: BASELINE_RETRIEVAL_KNOBS });
+    expect(explicit.hits.map((hit) => [hit.chunkId, hit.score])).toEqual(
+      implicit.hits.map((hit) => [hit.chunkId, hit.score]),
+    );
+    expect(explicit.diagnostics).toEqual({
+      intent: 'general',
+      recencyMode: 'off',
+      knobHash: retrievalKnobHash(BASELINE_RETRIEVAL_KNOBS),
+    });
+  }, 30_000);
+
+  it('applies exact-match and recency factors inside SQL before final ordering', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const baseline = await hybridSearch(ctx, 'keyword doc', { knobs: BASELINE_RETRIEVAL_KNOBS });
+    const baselineHit = baseline.hits.find((hit) => hit.slug === 'keyword-doc');
+    expect(baselineHit).toBeDefined();
+
+    const exact = await hybridSearch(ctx, 'keyword doc', {
+      knobs: { intent: { enabled: true, weights: { general: { exactMatchBoost: 2 } } } },
+    });
+    expect(exact.hits.find((hit) => hit.slug === 'keyword-doc')!.score).toBeCloseTo(baselineHit!.score * 2, 10);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const recent = await hybridSearch(ctx, 'keyword doc', {
+      knobs: { recency: { mode: 'on', halflifeDays: 90, coefficient: 0.3 } },
+      recencyAsOf: today,
+    });
+    expect(recent.hits.find((hit) => hit.slug === 'keyword-doc')!.score).toBeCloseTo(baselineHit!.score * 1.3, 10);
+    expect(recent.diagnostics.recencyMode).toBe('on');
+  }, 30_000);
+
+  it('rejects an unbound evaluation clock before retrieval starts', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    await expect(hybridSearch(ctx, 'keyword doc', { recencyAsOf: 'yesterday' }))
+      .rejects.toThrow('recencyAsOf must be a valid ISO date');
+  });
 
   it('falls back to keyword-only when the embedder is down, and SAYS so', async () => {
     // The failure this guards is not an outage — it is an outage that looks like a normal result.
@@ -368,6 +422,70 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     const differentCase = (await hybridSearch(ctx, TOKEN, { author: '  ZZZQQQ-Author-A  ' })).hits.map((h) => h.slug);
     expect(differentCase, 'a differently-cased/padded author query matched nothing').toContain(`auth-a-${RUN}`);
   }, 30_000);
+
+  it('uses adjusted score to select the survivor of byte-identical chunks', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const body = `duplicate-shared-${RUN} evidence is byte-identical on both pages.`;
+    await importPage(ctx, { slug: 'duplicate-winner', title: 'Neutral A', body });
+    await importPage(ctx, { slug: 'duplicate-loser', title: 'Neutral B', body });
+    const { hits } = await hybridSearch(ctx, 'duplicate winner', {
+      knobs: { intent: { enabled: true, weights: { general: { exactMatchBoost: 4 } } } },
+    });
+    expect(hits.some((hit) => hit.slug === 'duplicate-winner')).toBe(true);
+    expect(hits.some((hit) => hit.slug === 'duplicate-loser')).toBe(false);
+  }, 30_000);
+
+  it('rescales every admitted candidate beyond the old 100-row shortlist boundary', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const admin = adminSql();
+    // rls-exempt: synthetic fixture writes only, stamped into this test's disposable workspace and
+    // removed by the workspace cascade in afterAll. Search itself still runs through withScopedTx.
+    await admin`
+      with generated as (
+        select n,
+               case when n < 100 then ${`vector-bulk-${RUN}-`} || n::text
+                    when n = 100 then 'bulk-marker'
+                    else ${`keyword-bulk-${RUN}-`} || n::text end as slug
+        from generate_series(0, 199) n
+      ), inserted as (
+        insert into pages (workspace_id, slug, title, owner_principal, scope, acl, body, effective_date)
+        select ${ws1}::uuid, slug, 'Neutral bulk fixture', ${p1}, 'workspace', ${[`ws:${ws1}`]}::text[],
+               case when n < 100 then repeat('bulk marker ', 20) || 'strong lexical fixture'
+                    when n = 100 then 'bulk token fixture'
+                    else repeat('bulk ', 20) || 'token fixture' end,
+               current_date
+        from generated
+        returning id, slug, acl
+      )
+      insert into content_chunks (workspace_id, page_id, acl, ord, content, embedding, effective_date)
+      select ${ws1}::uuid, p.id, p.acl, 0,
+             case when p.slug like ${`vector-bulk-${RUN}-%`}
+                    then repeat('bulk marker ', 20) || 'strong lexical fixture ' || p.slug
+                  when p.slug = 'bulk-marker' then 'bulk token unique-target'
+                  else repeat('bulk ', 20) || 'token fixture ' || p.slug end,
+             null::vector,
+             current_date
+      from inserted p`;
+
+    const withoutExact = await hybridSearch(ctx, 'bulk marker', {
+      topK: 8,
+      knobs: {
+        candidatePool: { vectorLimit: 0, keywordAndLimit: 100, keywordOrLimit: 100, titleLimit: 0, maxPerPage: 1 },
+        fusion: { keywordAndWeight: 3, keywordOrWeight: 1, rrfK: 1000 },
+      },
+    });
+    expect(withoutExact.hits.some((hit) => hit.slug === 'bulk-marker')).toBe(false);
+
+    const promoted = await hybridSearch(ctx, 'bulk marker', {
+      topK: 8,
+      knobs: {
+        candidatePool: { vectorLimit: 0, keywordAndLimit: 100, keywordOrLimit: 100, titleLimit: 0, maxPerPage: 1 },
+        fusion: { keywordAndWeight: 3, keywordOrWeight: 1, rrfK: 1000 },
+        intent: { enabled: true, weights: { general: { exactMatchBoost: 4 } } },
+      },
+    });
+    expect(promoted.hits[0]?.slug).toBe('bulk-marker');
+  }, 40_000);
 
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {
     const ctx2 = buildContext({ principal: p2, workspaceId: ws2, role: 'owner', grants: resolveGrants(p2, ws2), remote: false });

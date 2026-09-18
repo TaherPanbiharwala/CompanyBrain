@@ -102,7 +102,7 @@ export function isAbstention(answer: string, citations: readonly number[]): bool
 
 /** mulberry32. Deterministic given a seed, which is the whole point: without it two runs draw
  *  different questions and a metric that moved could just be a different sample. */
-function seededRandom(seed: number): () => number {
+export function seededRandom(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -111,6 +111,70 @@ function seededRandom(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+export interface StratifiedSplit {
+  tuning: EvalQuestion[];
+  holdout: EvalQuestion[];
+}
+
+function lexicalCompare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Deterministic 70/30-style split, jointly stratified by dataset type and required-document count.
+ * Largest-remainder allocation fixes the tuning cardinality exactly; shuffle and group ordering are
+ * independent of dataset file order. Every question appears in exactly one side.
+ */
+export function stratifiedSplit(
+  questions: readonly EvalQuestion[],
+  tuningFraction: number = 0.7,
+  seed: number = 42,
+): StratifiedSplit {
+  if (!Number.isFinite(tuningFraction) || tuningFraction < 0 || tuningFraction > 1) {
+    throw new Error('tuningFraction must be between 0 and 1');
+  }
+  if (questions.length === 0) return { tuning: [], holdout: [] };
+
+  const groups = new Map<string, EvalQuestion[]>();
+  for (const question of questions) {
+    const key = `${question.type ?? UNTYPED}\u0000${question.goldDocIds.length}`;
+    const group = groups.get(key);
+    if (group) group.push(question);
+    else groups.set(key, [question]);
+  }
+  const keys = [...groups.keys()].sort();
+  const target = Math.round(questions.length * tuningFraction);
+  const exact = keys.map((key) => groups.get(key)!.length * tuningFraction);
+  const take = exact.map(Math.floor);
+  let remaining = target - take.reduce((sum, n) => sum + n, 0);
+  const remainderOrder = keys.map((_, index) => index).sort((a, b) => {
+    const delta = (exact[b]! - Math.floor(exact[b]!)) - (exact[a]! - Math.floor(exact[a]!));
+    return delta || lexicalCompare(keys[a]!, keys[b]!);
+  });
+  for (const index of remainderOrder) {
+    if (remaining <= 0) break;
+    if (take[index]! < groups.get(keys[index]!)!.length) {
+      take[index]!++;
+      remaining--;
+    }
+  }
+
+  const rand = seededRandom(seed);
+  const tuning: EvalQuestion[] = [];
+  const holdout: EvalQuestion[] = [];
+  for (let index = 0; index < keys.length; index++) {
+    const group = shuffled(
+      groups.get(keys[index]!)!.slice().sort((a, b) => lexicalCompare(a.id, b.id)),
+      rand,
+    );
+    tuning.push(...group.slice(0, take[index]!));
+    holdout.push(...group.slice(take[index]!));
+  }
+  tuning.sort((a, b) => lexicalCompare(a.id, b.id));
+  holdout.sort((a, b) => lexicalCompare(a.id, b.id));
+  return { tuning, holdout };
 }
 
 function shuffled<T>(items: readonly T[], rand: () => number): T[] {

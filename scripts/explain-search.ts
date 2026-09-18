@@ -17,6 +17,7 @@
 //   bun run explain:search --workspace "multihop eval (plain)"
 //   bun run explain:search --workspace A17 --query "what did the team decide?"
 //   bun run explain:search --workspace A17 --since 2026-01-01 --until 2026-06-30 --author "Jane Doe"
+//   bun run explain:search --workspace A17 --local-vector   # no provider egress; plan-shape only
 //
 // Read-only: EXPLAIN ANALYZE executes the statement, but every statement here is a SELECT.
 import { buildContext, resolveGrants } from '../src/core/context.ts';
@@ -26,6 +27,9 @@ import { embed, withRouterScope } from '../src/ai/router.ts';
 import { toVectorLiteral } from '../src/ai/vector.ts';
 import { describeTarget, resolveWorkspaceTarget, workspaceFlag } from './workspace-target.ts';
 import type postgres from 'postgres';
+import { config } from '../src/config.ts';
+import { classifyQuery } from '../src/search/query-intent.ts';
+import { effectiveIntentWeights, effectiveRecencyMode } from '../src/search/retrieval-knobs.ts';
 
 const DEFAULT_QUESTION = 'What did the engineering team decide about the deployment pipeline?';
 
@@ -90,9 +94,12 @@ async function main(): Promise<void> {
   const orQuery = keywordQueryText(question);
   console.log(`or-query: ${orQuery.split(' OR ').length} terms — ${orQuery}`);
 
-  // A REAL embedding, not a stub. The vector arm is one of the four things being attributed, and an
-  // HNSW traversal toward an arbitrary point is not the traversal the request path performs.
-  const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([question]));
+  // Default to a real embedding. `--local-vector` is an explicit plan-shape diagnostic for
+  // environments where evaluation text may not leave the machine: it still executes the shipped
+  // statement and HNSW operator, but its latency/nearest-neighbour rows are not a relevance measure.
+  const queryVector = process.argv.includes('--local-vector')
+    ? Array.from({ length: config.EMBEDDING_DIM }, (_, index) => Math.sin(index + 1))
+    : (await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([question])))[0]!;
   const vectorLiteral = toVectorLiteral(queryVector!);
 
   // since/until/author (migration 0014), from flags — default null so the unfiltered case (the
@@ -105,7 +112,22 @@ async function main(): Promise<void> {
   if (since || until || author) {
     console.log(`filters: since=${since ?? '(none)'} until=${until ?? '(none)'} author=${author ?? '(none)'}`);
   }
-  const params = { query: question, orQuery, vectorLiteral, hasVector: true, fetchK: 8, since, until, author };
+  const knobs = config.retrievalKnobs;
+  const classification = classifyQuery(question);
+  const params = {
+    query: question,
+    orQuery,
+    vectorLiteral,
+    hasVector: true,
+    fetchK: 8,
+    since,
+    until,
+    author,
+    knobs,
+    intentWeights: effectiveIntentWeights(knobs, classification.intent),
+    recencyMode: effectiveRecencyMode(knobs, classification),
+    recencyAsOf: new Date().toISOString().slice(0, 10),
+  };
 
   await withScopedTx(ctx, async (tx) => {
     // ── 1. The whole statement, as shipped ────────────────────────────────

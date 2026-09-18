@@ -5,6 +5,19 @@ existence, adversarially verified every claim against the code, and **actually r
 followed by the M4 build and its own seven-pass review, which took the log to 101 entries (D0–D97).
 Read this once instead of re-deriving it.
 
+**2026-09-06 M7 update (branch `codex/intent_classifier`, based on freshly fetched
+`origin/master` `297c8ca`):** the commit-pinned gbrain retrieval-intelligence port is implemented but
+not promoted. `src/search/{query-intent,recency-decay,retrieval-knobs}.ts` owns the pure classifier,
+recency math, immutable profiles, validation, override cascade, and canonical policy hash;
+`hybrid.ts` applies intent-specific effective RRF k, exact-match, and optional recency inside its one
+RLS-scoped SQL statement before final top-k. Public operation schemas are unchanged. The eight-profile
+MultiHop runner is `eval:sweep`; NovaByte is now setup-once/evaluate-many with a strict
+`compare:novabyte` gate. `DEFAULT_RETRIEVAL_KNOBS` still aliases the exact baseline because the
+provider-backed MultiHop load/sweep and NovaByte comparison have not been authorized or run. Local
+evidence on this diff: typecheck clean, full suite 812 pass / 17 intentional skip / 0 fail, doctor
+82/82, performance suite 10/10. D110 and `HANDOVER.md` are the authoritative current boundary; older
+measurements and M7-as-future prose below are historical.
+
 **`master` is the single trunk. Branch from it, merge back into it.** As of 2026-07-30 every branch
 in the repo is an ancestor of master — the M3 line, the CONTEXT.md line and five stale copies were
 all reconciled. There is no second tree to check any more; §1 records what that cost, because the
@@ -739,13 +752,15 @@ are all clamped — that is the input that reaches this path.
 Verified against the actual dataset at `~/Desktop/novabyte-test-dataset`. Pass 1's stronger claims
 were **refuted**; what survives:
 
-- ~~**LIVE.** `novabyte-score.ts:48-50` inverts UP/DOWN whenever a relevant doc is missing on either
+- ~~**LIVE.** the former `novabyte-score.ts:48-50` inverted UP/DOWN whenever a relevant doc was missing on either
   side, because `findIndex` returns `-1`.~~ — **FIXED `9a7ceb0` (D101).** `-1` now maps to
   worse-than-any-real-rank before the comparison, rather than comparing the raw index. Verified
   against the actual bug: reverting the fix and re-running two synthetic cases (a doc found-then-lost,
   a doc lost-then-found) reproduced the exact inverted `UP`/`DOWN` this bullet describes; the fix
   prints both correctly. This was D100's stated blocker on using `eval:novabyte` as the answer-quality
-  gate for a swept retrieval config — the gate is now usable, and as of this writing still unused.
+  gate for a swept retrieval config. M7 renamed this A17-only tool to `compare-a17-top8.ts` (keeping
+  `score:top8` as an alias) and added the separate strict `compare:novabyte` gate. The new gate is
+  implemented and locally tested, but its provider-backed baseline/candidate runs remain unexecuted.
 - **LIVE.** `leak_canary`'s `forbidden_strings` — the actual canaries — frequently live *only* on
   team-scoped pages that `:107` never ingests. **lc-021: 7 of 7 canaries unreachable**; lc-022: 6 of
   7; lc-020: 5 of 8. The designed leak target was never loaded, leaving `forbidden_workspace` as the
@@ -908,8 +923,8 @@ Simulated offline against banked ranked lists, then confirmed live to the decima
 question-hop-count, before merging: `all-evidence-recall@8` 36.9% → 40.3%, 75 questions fixed, 0
 broken. Full reasoning, including why this shipped *below* the pre-registered 5pp threshold and why
 `MAX_PER_PAGE = 1`'s larger +13.8pp is a metric artifact rather than a better answer, is D100. The
-`novabyte-score.ts` fix that closes D100's stated blocker is D101 (§6.10 above records the same fix in
-its own context).
+historical top-eight comparator fix that closes D100's stated blocker is D101 (§6.10); M7 makes the
+distinction explicit by naming it `compare-a17-top8.ts` and giving NovaByte its own comparator.
 
 ---
 

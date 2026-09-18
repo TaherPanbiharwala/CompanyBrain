@@ -1709,3 +1709,56 @@ constructor — `ssl: { rejectUnauthorized: true, ca: <pem> }` in place of the b
 string — so `verify-full` genuinely verifies instead of crashing outright. Until this lands, `DB_SSL`
 must stay at `require` in every environment that talks to Supabase; do not flip it back to
 `verify-full` without doing this work first, or this exact outage repeats.
+
+## D110 — Port gbrain retrieval intelligence behind an evidence-gated baseline default (2026-09-06)
+
+Milestone 7 ports the retrieval behavior pinned to upstream gbrain commit
+`8c70f6255047a7647adb30b1d6333a48068d9fa5` under the existing MIT attribution: the five-intent
+zero-LLM classifier, per-intent keyword/vector weights, exact-title/slug boost, and hyperbolic recency
+decay. It deliberately does not port gbrain's storage/runtime architecture, salience, modality,
+detail, pattern-extension cache, or per-brain configuration. Company Brain keeps PostgreSQL RLS as
+the sole tenancy/ACL boundary and keeps all database retrieval, fusion, hydration, exact matching,
+recency, duplicate selection, and final limiting in one `withScopedTx` statement; embedding and
+reranking remain outside the transaction.
+
+All ranking configuration now resolves through one deeply immutable `RetrievalKnobs` object. The
+cascade is selected code default → reserved future workspace layer → strict server-wide
+`CB_RETRIEVAL_KNOBS_JSON` → trusted internal per-call overrides. Malformed JSON, unknown keys, unsafe
+bounds, invalid blend sums, and unbounded arm capacity fail validation. HTTP and MCP schemas do not
+expose knobs. Every concrete policy has a canonical SHA-256-derived hash used by evaluation manifests
+and resume protection.
+
+The production default is intentionally **not promoted by this implementation commit**:
+`DEFAULT_RETRIEVAL_KNOBS` remains the exact pre-M7 behavior (intent disabled, recency off). Promotion
+requires the preregistered eight-profile MultiHop tuning run, untouched holdout bootstrap/Bonferroni
+gate, latency/degradation/error checks, actual query-plan inspection, and a setup-once NovaByte
+baseline/candidate comparison through the exact answer pipeline. The pure/live implementation gates
+are green (typecheck; 812 pass, 17 intentional skip, 0 fail; doctor 82/82; performance 10/10). Corpus
+load and the sweep required explicit data-egress approval (corpus chunks, questions, and/or retrieved
+evidence leave the machine for the configured embedding provider) because the first provider-backed
+baseline attempt was rejected by the host's safety review; that approval was obtained and both ran to
+completion.
+
+**The preregistered holdout gate ran and failed — production stays on baseline, and that is the correct
+outcome, not a defect.** `bun run eval:sweep --dataset multihop --variant plain` (seed 42, 1579/676
+tuning/holdout split, 8 preregistered configs, 10,000-resample paired bootstrap, Bonferroni correction
+across 12 planned comparisons) is recorded in full in `eval/multihop-m7-latest.md`. On the tuning split,
+`gbrain-fusion-only` (fusion reweighting alone, intent table not enabled) was the nominal winner —
+all@8 39.01% vs. baseline's 38.76%, MRR 0.7469 vs. 0.7455, ~17% faster p50 (1585ms vs. 1899ms), 7
+questions fixed vs. 3 broken. On the **untouched holdout set**, that gain did not clear the preregistered
+bar: mean delta +0.44% (confidence interval 0%-1.33%), raw p=0.0996, Bonferroni-adjusted p=1 — not
+significant overall, and none of the type/hop/intent subgroups reached significance either. Zero
+degraded or errored candidates; holdout p95 latency was ~14% faster as a side effect, but that was never
+the gate criterion. The full intent+recency configs (`gbrain-intent-recency-on`/`-strong`) flipped far
+more questions in both directions (24-27 fixed, 26-32 broken) without a net accuracy improvement —
+recency changes a lot of answers on this corpus, it does not clearly improve them.
+
+Per the rule stated above — *a failed or unrun gate means baseline stays selected* —
+`DEFAULT_RETRIEVAL_KNOBS` correctly remains `BASELINE_RETRIEVAL_KNOBS` (intent disabled, recency off;
+see `retrieval-knobs.ts:192`). The NovaByte answer-quality comparator was not run: the holdout gate
+already vetoes promotion on its own, and running NovaByte against a config that already failed the
+statistical gate would not change that outcome. It stays available for the next sweep attempt — a
+different config set, more tuning data, or a corpus with real `effective_date`/`author` variance instead
+of the still-synthetic MultiHop load (D106/HANDOVER history). Do not flip the default on engineering
+confidence alone; any future promotion attempt needs its own preregistered holdout run through this same
+gate.

@@ -27,6 +27,11 @@ bun run eval:rag --dataset multihop --dry-run
 bun run eval:rag --dataset multihop
 ```
 
+`load:eval` sends document chunks to the configured embedding provider. `eval:rag`, `eval:sweep`,
+and the NovaByte evaluator send questions (and, for answers, retrieved evidence) to configured model
+providers. Treat those as real data-egress and paid calls; obtain the appropriate approval before
+running them on non-public or company data.
+
 Measured on the MultiHop corpus (609 documents, ~2,830 chunks per workspace), concurrency 4:
 
 | Step | Time | Cost |
@@ -99,14 +104,16 @@ Two live examples of why the second half matters:
 | **all-evidence-recall@k** | Every required document present within the first k chunks. The multi-hop bar, and the primary number. |
 | **evidence-recall@k** | Fraction of required documents found. Partial credit shows how far off a failure is. |
 | **hit@1 / MRR** | Position of the first required document. Comparable with the existing a17 numbers. |
-| **distinct-docs-in-context** | Unique documents the k chunks span. `MAX_PER_PAGE = 3` floors this at ⌈k/3⌉. |
+| **distinct-docs-in-context** | Unique documents the k chunks span. The baseline `maxPerPage = 2` floors this at ⌈k/2⌉. |
 | **candidate-recall** | Required documents present anywhere in the ~60-chunk **pre-fusion** pool. |
 
 ### Reading the k-curve — three causes, not two
 
-Every arm is capped independently of `topK`: `ARM_LIMIT` 20 (vector), `KW_AND_SLOTS` 20,
-`KW_OR_SLOTS` 10, `TITLE_LIMIT` 10. **Fusion never sees more than ~60 candidates at any k.** `topK`
-controls how many survive fusion, not how many enter it.
+Every arm is capped independently of `topK` by the selected retrieval policy: baseline limits are
+20 vector, 20 keyword-AND, 10 keyword-OR, and 10 title. **Fusion sees at most 60 baseline
+candidates.** M7's SQL uses the larger of `fetchK × 4` and the sum of all arm limits as its bounded
+post-fusion capacity, so every admitted candidate is eligible for exact/recency rescoring. `topK`
+controls how many survive, not how many enter fusion.
 
 | Observation | Cause | Fix |
 | --- | --- | --- |
@@ -171,13 +178,52 @@ cannot say anything useful about abstention.
 
 ---
 
+## M7 held-out sweep and promotion gate
+
+M7 is a behavioral port of gbrain retrieval intelligence pinned to commit
+`8c70f6255047a7647adb30b1d6333a48068d9fa5`. It preserves Company Brain's RLS-scoped, one-statement
+search and changes ranking only inside the bounded candidate pool. The selected code default remains
+`BASELINE_RETRIEVAL_KNOBS` until both gates below pass.
+
+The sweep is preregistered: seed 42; 70% tuning and 30% untouched holdout; joint stratification by
+question type and required-document count; recency frozen to one day after the corpus's latest
+publication date. Tuning runs exactly these profiles: `baseline`, `gbrain-exact-only`,
+`gbrain-fusion-only`, `gbrain-intent`, `recency-auto-only`, `gbrain-intent-auto-recency`,
+`gbrain-intent-recency-on`, and `gbrain-intent-recency-strong`. Only baseline and the tuning winner
+may touch holdout.
+
+```bash
+# MultiHop corpus must already be loaded into the seeded plain workspace.
+bun run eval:sweep --dataset multihop --variant plain
+
+# Load NovaByte once, then reuse the verified corpus for both answer-pipeline runs.
+DATASET=/path/to/novabyte-test-dataset bun run eval:novabyte:setup
+DATASET=/path/to/novabyte-test-dataset bun run eval:novabyte --retrieval-profile baseline
+DATASET=/path/to/novabyte-test-dataset bun run eval:novabyte --retrieval-profile candidate
+bun run compare:novabyte --old eval/runs/novabyte-baseline.json \
+  --new eval/runs/novabyte-candidate.json
+```
+
+Sweep rows checkpoint immediately under `eval/runs/`. Resume with `--resume <run-id>`; it refuses a
+different dataset hash, split/ID hash, seed, schema, model, config definition, knob hash, or recency
+clock. Ten consecutive keyword-only degradations or a sustained error rate abort rather than silently
+shrinking the denominator. The winner needs a strictly positive Bonferroni-adjusted paired-bootstrap
+holdout result, no significant type/hop/intent regression, p95 latency within 10% of baseline, and no
+degraded or errored comparison rows. NovaByte additionally refuses any answer/citation/injection,
+ACL, leak, hit@3, aggregate retrieval, dataset/model, or loaded-corpus regression.
+
+The A17 top-eight comparator is now named `compare:a17-top8`; `score:top8` remains a compatibility
+alias. It is not the NovaByte promotion gate.
+
+---
+
 ## Environment interactions that change what you are measuring
 
 | Variable | Default | Effect if set |
 | --- | --- | --- |
 | `RERANK_MODEL` | `''` (off) | **The run refuses to start.** Reranking makes `fetchK = topK × 4`, so the top-8 of a pooled run is not a real k=8 run and the sweep would measure the reranker. |
 | `QUERY_EXPANSION` | `0` (off) | **Refuses without `--allow-paid-retrieval`** — it makes a paid `chat()` call per question, so the "free" run becomes 2,556 paid calls. |
-| `AUTOCUT_RATIO` | `0` | **Refuses if non-zero.** The harness slices one retrieval for all cutoffs; autocut runs *after* the topK slice, which invalidates that. |
+| `CB_RETRIEVAL_KNOBS_JSON` | `{}` | Trusted server-wide partial policy override, validated at startup. Example: `{"recency":{"mode":"off"}}`. The ordinary pooled harness refuses a non-zero `fusion.autocutRatio`; M7's registered sweep supplies complete internal profiles and records their hashes. |
 | `FRONTIER_MODEL` | `''` | Unused here (no judge). Worth knowing: `chat()` falls through to `CHAT_MODEL` when it is empty, so a judge would silently *be* the model under test. |
 
 ---

@@ -21,7 +21,8 @@ import { fakeEmbedVector, installFakeAiFetch } from './helpers/fake-ai.ts';
 import { adminSql, appSql, withScopedTx, closePools } from '../src/db/client.ts';
 import { buildContext, resolveGrants, type OperationContext } from '../src/core/context.ts';
 import { toVectorLiteral } from '../src/ai/vector.ts';
-import { hybridSearch, keywordQueryText, MAX_PER_PAGE } from '../src/search/hybrid.ts';
+import { hybridSearch, keywordQueryText } from '../src/search/hybrid.ts';
+import { BASELINE_RETRIEVAL_KNOBS } from '../src/search/retrieval-knobs.ts';
 import { answerQuestion } from '../src/answer/answer.ts';
 import { config } from '../src/config.ts';
 
@@ -44,6 +45,7 @@ const NOISE_CHUNKS = 200;
 const SMALL_PAGES = 4;
 const SMALL_CHUNKS_PER_PAGE = 4;
 const TOP_K = 8;
+const MAX_PER_PAGE = BASELINE_RETRIEVAL_KNOBS.candidatePool.maxPerPage;
 
 /** Close to the query vector: the noisy tenant crowds out everyone else's candidates. */
 function nearVector(i: number): number[] {
@@ -228,16 +230,16 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
       expect(title, 'the title arm matches this query — pick a term absent from all titles').toBe(0);
     }, 120_000);
 
-    it('A2: at this corpus size the planner picks the EXACT plan, via idx_chunks_acl', async () => {
+    it('A2: at this corpus size the planner picks an EXACT tenant index, not HNSW', async () => {
       // MEASURED, and it is the reason A3/A4 below have to force the plan.
       //
-      //   Limit -> Sort(dist) -> Bitmap Heap Scan -> Bitmap Index Scan on idx_chunks_acl
+      //   Limit -> Sort(dist) -> tenant-bounded index scan
       //
       // The HNSW index is never touched. `current_grants()` is wrapped in `(SELECT …)`, which makes it
-      // an InitPlan, and an InitPlan output is a valid index-qual RHS — so idx_chunks_acl serves the
-      // RLS predicate directly, hands back only this tenant's rows, and an exact sort over 16 rows is
-      // cheaper than any approximate scan. That is the ACL index doing exactly what 0007:76-79
-      // designed it for, and a side effect nothing in the repo records: it keeps the planner OUT of
+      // an InitPlan, and an InitPlan output is a valid index-qual RHS. Before migration 0015 the
+      // chosen path was idx_chunks_acl; after D106/0019 the workspace-leading
+      // idx_chunks_ws_effdate may be cheaper even with no date bound. Both are exact tenant scans
+      // followed by a sort, which is the property this control needs: it keeps the planner OUT of
       // the post-filter regime hnsw.iterative_scan exists to fix, so D58's hazard is latent at this
       // scale rather than absent (a production corpus, where the tenant's share is small in absolute
       // terms too, is where the planner crosses over).
@@ -253,7 +255,10 @@ describe.skipIf(!live)('perf/scale — the three properties gated apart from the
           limit 20`;
         return JSON.stringify(rows[0]!['QUERY PLAN']);
       });
-      expect(plan, `expected the exact plan via idx_chunks_acl; got: ${plan}`).toContain('idx_chunks_acl');
+      expect(
+        plan.includes('idx_chunks_acl') || plan.includes('idx_chunks_ws_effdate'),
+        `expected an exact tenant index plan; got: ${plan}`,
+      ).toBe(true);
       expect(plan).not.toContain('idx_chunks_embedding');
     }, 120_000);
 

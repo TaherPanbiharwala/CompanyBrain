@@ -65,16 +65,24 @@ product capability.
 
 **Depends on M6** (recency needs `effective_date`).
 
+**Status (2026-09-06): implemented behind the baseline default; promotion evidence is pending.**
+The commit-pinned behavioral port, one-statement SQL integration, typed policy resolver, eight-profile
+held-out sweep, and NovaByte comparator are built and locally green. The plain MultiHop eval workspace
+is seeded but its corpus is not loaded: corpus/query embedding and NovaByte answer runs send data to
+the configured external model providers and still require explicit data-egress approval. Until those
+gates run and pass, `DEFAULT_RETRIEVAL_KNOBS` intentionally aliases the exact baseline profile.
+
 | Ship | Evidence this is worth building |
 | --- | --- |
-| Injectable knobs (`RetrievalKnobs` on `hybridSearch`) | Every retrieval constant is currently a module `const`; each experiment costs a code edit and a full run. This is what turned a 6-hour tuning cycle into a 23-minute one for `MAX_PER_PAGE`. |
+| Injectable knobs (`RetrievalKnobs` on `hybridSearch`) | Implemented as one deeply immutable policy, with validated server-wide JSON and trusted internal per-call overrides. Public HTTP/MCP schemas do not expose it. |
 | Intent classifier + per-intent fusion weights | **Measured on the full 2,255-question MultiHop run:** `inference_query` scores 22.8% vs `comparison_query` 51.9% at k=8 (n=816 vs n=856). A 29-point gap is exactly what gbrain's `entity` intent (`keywordWeight 1.15`, `exactMatchBoost 1.25`) targets — "who is X" lookups should lean keyword, not vector. |
-| Recency decay, **shipped OFF by default** | Hyperbolic per-halflife curve, one global default, gbrain's override cascade (default → config → env → per-call). Only usable once M6 lands `effective_date`. |
-| `sweep-eval.ts` with a held-out split | The tuning loop: N named configs in, one comparison table out, with per-hop-count and latency-delta columns so a config that helps one bucket and hurts another can't hide in an aggregate. |
+| Recency decay, **shipped OFF by default** | Implemented with M6 `effective_date`, a frozen evaluation clock, and off/auto/on/strong modes. Null dates are neutral and future dates clamp to age zero. |
+| `eval:sweep` with a held-out split | Implemented with a joint type × required-document-count split, immutable resume contract, eight registered profiles, per-hop/type/intent reporting, and a paired-bootstrap/Bonferroni promotion gate. |
 
-**Exit criteria:** a sweep runs 6+ configs and reports per-hop-count, per-type, and p50/p95 latency
-per config; no config is promoted into `DEFAULT_KNOBS` without the NovaByte answer-quality scorer
-agreeing (fixed this session — `9a7ceb0` — so this gate is now usable).
+**Exit criteria:** the full provider-backed sweep reports all eight configurations; the untouched
+holdout gate passes; the actual MultiHop query plan preserves the stored FTS/GIN and HNSW paths plus
+the lateral hydration fence; and the strict NovaByte baseline/candidate comparison passes. Only then
+may `DEFAULT_RETRIEVAL_KNOBS` change. See `docs/eval-rag.md`; D110 records the current boundary.
 
 **Size:** 2 weeks / 2–4 days. Highest measured value per day of anything in this roadmap — the
 intent gap is not a hypothesis, it is a number already sitting in `eval/multihop-latest.md`.

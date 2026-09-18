@@ -8,8 +8,21 @@ import type { OperationContext } from '../core/context.ts';
 import { withScopedTx } from '../db/client.ts';
 import { embed, withRouterScope, rerank, isRerankEnabled, expandQuery, isExpansionEnabled } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
-import { RRF_K } from './rrf.ts';
 import { formatLocator, type Locator } from '../ingest/blocks.ts';
+import { config } from '../config.ts';
+import { classifyQuery, type QueryIntent } from './query-intent.ts';
+import {
+  DEFAULT_RETRIEVAL_KNOBS,
+  effectiveIntentWeights,
+  effectiveRecencyMode,
+  normalizeExactQuery,
+  resolveRetrievalKnobs,
+  retrievalKnobHash,
+  type IntentWeights,
+  type RetrievalKnobOverrides,
+  type RetrievalKnobs,
+} from './retrieval-knobs.ts';
+import type { EffectiveRecencyMode } from './recency-decay.ts';
 
 export interface ChunkHit {
   chunkId: string;
@@ -35,7 +48,8 @@ export interface ChunkHit {
    *  source", which is the question a permission-scoped answer has to be able to answer — and there
    *  was no way to ask it before, because `list_pages` returned `scope` and search did not. */
   scope: string;
-  /** BLENDED score: `BLEND_RRF * (rrf / max rrf) + BLEND_COS * cosine similarity`, not raw RRF.
+  /** Policy-blended score: `rrfBlend * (rrf / max rrf) + cosineBlend * cosine similarity`,
+   *  followed by any exact/recency factors; it is not raw RRF.
    *  Comparable WITHIN one result set only — the normalisation is per-query. */
   score: number;
 }
@@ -57,27 +71,7 @@ interface FusedRow {
  *  next one — CONTEXT.md §6.7 records a committed report that described a superseded engine. */
 export const DEFAULT_TOP_K = 8;
 
-/** VECTOR-arm candidates fetched before fusion. The keyword arm is bounded by KW_OR_SLOTS and the
- *  title arm by TITLE_LIMIT; this constant no longer applies to them. */
-export const ARM_LIMIT = 20;
-
-/** How many keyword rows that matched only the OR tier may enter fusion. See KEYWORD ARM below. */
-export const KW_OR_SLOTS = 10;
-
-/** How many AND-tier rows may enter fusion. Larger than KW_OR_SLOTS because containing every term
- *  of the question is strong evidence — but bounded, because on a short query EVERY match is
- *  AND-tier and "strong evidence" stops discriminating. */
-export const KW_AND_SLOTS = 20;
-
-/** Title-arm candidates. Small on purpose: a title match is a weak signal on its own. */
-export const TITLE_LIMIT = 10;
-
-/** How many extra candidates to fetch when a reranker is on. A cross-encoder that only sees the
- *  final topK can reorder them and nothing else — the value of reranking is promoting something
- *  fusion ranked 15th, which requires having fetched a 15th. */
-const RERANK_OVERFETCH = 4;
-
-/** At most this many chunks from any single page may occupy the final result set.
+/* The baseline maxPerPage=2 limits how many chunks one page may occupy in the final result set.
  *
  *  Load-bearing, not a nicety, and increasingly so: a 50-column spreadsheet row-chunked with its
  *  header repeated produces N near-identical embeddings, so without this one sheet can occupy every
@@ -107,40 +101,6 @@ const RERANK_OVERFETCH = 4;
  *     the configuration that maximises document count; that is the reason to distrust the larger
  *     number, and the reason this one wants a NovaByte answer-quality check before it is treated as
  *     settled. */
-export const MAX_PER_PAGE = 2;
-
-// Arm weights, positionally identical to the union order below. Exported so test/hybrid.test.ts
-// fuses with the SAME numbers the SQL uses — duplicating them there would let the two drift while
-// the equivalence assertion stayed green.
-//
-// FOUR arms, not three, because the two keyword tiers are different STRENGTHS OF EVIDENCE and one
-// weight cannot say so. "Contains every word of the question" and "shares one word with it" were
-// fused identically; tier ordering only moves a row within its list, which shifts rank by one or two
-// and barely changes the RRF contribution.
-//
-// That split is MEASURED (D65), on the ten labelled A17 questions. With one shared keyword weight,
-// top-1 precision fell on exactly the flooding cases the tiering was supposed to fix — q8's answer
-// sits at ts_rank_cd 0.9 beneath noise at 1.5 and 1.2, and q10 is the same shape:
-//
-//   before this milestone   MRR 1.000   first-relevant@1 10/10   all-relevant-in-top8  9/10
-//   one keyword weight      MRR 0.883   first-relevant@1  8/10   all-relevant-in-top8 10/10
-//   tiers split (shipped)   MRR 0.950   first-relevant@1  9/10   all-relevant-in-top8 10/10
-//
-// The remaining 0.05 is q10 alone, where the first relevant document moved from rank 1 to rank 2 and
-// its partner moved 4 -> 2: a reshuffle inside the relevant set, traded for a document q6 was
-// missing entirely. Read those numbers with the corpus in mind — 14 chunks and 10 questions scoring
-// 1.000 before any change is a saturated benchmark, which can show a SHAPE but cannot justify a
-// tuned constant. The values below stay conservative and deliberately round.
-export const W_KW_AND = 1.0;
-export const W_KW_OR = 0.4;
-export const W_VEC = 1.0;
-export const W_TITLE = 0.5;
-
-// Final re-score blend, gbrain's 0.7/0.3. Applied to the ORDERING only — the candidate SET is
-// decided entirely by fusion above, so this can reorder the shortlist but never introduce a row the
-// arms did not find or remove one they did.
-export const BLEND_RRF = 0.7;
-export const BLEND_COS = 0.3;
 
 /**
  * Autocut: discard hits scoring below this fraction of the best hit. **0 disables it.**
@@ -160,22 +120,18 @@ export const BLEND_COS = 0.3;
  * rewrite — but it stays off until there is a corpus that can show it helping. Autocut is the only
  * retrieval control here that can ONLY remove results.
  */
-export const AUTOCUT_RATIO = 0;
-
 /** Drop the tail below `ratio` of the top score. Returns the dropped count so the caller can say so
  *  out loud — a silent recall cut is the failure mode this whole control has to justify itself
  *  against. */
-export function autocut(hits: ChunkHit[], ratio: number = AUTOCUT_RATIO): { kept: ChunkHit[]; dropped: number } {
+export function autocut(
+  hits: ChunkHit[],
+  ratio: number = DEFAULT_RETRIEVAL_KNOBS.fusion.autocutRatio,
+): { kept: ChunkHit[]; dropped: number } {
   if (ratio <= 0 || hits.length === 0) return { kept: hits, dropped: 0 };
   const floor = hits[0]!.score * ratio;
   const kept = hits.filter((h) => h.score >= floor);
   return { kept, dropped: hits.length - kept.length };
 }
-
-/** Terms below this length carry no retrieval signal and inflate the OR query. */
-const MIN_TERM_CHARS = 3;
-/** Cap on OR terms, so a 2000-character question cannot build a pathological tsquery. */
-const MAX_TERMS = 32;
 
 /**
  * Build the OR-joined query text for `websearch_to_tsquery`.
@@ -191,12 +147,15 @@ const MAX_TERMS = 32;
  * no user text is ever concatenated into SQL: this returns a STRING that is passed as a bind
  * parameter, and the tokens are stripped to `[a-z0-9]` besides.
  */
-export function keywordQueryText(query: string): string {
+export function keywordQueryText(
+  query: string,
+  keyword: Readonly<RetrievalKnobs['keyword']> = DEFAULT_RETRIEVAL_KNOBS.keyword,
+): string {
   const seen = new Set<string>();
   for (const raw of query.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (raw.length < MIN_TERM_CHARS) continue;
+    if (raw.length < keyword.minTermChars) continue;
     seen.add(raw);
-    if (seen.size >= MAX_TERMS) break;
+    if (seen.size >= keyword.maxTerms) break;
   }
   // `OR` is websearch_to_tsquery's disjunction keyword. Terms are lowercased above, so no term can
   // ever collide with it.
@@ -206,9 +165,45 @@ export function keywordQueryText(query: string): string {
 /** Why a result set is worse than it should be. Absent means "nothing was wrong". */
 export type SearchDegradation = 'keyword_only';
 
+export interface SearchDiagnostics {
+  intent: QueryIntent;
+  recencyMode: EffectiveRecencyMode;
+  knobHash: string;
+}
+
 export interface SearchOutcome {
   hits: ChunkHit[];
   degraded?: SearchDegradation;
+  diagnostics: SearchDiagnostics;
+}
+
+/** Internal-only controls. Public HTTP/MCP operations deliberately do not accept these fields. */
+export interface HybridSearchOptions {
+  topK?: number;
+  /** Only chunks whose effective_date is on or after this ISO date (migration 0014). */
+  since?: string;
+  /** Only chunks whose effective_date is on or before this ISO date. */
+  until?: string;
+  /** Only chunks whose author matches, case- and whitespace-insensitively. */
+  author?: string;
+  /** Trusted server/evaluation callers only. */
+  knobs?: RetrievalKnobOverrides;
+  /** Deterministic evaluation clock. Bound into SQL, never interpolated as syntax. */
+  recencyAsOf?: string;
+  /**
+   * A trusted, already-computed query embedding. Evaluation may reuse this exact value across
+   * policy variants; public callers cannot supply HybridSearchOptions.
+   */
+  queryVector?: readonly number[];
+}
+
+function validatedAsOf(value: string | undefined): string {
+  if (value === undefined) return new Date().toISOString().slice(0, 10);
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new Error('recencyAsOf must be a valid ISO date (YYYY-MM-DD)');
+  }
+  return value;
 }
 
 /** Retrieve, and say so when the answer is built on less than it should be.
@@ -219,21 +214,23 @@ export interface SearchOutcome {
 export async function hybridSearch(
   ctx: OperationContext,
   query: string,
-  opts?: {
-    topK?: number;
-    /** Only chunks whose effective_date is on or after this ISO date (migration 0014). */
-    since?: string;
-    /** Only chunks whose effective_date is on or before this ISO date. */
-    until?: string;
-    /** Only chunks whose author matches, case- and whitespace-insensitively. */
-    author?: string;
-  },
+  opts?: HybridSearchOptions,
 ): Promise<SearchOutcome> {
+  const knobs = resolveRetrievalKnobs({ defaults: config.retrievalKnobs, caller: opts?.knobs });
+  const classification = classifyQuery(query);
+  const intentWeights = effectiveIntentWeights(knobs, classification.intent);
+  const recencyMode = effectiveRecencyMode(knobs, classification);
+  const recencyAsOf = validatedAsOf(opts?.recencyAsOf);
+  const diagnostics: SearchDiagnostics = {
+    intent: classification.intent,
+    recencyMode,
+    knobHash: retrievalKnobHash(knobs),
+  };
   const topK = opts?.topK ?? DEFAULT_TOP_K;
 
   // Reranking needs more candidates than it returns, or it can only reorder what fusion already
   // chose — which is the cheapest possible version of the idea and not worth a provider call.
-  const fetchK = isRerankEnabled() ? topK * RERANK_OVERFETCH : topK;
+  const fetchK = isRerankEnabled() ? topK * knobs.candidatePool.rerankOverfetch : topK;
 
   // Expansion widens the KEYWORD arm's vocabulary only, and it lands in the OR tier for free —
   // `and_tier` is computed from the ORIGINAL question, so a paraphrase can never promote a chunk
@@ -245,7 +242,7 @@ export async function hybridSearch(
   const expansions = isExpansionEnabled()
     ? await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => expandQuery(query))
     : [];
-  const orQuery = keywordQueryText([query, ...expansions].join(' '));
+  const orQuery = keywordQueryText([query, ...expansions].join(' '), knobs.keyword);
 
   // Embed OUTSIDE any DB transaction (D6).
   //
@@ -256,19 +253,23 @@ export async function hybridSearch(
   // of this function, logged here, and stated to the model in the prompt.
   let vectorLiteral: string | null = null;
   let degraded: SearchDegradation | undefined;
-  try {
-    const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([query]));
-    vectorLiteral = toVectorLiteral(queryVector!);
-  } catch (err) {
-    degraded = 'keyword_only';
-    // Counts and a code, never the query text (D28).
-    console.log(JSON.stringify({
-      level: 'warn',
-      kind: 'retrieval_degraded',
-      workspace: ctx.workspaceId,
-      degraded,
-      reason: (err as { providerCode?: string; status?: number }).providerCode ?? (err as { status?: number }).status ?? 'unknown',
-    }));
+  if (opts?.queryVector) {
+    vectorLiteral = toVectorLiteral(opts.queryVector);
+  } else {
+    try {
+      const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([query]));
+      vectorLiteral = toVectorLiteral(queryVector!);
+    } catch (err) {
+      degraded = 'keyword_only';
+      // Counts and a code, never the query text (D28).
+      console.log(JSON.stringify({
+        level: 'warn',
+        kind: 'retrieval_degraded',
+        workspace: ctx.workspaceId,
+        degraded,
+        reason: (err as { providerCode?: string; status?: number }).providerCode ?? (err as { status?: number }).status ?? 'unknown',
+      }));
+    }
   }
   // Gates the vector arm off entirely rather than embedding a zero vector: a zero vector is not
   // "no opinion", it is a specific point in the space, and every chunk would be ranked by distance
@@ -286,6 +287,10 @@ export async function hybridSearch(
       since: opts?.since ?? null,
       until: opts?.until ?? null,
       author: opts?.author ?? null,
+      knobs,
+      intentWeights,
+      recencyMode,
+      recencyAsOf,
     }),
   );
 
@@ -329,7 +334,7 @@ export async function hybridSearch(
   }
   hits = hits.slice(0, topK);
 
-  const { kept, dropped } = autocut(hits);
+  const { kept, dropped } = autocut(hits, knobs.fusion.autocutRatio);
   if (dropped > 0) {
     // One structured line, matching defaultLogSink's shape. Counts only — no query text and no
     // content (D28). Unconditional rather than debug-gated: a control that quietly shrinks the
@@ -341,10 +346,10 @@ export async function hybridSearch(
       workspace: ctx.workspaceId,
       returned: kept.length,
       dropped,
-      ratio: AUTOCUT_RATIO,
+      ratio: knobs.fusion.autocutRatio,
     }));
   }
-  return { hits: kept, degraded };
+  return { hits: kept, degraded, diagnostics };
 }
 
 /** The parameters the one statement below is built from. Named, because the diagnostic script has to
@@ -364,6 +369,10 @@ export interface HybridQueryParams {
   since: string | null;
   until: string | null;
   author: string | null;
+  knobs: Readonly<RetrievalKnobs>;
+  intentWeights: Readonly<IntentWeights>;
+  recencyMode: EffectiveRecencyMode;
+  recencyAsOf: string;
 }
 
 /**
@@ -416,7 +425,19 @@ export function hybridQuery(
   tx: postgres.TransactionSql,
   p: HybridQueryParams,
 ): postgres.PendingQuery<FusedRow[]> {
-  const { query, orQuery, vectorLiteral, hasVector, fetchK, since, until, author } = p;
+  const {
+    query, orQuery, vectorLiteral, hasVector, fetchK, since, until, author,
+    knobs, intentWeights, recencyMode, recencyAsOf,
+  } = p;
+  const { candidatePool, fusion, recency } = knobs;
+  const keywordK = fusion.rrfK / intentWeights.keywordWeight;
+  const vectorK = fusion.rrfK / intentWeights.vectorWeight;
+  const exactQuery = normalizeExactQuery(query);
+  const shortlistCapacity = Math.max(
+    fetchK * 4,
+    candidatePool.vectorLimit + candidatePool.keywordAndLimit +
+      candidatePool.keywordOrLimit + candidatePool.titleLimit,
+  );
   return tx<FusedRow[]>`
     with
     -- ── KEYWORD ARM ────────────────────────────────────────────────────────
@@ -455,8 +476,8 @@ export function hybridQuery(
     ),
     kw_split as (
       -- Ranked WITHIN each tier, which is what lets the two leave as separate arms below. Each list
-      -- then starts at rank 1 independently, so an AND-tier match contributes W_KW_AND/(k+0) while
-      -- the best OR-only match contributes W_KW_OR/(k+0) — the evidence gap expressed in the score
+      -- then starts at rank 1 independently, so an AND-tier match contributes its policy weight at
+      -- rank zero while the best OR-only match contributes its own — the evidence gap expressed in the score
       -- rather than in a rank offset that RRF barely notices.
       select id, page_id, and_tier, rank,
              row_number() over (partition by and_tier order by rank desc, id) as tier_rk
@@ -467,15 +488,15 @@ export function hybridQuery(
       -- leaving it open ("the AND tier is empty for 8 of 10 eval questions") is a property of LONG
       -- questions: for a one- or two-word ask, plainto_tsquery and websearch_to_tsquery match the
       -- SAME set, so and_tier is true on every matched chunk and the entire keyword match set flows
-      -- into fusion — defeating ARM_LIMIT, KW_OR_SLOTS and TITLE_LIMIT at once. Ranks are already
+      -- into fusion — defeating the independent vector, OR and title policy limits at once. Ranks are already
       -- dense from 1 within the tier, so the cut leaves no gaps in the RRF denominator.
-      select id, page_id, tier_rk as rk from kw_split where and_tier and tier_rk <= ${KW_AND_SLOTS}
+      select id, page_id, tier_rk as rk from kw_split where and_tier and tier_rk <= ${candidatePool.keywordAndLimit}
     ),
     kw_or as (
       -- The slot split: only the strongest OR-only rows enter fusion at all. Ranks are already dense
       -- from 1 within the tier, so the cut leaves no gaps — and rk is an RRF denominator, where a
       -- gap silently deflates every score below it.
-      select id, page_id, tier_rk as rk from kw_split where not and_tier and tier_rk <= ${KW_OR_SLOTS}
+      select id, page_id, tier_rk as rk from kw_split where not and_tier and tier_rk <= ${candidatePool.keywordOrLimit}
     ),
 
     -- ── VECTOR ARM ─────────────────────────────────────────────────────────
@@ -501,7 +522,7 @@ export function hybridQuery(
           and c.embedding is not null
           ${metadataFilter(tx, since, until, author)}
         order by c.embedding <=> ${vectorLiteral}::vector
-        limit ${ARM_LIMIT}
+        limit ${candidatePool.vectorLimit}
       ) v
     ),
 
@@ -527,7 +548,7 @@ export function hybridQuery(
         -- titles (physical order, on a seq scan) and the outer row_number() then ranked whatever
         -- happened to survive — so the rk values feeding RRF were not the title arm's best 10.
         order by rank desc, c.id
-        limit ${TITLE_LIMIT}
+        limit ${candidatePool.titleLimit}
       ) t
     ),
 
@@ -544,15 +565,15 @@ export function hybridQuery(
     -- page_id is carried through EVERY arm and grouped on, so the per-page cap below has something
     -- to partition by without a second join.
     fused as (
-      select id, page_id, sum(weight / (${RRF_K} + rk - 1))::float8 as score
+      select id, page_id, sum(weight / (effective_k + rk - 1))::float8 as score
       from (
-        select id, page_id, rk, ${W_KW_AND}::float8 as weight from kw_and
+        select id, page_id, rk, ${fusion.keywordAndWeight}::float8 as weight, ${keywordK}::float8 as effective_k from kw_and
         union all
-        select id, page_id, rk, ${W_KW_OR}::float8 from kw_or
+        select id, page_id, rk, ${fusion.keywordOrWeight}::float8, ${keywordK}::float8 from kw_or
         union all
-        select id, page_id, rk, ${W_VEC}::float8 from vec
+        select id, page_id, rk, ${fusion.vectorWeight}::float8, ${vectorK}::float8 from vec
         union all
-        select id, page_id, rk, ${W_TITLE}::float8 from title
+        select id, page_id, rk, ${fusion.titleWeight}::float8, ${keywordK}::float8 from title
       ) u
       group by id, page_id
     ),
@@ -573,9 +594,9 @@ export function hybridQuery(
     shortlist as (
       select id, page_id, score
       from capped
-      where page_rk <= ${MAX_PER_PAGE}
+      where page_rk <= ${candidatePool.maxPerPage}
       order by score desc, id
-      limit ${Math.max(fetchK * 4, 100)}
+      limit ${shortlistCapacity}
     ),
     -- ── FINAL CANDIDATES ───────────────────────────────────────────────────
     -- The joins happen HERE, before the final limit. That limit used to sit inside the fusion CTE,
@@ -606,7 +627,7 @@ export function hybridQuery(
     -- 367ms plan. "offset 0" is the documented optimisation fence that blocks the pull-up — a no-op
     -- semantically (offset 0 rows), which is precisely why it is safe, and it is the reason the
     -- LATERAL survives to mean what it says. With the fence the shortlist is necessarily the outer
-    -- relation and each of its (at most 100) rows is one primary-key lookup:
+    -- relation and each row (bounded by the validated arm capacity, at most 400) is one primary-key lookup:
     --
     --   before  Nested Loop … Rows Removed by Join Filter: 96152      232ms
     --   after   Index Scan using content_chunks_pkey … loops=34       0.3ms   (+ Memoize on pages)
@@ -614,7 +635,8 @@ export function hybridQuery(
     -- Same rows out, same order out. The work in is now bounded by a constant this file sets rather
     -- than by how large the tenant grew.
     candidates as (
-      select f.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator, p.scope,
+      select f.id as chunk_id, c.page_id, p.slug, p.title, c.ord, c.content, c.locator,
+             c.effective_date, p.scope,
              f.score as rrf,
              -- Cosine SIMILARITY (1 - distance), so bigger is better on both terms of the blend.
              -- coalesce because a chunk reached through the keyword or title arm may have no
@@ -626,13 +648,50 @@ export function hybridQuery(
       -- candidate, which is exactly what the inner joins above did. A left join would keep the row
       -- with null slug/scope and hand the caller a citation to a page it may not read.
       cross join lateral (
-        select cc.page_id, cc.ord, cc.content, cc.locator, cc.embedding
+        select cc.page_id, cc.ord, cc.content, cc.locator, cc.embedding, cc.effective_date
         from content_chunks cc where cc.id = f.id offset 0
       ) c
       cross join lateral (
         select pp.slug, pp.title, pp.scope
         from pages pp where pp.id = c.page_id offset 0
       ) p
+    ),
+    -- Restore score magnitude after RRF has safely combined incomparable arm scales. Every
+    -- candidate admitted by an arm reaches this stage because shortlistCapacity is derived from
+    -- the total configured arm capacity rather than the old fixed 100-row assumption.
+    base_scored as (
+      select *,
+             (${fusion.rrfBlend} * (rrf / nullif(max(rrf) over (), 0)) +
+              ${fusion.cosineBlend} * cos_sim)::float8 as base_score
+      from candidates
+    ),
+    -- Exact title/slug and recency factors are applied BEFORE duplicate selection and final top-k.
+    -- All values, including the deterministic evaluation clock, are bind parameters.
+    adjusted as (
+      select *,
+        (base_score *
+          case
+            when ${exactQuery.normalized}::text <> '' and (
+              lower(slug) = ${exactQuery.normalized}
+              or lower(slug) = ${exactQuery.kebab}
+              or right(lower(slug), length(${exactQuery.kebab}::text) + 1) = '/' || ${exactQuery.kebab}
+              or lower(trim(coalesce(title, ''))) = ${exactQuery.normalized}
+            )
+            then ${intentWeights.exactMatchBoost}::float8 else 1::float8
+          end *
+          case
+            when ${recencyMode}::text = 'off'
+              or effective_date is null
+              or ${recency.halflifeDays}::float8 = 0
+              or ${recency.coefficient}::float8 = 0
+            then 1::float8
+            else 1::float8 +
+              (case when ${recencyMode}::text = 'strong' then 1.5::float8 else 1::float8 end) *
+              ${recency.coefficient}::float8 * ${recency.halflifeDays}::float8 /
+              (${recency.halflifeDays}::float8 + greatest(0, ${recencyAsOf}::date - effective_date))
+          end
+        )::float8 as adjusted_score
+      from base_scored
     ),
     -- ── EXACT-DUPLICATE COLLAPSE ───────────────────────────────────────────
     -- Byte-identical chunk text can legitimately appear on several pages: a boilerplate clause, a
@@ -646,22 +705,14 @@ export function hybridQuery(
     --
     -- Deliberately NOT adjacent-locator collapse, which the plan also lists: merging neighbouring
     -- chunks changes what a citation POINTS AT, and the per-page cap above already bounds the
-    -- redundancy to MAX_PER_PAGE. That belongs in its own change, with the citation contract in view.
+    -- redundancy to candidatePool.maxPerPage. That belongs in its own change, with the citation contract in view.
     deduped as (
-      select *, row_number() over (partition by md5(content) order by rrf desc, chunk_id) as dup_rk
-      from candidates
+      select *, row_number() over (partition by md5(content) order by adjusted_score desc, chunk_id) as dup_rk
+      from adjusted
     )
-    -- ── COSINE RE-SCORE BLEND ──────────────────────────────────────────────
-    -- RRF deliberately throws away magnitude: it sees only rank, so a vector hit at distance 0.05
-    -- and one at 0.45 contribute identically if they landed at the same position. That is what makes
-    -- RRF robust across arms with incomparable scales, and it is also what makes it blunt at the top
-    -- of a short list. This blend puts the magnitude back for the FINAL ordering only.
-    --
-    -- The RRF term is normalised by the best score in this candidate set, because RRF scores have no
-    -- absolute scale — an unnormalised sum of ~1/60 terms would be swamped by a cosine similarity of
-    -- ~0.8 and the blend would silently become a pure vector sort.
+    -- ── FINAL ADJUSTED ORDER ───────────────────────────────────────────────
     select chunk_id, page_id, slug, title, ord, content, locator, scope,
-           (${BLEND_RRF} * (rrf / nullif(max(rrf) over (), 0)) + ${BLEND_COS} * cos_sim)::float8 as score
+           adjusted_score::float8 as score
     from deduped
     where dup_rk = 1
     order by score desc, chunk_id
