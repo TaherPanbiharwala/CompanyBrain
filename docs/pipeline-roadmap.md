@@ -94,6 +94,18 @@ intent gap is not a hypothesis, it is a number already sitting in `eval/multihop
 The infrastructure every enrichment phase in M9–M10 needs. Build once, deliberately, or build it
 eight times badly inside eight separate phase scripts.
 
+**Status (2026-09-18): implemented and live-verified — the exit criterion passes for real.** Built
+ahead of this section's own recommendation below (the founder chose to; see D111 for the full
+rationale, including why "advisory locks" below became a row-based lock table instead — `appSql()`'s
+transaction pooler makes a session-scoped `pg_advisory_lock` unsafe here, the same reason gbrain's own
+reference implementation uses a row-based table rather than the Postgres primitive its name suggests).
+Typecheck and the offline suite are clean; migration `0020` is applied to the shared Supabase project;
+`doctor` is 82/82 with the fixture diff reviewed as a security change; both live suites pass, including
+`test/cycle-kill9.live.test.ts` — a real `kill -9` against a real subprocess, a real crash-recovered
+lock reclaim, a real resumed-not-restarted checkpoint. Two more real bugs (jsonb double-encoding on
+write; the lock's ~60s unconditional reclaim floor) surfaced only by running against the database —
+see D111 and `HANDOVER.md`'s "Milestone 8" section for the full account.
+
 | Ship | gbrain reference |
 | --- | --- |
 | Phase runner + base class | `cycle.ts` (2,505 lines), `cycle/base-phase.ts` |

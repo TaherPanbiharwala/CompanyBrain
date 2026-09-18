@@ -1,6 +1,7 @@
 // One-off admin-pool script: hard-deletes pages soft-deleted (migration 0014) more than the grace
-// period ago. No cron/scheduler infrastructure exists in this repo yet (that is M8's job, per
-// docs/pipeline-roadmap.md) — run this by hand, or wire it to any external scheduler.
+// period ago. M8 (docs/pipeline-roadmap.md) added the repo's first scheduled workflow
+// (.github/workflows/cycle.yml) but only for the cycle engine's own phases — this script is not
+// wired into it. Run this by hand, or wire it to any external scheduler.
 //
 // MUST run on the admin pool, not a scoped tx: a soft-deleted row's deleted_at IS NOT NULL, which the
 // RLS USING clause (migration 0014) makes invisible to every cb_app connection — a scoped-tx script

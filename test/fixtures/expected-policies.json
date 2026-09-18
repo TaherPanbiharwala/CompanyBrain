@@ -27,6 +27,42 @@
     "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
   },
   {
+    "tablename": "cycle_budget_ledger",
+    "policyname": "cycle_budget_ledger_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "permissive": "PERMISSIVE",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "cycle_failures",
+    "policyname": "cycle_failures_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "permissive": "PERMISSIVE",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "cycle_locks",
+    "policyname": "cycle_locks_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "permissive": "PERMISSIVE",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "ingest_log",
+    "policyname": "ingest_log_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "permissive": "PERMISSIVE",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
     "tablename": "invites",
     "policyname": "invites_auth",
     "roles": "{cb_auth}",
@@ -38,6 +74,15 @@
   {
     "tablename": "invites",
     "policyname": "invites_ws",
+    "roles": "{public}",
+    "cmd": "ALL",
+    "permissive": "PERMISSIVE",
+    "qual": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))",
+    "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
+  },
+  {
+    "tablename": "op_checkpoints",
+    "policyname": "op_checkpoints_ws",
     "roles": "{public}",
     "cmd": "ALL",
     "permissive": "PERMISSIVE",

@@ -194,6 +194,10 @@ test('every suite gated on a live database routes through liveOrFail', () => {
 const REQUIRED_LIVE_SUITES = [
   'answer',
   'api',
+  // M8's storage substrate (locks, checkpoints, budget ledger, failure ledger) and the
+  // kill-9/resume exit criterion — see test/cycle.live.test.ts and test/cycle-kill9.live.test.ts.
+  'cycle',
+  'cycle-kill9',
   'hybrid',
   'ingest',
   // The batch page ops (delete_page's pageIds arm, rescope_pages). Registered deliberately rather

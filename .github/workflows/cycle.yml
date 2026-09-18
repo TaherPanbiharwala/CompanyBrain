@@ -1,0 +1,41 @@
+name: Cycle engine
+
+# M8 (docs/pipeline-roadmap.md) — the repo's first scheduled workflow. Runs `bun run cycle` against
+# the one shared Supabase project (same project ci.yml's `live` job uses — see
+# company-brain-ci-decisions: a separate CI project is a planned, not-yet-done step). Its own
+# concurrency group keeps scheduled runs serialized against EACH OTHER without blocking or being
+# blocked by ci.yml's `live` job, which uses a differently-named group.
+#
+# Cadence is a placeholder (hourly) — the roadmap's exit criteria only says "runs on a schedule", no
+# cadence is specified anywhere, and there is no real enrichment phase yet to have a freshness
+# requirement. Tighten or loosen once M9+ gives this something with actual staleness to care about.
+#
+# Never runs `bun run migrate` — assumes the target DB is already migrated, so a scheduled tick
+# can't race or interact with ci.yml's migration-serialization concerns.
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: cycle-engine-shared-db
+  cancel-in-progress: false
+
+jobs:
+  run-cycle:
+    name: run cycle (noop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+
+      - name: Run cycle
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
+        run: bun run cycle --phase noop

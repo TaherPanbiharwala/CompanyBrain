@@ -6,6 +6,8 @@
 // silently shipping without the workspace's ZDR (no-retention) preference (review sec S5).
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from '../config.ts';
+import { estimateTokens } from '../ingest/chunk.ts';
+import type { ActualUsage, BudgetCheckResult, SubmitEstimate } from '../core/cycle/budget-meter.ts';
 
 /** A provider failure, with enough structure to decide what to do about it.
  *
@@ -50,6 +52,13 @@ export class RouterError extends Error {
 interface RouterScope {
   workspaceId: string; // per-workspace binding; M5 spend caps key on this
   zdr: boolean;
+  /** Set only by the cycle engine (M8). A normal user request passes no budget field, so chat()/
+   *  embed() behave exactly as before for every existing call site — this is additive, not a
+   *  branch in the request path. */
+  budget?: {
+    check: (estimate: SubmitEstimate) => Promise<BudgetCheckResult>;
+    record: (actual: ActualUsage) => Promise<void>;
+  };
 }
 
 const als = new AsyncLocalStorage<RouterScope>();
@@ -58,6 +67,10 @@ const CHAT_TIMEOUT_MS = 60_000;
 // reliably land inside 30s, and a timeout here costs the caller the whole ingest after chunking.
 const EMBED_TIMEOUT_MS = 60_000;
 const MAX_ERR_BODY = 500;
+// chat() takes no max_tokens param today, so there is no real output cap to read for the M8 budget
+// gate's pre-call estimate — this conservative fixed guess stands in. Fine for M8, which never
+// calls chat() at all; a real M9+ phase issuing large completions should refine this.
+const CHAT_MAX_OUTPUT_TOKENS_ESTIMATE = 2000;
 
 // Retry budget. Bounded by ELAPSED time, not attempt count: attempts × timeout is the number a user
 // actually waits, and three attempts at 60s is three minutes of silence for a request that was never
@@ -276,20 +289,53 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
   // sets it, which is M5. Until then, treat "we support ZDR" as FALSE when talking to a customer.
   if (scope.zdr) body.provider = { data_collection: 'deny' };
 
-  const json = (await fetchJson(
-    'https://openrouter.ai/api/v1/chat/completions',
-    {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
-        'content-type': 'application/json',
+  // Cycle-engine (M8) budget gate — a no-op for every non-cycle call site, since scope.budget is
+  // only ever set by runner-context.ts. estimatedInputTokens is the sum of message bodies via the
+  // repo's one canonical token estimator (src/ingest/chunk.ts).
+  const estimatedInputTokens = opts.messages.reduce((n, m) => n + estimateTokens(m.content), 0);
+  if (scope.budget) {
+    await scope.budget.check({ modelId, estimatedInputTokens, maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS_ESTIMATE, kind: 'chat' });
+  }
+
+  // check() commits a provisional ledger row before this call. If fetchJson throws (network error,
+  // non-2xx, timeout — after every retry), that row must still be resolved to a real cost, not left
+  // permanently pending: BudgetMeter's "prior spent" sum coalesces a pending row's estimate as a
+  // stand-in for its actual cost, so an unresolved row would inflate every later check() in this run
+  // by this call's estimate forever, even though nothing was actually spent. Recorded as $0 (the
+  // conservative read — a call that errored before returning a response is assumed unbilled) inside
+  // its own try/catch so a record() failure here can never mask the real error being thrown.
+  let json: { choices?: { message?: { content?: string } }[]; usage?: ProviderUsage };
+  try {
+    json = (await fetchJson(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    },
-    'openrouter',
-    CHAT_TIMEOUT_MS,
-  )) as { choices?: { message?: { content?: string } }[]; usage?: ProviderUsage };
+      'openrouter',
+      CHAT_TIMEOUT_MS,
+    )) as { choices?: { message?: { content?: string } }[]; usage?: ProviderUsage };
+  } catch (err) {
+    if (scope.budget) {
+      await scope.budget.record({ modelId, inputTokens: 0, kind: 'chat' }).catch((recordErr) => {
+        console.error(`[router] failed to resolve budget ledger row after a failed chat() call:`, recordErr);
+      });
+    }
+    throw err;
+  }
   logUsage('openrouter', model, json.usage);
+  if (scope.budget) {
+    await scope.budget.record({
+      modelId,
+      inputTokens: json.usage?.prompt_tokens ?? estimatedInputTokens,
+      outputTokens: json.usage?.completion_tokens,
+      kind: 'chat',
+    });
+  }
   const content = json.choices?.[0]?.message?.content;
   // Distinguish "no content" (tool-call-only, moderation refusal, finish_reason:length with null
   // content) from a real answer — returning '' would make a downstream caller treat it as success.
@@ -298,25 +344,49 @@ export async function chat(opts: { messages: ChatMessage[]; model?: string }): P
 }
 
 export async function embed(texts: string[]): Promise<number[][]> {
-  requireScope();
+  const scope = requireScope();
   const { provider, model } = parseModelId(config.EMBEDDING_MODEL);
   if (provider !== 'openai') throw new RouterError(`embed provider not wired: ${provider}`);
   if (!config.OPENAI_API_KEY) throw new RouterError('OPENAI_API_KEY not set');
 
-  const json = (await fetchJson(
-    'https://api.openai.com/v1/embeddings',
-    {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.OPENAI_API_KEY}`,
-        'content-type': 'application/json',
+  const estimatedInputTokens = texts.reduce((n, t) => n + estimateTokens(t), 0);
+  if (scope.budget) {
+    await scope.budget.check({ modelId: config.EMBEDDING_MODEL, estimatedInputTokens, maxOutputTokens: 0, kind: 'embed' });
+  }
+
+  // See chat()'s matching comment: a failed fetchJson must still resolve the provisional ledger row
+  // (recorded as $0) or its estimate inflates every later check() in this run forever.
+  let json: { data: { index: number; embedding: number[] }[]; usage?: ProviderUsage };
+  try {
+    json = (await fetchJson(
+      'https://api.openai.com/v1/embeddings',
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.OPENAI_API_KEY}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ model, input: texts }),
       },
-      body: JSON.stringify({ model, input: texts }),
-    },
-    'openai',
-    EMBED_TIMEOUT_MS,
-  )) as { data: { index: number; embedding: number[] }[]; usage?: ProviderUsage };
+      'openai',
+      EMBED_TIMEOUT_MS,
+    )) as { data: { index: number; embedding: number[] }[]; usage?: ProviderUsage };
+  } catch (err) {
+    if (scope.budget) {
+      await scope.budget.record({ modelId: config.EMBEDDING_MODEL, inputTokens: 0, kind: 'embed' }).catch((recordErr) => {
+        console.error(`[router] failed to resolve budget ledger row after a failed embed() call:`, recordErr);
+      });
+    }
+    throw err;
+  }
   logUsage('openai', model, json.usage);
+  if (scope.budget) {
+    await scope.budget.record({
+      modelId: config.EMBEDDING_MODEL,
+      inputTokens: json.usage?.prompt_tokens ?? estimatedInputTokens,
+      kind: 'embed',
+    });
+  }
   // Place each vector at the position its `index` names, never positionally and never by sorting:
   // OpenAI may return items out of input order, and reading them in arrival order would store each
   // chunk with another chunk's vector — silent retrieval corruption with no error anywhere.

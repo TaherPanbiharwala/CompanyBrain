@@ -319,6 +319,726 @@
   },
   {
     "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "actual_cost_usd",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "actual_cost_usd",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "actual_cost_usd",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "allowed",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "allowed",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "allowed",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "budget_usd",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "budget_usd",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "budget_usd",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "created_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "cumulative_cost_usd",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "cumulative_cost_usd",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "cumulative_cost_usd",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "estimated_cost_usd",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "estimated_cost_usd",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "estimated_cost_usd",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "kind",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "kind",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "kind",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "model_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "model_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "model_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "op",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "op",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "op",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "run_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "run_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "run_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_budget_ledger",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "attempts",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "attempts",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "attempts",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_code",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_code",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_code",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_message",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_message",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "error_message",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "first_seen_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "first_seen_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "first_seen_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "item_key",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "item_key",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "item_key",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "last_seen_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "last_seen_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "last_seen_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "op",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "op",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "op",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "resolved_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "resolved_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "resolved_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "state",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "state",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "state",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_failures",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "acquired_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "acquired_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "acquired_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_host",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_host",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_host",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_pid",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_pid",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "holder_pid",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "last_refreshed_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "last_refreshed_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "last_refreshed_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "lock_key",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "lock_key",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "lock_key",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "ttl_expires_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "ttl_expires_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "ttl_expires_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "cycle_locks",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "created_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "created_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "created_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "details",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "details",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "details",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "duration_ms",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "duration_ms",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "duration_ms",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "op",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "op",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "op",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "run_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "run_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "run_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "started_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "started_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "started_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "status",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "status",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "status",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "summary",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "summary",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "summary",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "ingest_log",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
     "table_name": "invites",
     "column_name": "accepted_by",
     "privilege_type": "INSERT"
@@ -454,6 +1174,96 @@
     "table_name": "invites",
     "column_name": "workspace_id",
     "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "completed_keys",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "completed_keys",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "completed_keys",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "fingerprint",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "fingerprint",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "fingerprint",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "op",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "op",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "op",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "updated_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "updated_at",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "updated_at",
+    "privilege_type": "UPDATE"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "workspace_id",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "workspace_id",
+    "privilege_type": "SELECT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "op_checkpoints",
+    "column_name": "workspace_id",
+    "privilege_type": "UPDATE"
   },
   {
     "grantee": "cb_app",

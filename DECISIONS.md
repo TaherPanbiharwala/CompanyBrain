@@ -1762,3 +1762,129 @@ different config set, more tuning data, or a corpus with real `effective_date`/`
 of the still-synthetic MultiHop load (D106/HANDOVER history). Do not flip the default on engineering
 confidence alone; any future promotion attempt needs its own preregistered holdout run through this same
 gate.
+
+## D111 — M8 the cycle engine: row-lock over advisory-lock, transactional budget ledger, built ahead of the roadmap's own recommendation (2026-09-18)
+
+`docs/pipeline-roadmap.md`'s M8 section itself recommends against building the cycle engine in
+isolation — *"M8's cycle engine only pays for itself once several phases share it — if M9 turns out
+to be the only enrichment phase that ships, write it as one script and skip building the engine"* —
+and `HANDOVER.md` echoed that as the concrete next step after M7's holdout gate failed. The founder
+was shown this tradeoff explicitly and chose to build M8 now anyway, ahead of any M9+ phase existing
+to use it. Recorded here so a future reader does not mistake the roadmap's own caveat for something
+this decision overlooked.
+
+**Schema** (`src/db/migrations/0020_cycle_engine.sql`): five new tables — `cycle_locks`,
+`op_checkpoints`, `ingest_log`, `cycle_failures`, `cycle_budget_ledger` — all `workspace_id`-scoped
+with the same workspace-equality RLS shape `teams_ws`/`acl_grants_ws` already use (no `acl` column;
+these are system bookkeeping tables, not per-document content). No grant-matrix change needed:
+`migrate.ts`'s `grantExisting()` already grants full DML on every table to `cb_app`, and nothing in
+`narrowGrants()` needs to touch these.
+
+**Locking: a row-based lock table, not `pg_advisory_lock`.** Ported from gbrain's own
+`db-lock.ts`/`gbrain_cycle_locks` design (MIT), for a reason that is *stronger* here than in gbrain:
+`appSql()` connects through Supabase's transaction pooler (`src/db/client.ts`,
+`prepare: !config.isPooler`) — exactly the PgBouncer-style multiplexing gbrain's own comment names
+as the reason a session-scoped advisory lock would not reliably hold (the tx-pooler backend is not
+1:1 with a client socket, so session state set by one statement is not guaranteed visible to the
+next). A row-based lock is plain INSERT/UPDATE/DELETE, which is transaction-pooler-safe by
+construction. Crash safety is TTL (default 30 minutes) plus a ported same-host PID-liveness reap
+(`classifyHolderLiveness`/`isHolderDeadLocally`, `src/core/cycle/lock.ts`) with a 60s takeover-grace
+window against PID reuse and a heartbeat-derived steal grace (~2 refresh ticks) so a live holder
+whose TTL briefly lapses under load is never stolen out from under it. Unlike gbrain's table (shared
+across every lock namespace — cycle, sync, elections), this repo's `cycle_locks` holds one row per
+workspace (`lock_key = cycle:<workspace_id>`), and every operation on it runs inside
+`withScopedTx(ctx, …)`, so RLS already confines each workspace to its own row — there is no
+cross-tenant scan to guard in the reaper, unlike gbrain's.
+
+**Budget metering fails closed; gbrain's fails open.** `docs/plan.md`'s Invariant 6 requires spend
+caps to fail closed, and `BudgetMeter` (`src/core/cycle/budget-meter.ts`) has no
+`budget<=0`-disables-the-gate escape hatch the way gbrain's meter does — every phase must declare a
+positive `budgetUsdDefault`, checked in the constructor. `cycle_budget_ledger` is a real committed
+Postgres row per submit (checked before the call, updated after), not gbrain's best-effort JSONL
+audit file that swallows write failures. This is also the repo's **first real LLM usage/cost
+ledger** — `src/ai/router.ts`'s `logUsage()` previously only `console.info`'d token counts, and its
+own comment said outright that no ledger existed because nothing needed one before M8. D104 (2026-08-24,
+"spend accounting lives at M8") is what this closes; note D104's M8 is `docs/plan.md`'s older
+v0 numbering (spend/usage accounting as a product feature) and is a different M8 from this one
+(`docs/pipeline-roadmap.md`'s cycle engine) — the two roadmap generations happen to collide on the
+same milestone number, and this decision's ledger satisfies D104's requirement incidentally, by
+being the natural place to put it, not because the two M8s are the same milestone.
+
+Integration point: `src/ai/router.ts`'s `RouterScope` gained an optional `budget` field
+(`{ check, record }`), read only by `chat()`/`embed()` at the same call sites `logUsage()` already
+occupies. Every non-cycle call site passes no `budget` field, so this is purely additive — zero
+behavior change to any M0–M7 code path (`test/router.test.ts` pins this: the existing suite's calls
+via `scoped()` carry no budget field and are unaffected; a new "cycle-engine budget hook" describe
+block proves the hook fires, in order, only when one is supplied). Per-model pricing
+(`PLACEHOLDER_PRICING_USD_PER_MILLION` in `budget-meter.ts`) is a small static USD-per-token map
+keyed by the exact `provider:model` ids `CHAT_MODEL`/`EMBEDDING_MODEL` resolve to — **not yet
+verified against a live provider response**; the no-op phase never calls `chat()`/`embed()` at all,
+so this does not block M8's exit criteria, only a real M9+ phase's cap. Review this map whenever
+either model id changes, and verify the rates before trusting it for anything beyond the no-op
+phase's own trivial $0.01 ceiling.
+
+**Checkpoint/resume** (`op_checkpoints`): ported from gbrain's `op-checkpoint.ts` contract, minus
+its `op_checkpoint_paths` delta table — that exists only to avoid an O(N²) full-array rewrite on
+~200K-row checkpoints, premature for a no-op phase. Add it in a later migration if a real M9+
+phase's checkpoint set proves large enough to need it; do not build it speculatively now.
+
+**Failure ledger** (`cycle_failures`): ported (simplified) from gbrain's file-based
+`sync-failure-ledger.ts`, moved to a table (a scheduled worker has no durable local disk across
+runs) and dropping its git-sync-specific `auto_skipped` state and sentinel hard-block — those encode
+ingestion-gate policy that doesn't exist as a concept in company-brain yet. `attempts` is still
+tracked per `(workspace_id, op, item_key)` so a future phase can build an auto-skip policy on top
+without a schema change.
+
+**Scheduling**: `.github/workflows/cycle.yml` is the repo's first `schedule:`-triggered workflow —
+`ci.yml` only had `push`/`pull_request`/`workflow_dispatch` before this. It runs `bun run cycle
+--phase noop` hourly against the one shared Supabase project `ci.yml`'s `live` job also uses (see
+company-brain-ci-decisions memory: a separate CI project is a planned, not-yet-done step). Its own
+`concurrency` group (`cycle-engine-shared-db`) serializes scheduled runs against each other without
+blocking or being blocked by `ci.yml`'s differently-named `live-shared-db` group. Cadence (hourly)
+is a placeholder — the roadmap's exit criteria says only "runs on a schedule," and there is no real
+enrichment phase yet with an actual freshness requirement to size it against.
+
+**Who the cycle runner authenticates as**: a synthetic system principal
+(`00000000-0000-0000-0000-000000000000`, `SYSTEM_PRINCIPAL` in `lock.ts`) with a `ws:<workspaceId>`
+grant, running all tenant-scoped work through the normal `withScopedTx`/RLS path on `cb_app` — the
+same least-privilege path a real request uses, not a new role. Verified safe before choosing this:
+`buildContext()` only validates UUID *shape* for `principal` (no live FK check against
+`principals`), and none of the five new tables carry a principal/ACL dimension, so the sentinel
+never appears in a predicate that matters. The one place elevated access is genuinely needed —
+enumerating which workspaces exist to loop over — is inherently cross-tenant and stays in
+`scripts/run-cycle.ts` via `adminSql()`, the same justification `scripts/purge-deleted.ts` already
+established.
+
+**Verification status, updated after actually running this against the shared Supabase project**
+(credentials sourced from the main checkout's `.env`; this worktree carries no copy of its own):
+`bun run migrate` applied `0020_cycle_engine.sql` cleanly; `bun run doctor --update`'s fixture diff
+was reviewed as a security change (exactly 5 new workspace-equality RLS policies, `cb_app`-only
+grants, zero `cb_auth` exposure, nothing else touched) and landed at 82/82; both live suites
+(`test/cycle.live.test.ts`, `test/cycle-kill9.live.test.ts` — the actual kill-9/resume exit
+criterion) pass in full; `test/hybrid.test.ts` was re-run as a regression check on the shared
+`router.ts` edit and is unaffected. Two more real bugs surfaced only by hitting the database, neither
+catchable offline:
+
+- **jsonb double-encoding.** `saveCheckpoint()`/`writeIngestLog()` originally wrote jsonb columns as
+  `${JSON.stringify(value)}::jsonb`. `postgres` (the npm package) infers a jsonb parameter from the
+  `::jsonb` cast in the query text and JSON-encodes whatever JS value it receives for that slot — so
+  a pre-stringified value gets encoded a *second* time, landing in the column as a jsonb *string*
+  containing the array/object's JSON text, not a jsonb array/object. `op_checkpoints`'s own
+  `completed_keys_array` CHECK constraint (this same migration) caught it immediately on the first
+  live insert. Fix, and the correct pattern for any future jsonb write in this codebase: pass the
+  value directly — `${arr}::jsonb` for an array, `tx.json(obj)` for an object needing a type
+  assertion past `Record<string, unknown>` — never `JSON.stringify()` first.
+- **The lock's reclaim floor is ~60 seconds, unconditionally.** Both `HOLDER_TAKEOVER_GRACE_MS` (the
+  same-host dead-PID reap) and `resolveStealGraceSeconds`'s floor (the TTL fallback) are hardcoded at
+  60s, so a crashed lock is never reclaimable faster than that regardless of how short a TTL it was
+  given — confirmed live when the kill-9 test's first version retried within seconds of the kill and
+  reliably got `skipped (cycle_already_running)` back. Not a bug — both floors exist to protect a
+  live-but-starved holder from a false-positive steal — but previously undocumented as an actual
+  number, and worth knowing before anyone tunes the lock TTL expecting sub-minute crash recovery.
+  Restored gbrain's own `GBRAIN_LOCK_STEAL_GRACE_SECONDS` escape hatch, dropped during the original
+  port, as `CB_CYCLE_LOCK_STEAL_GRACE_SECONDS` — used only by the kill-9 test, so it can exercise a
+  genuine reclaim in ~15s instead of waiting out the real floor.
+
+Full detail on both, plus the earlier three bugs the `/review` pass caught pre-database (missing
+`noop` pricing entry, a transaction-rollback that silently discarded the denied-spend audit row, and
+`check()` undercounting still-pending spend), is in `HANDOVER.md`'s "Milestone 8" section.

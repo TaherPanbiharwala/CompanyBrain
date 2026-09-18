@@ -3,11 +3,13 @@
 This is a snapshot, not a running log. Read `AGENTS.md` first, then fetch origin before trusting the
 branch line below.
 
-**Branch/commit at write time:** `codex/intent_classifier`, based on freshly fetched
-`origin/master` `297c8cacc93c4ced7a7eaae09221f63d066f3cec`. M7 is committed on this branch (`git log -1`
-for the exact SHA) and merged to `master` in the same session this line was last edited.
+**Branch/commit at write time:** `claude/session-summary-next-steps-784f80`, fast-forwarded onto
+`origin/master` `457a7ea` (M7 + the singletopic eval dataset + the meta-workspace eval rerun, all
+already merged). M8 — the cycle engine — is implemented on top of that as an uncommitted working-tree
+diff as this line is written; see "Milestone 8" below for its status and the one thing still
+outstanding (nothing has been run against a live database in this environment).
 
-## Current outcome
+## Current outcome (M7)
 
 Milestone 7's gbrain retrieval-intelligence port is implemented behind the baseline default. The
 behavioral source is pinned to upstream commit `8c70f6255047a7647adb30b1d6333a48068d9fa5` and covered
@@ -117,12 +119,118 @@ tuning is working against degenerate metadata, which plausibly caps what `recenc
 `-recency-on`/`-strong` profiles could ever show. A reload with real per-article provenance (blocked
 previously by a `~/Desktop` sandbox permission wall, per older `HANDOVER.md` history — may not be
 blocked in every environment) would be the highest-leverage next attempt before assuming the intent
-table itself is the wrong idea. Per `docs/pipeline-roadmap.md`'s own recommendation, M9 (link
-extraction/backlinks, written as a plain script rather than building M8's cycle engine) is the other
-reasonable next step and does not depend on this gate passing.
+table itself is the wrong idea.
+
+~~Per `docs/pipeline-roadmap.md`'s own recommendation, M9 (link extraction/backlinks, written as a
+plain script rather than building M8's cycle engine) is the other reasonable next step and does not
+depend on this gate passing.~~ **Superseded — see "Milestone 8" below.** The founder was shown this
+exact tradeoff (the roadmap argues M8 only pays for itself once several phases share it) and chose
+to build M8 now anyway, ahead of M9. D111 records the decision. M9 (link/fact extraction) remains
+the natural next milestone to actually exercise the cycle engine, but is not started.
+
+## Milestone 8 — the cycle engine
+
+**Current outcome.** M8 (`docs/pipeline-roadmap.md`) is implemented: phase runner + base class
+(`src/core/cycle.ts`, `src/core/cycle/base-phase.ts`), workspace-scoped row-based lock with
+same-host dead-holder reap (`src/core/cycle/lock.ts`), a fail-closed transactional budget ledger
+wired into `src/ai/router.ts`'s `chat()`/`embed()` (`src/core/cycle/budget-meter.ts`),
+checkpoint/resume (`src/core/cycle/checkpoint.ts`), an ordinary run-history audit log
+(`src/core/cycle/ingest-log.ts`), and a failure ledger (`src/core/cycle/failure-ledger.ts`). The
+no-op phase (`src/core/cycle/phases/noop.ts`) exercises all of it. New migration
+`src/db/migrations/0020_cycle_engine.sql` adds the five backing tables, RLS-enabled, workspace-scoped.
+The CLI (`scripts/run-cycle.ts`, `bun run cycle`) and the repo's first scheduled workflow
+(`.github/workflows/cycle.yml`, hourly, `workflow_dispatch` also available) run it. D111 has the full
+design rationale, including why this diverges from gbrain twice (row lock over advisory lock;
+budget ledger fails closed, transactional, not JSONL/best-effort).
+
+**A `/review` pass on this diff found and fixed 3 real bugs that would have broken the exit
+criterion entirely** — worth reading before anything below, since it's exactly the kind of thing
+"typecheck + offline tests are clean" cannot catch:
+1. `noop.ts` called `checkBudget({ modelId: 'noop', ... })`, but `'noop'` was never added to
+   `PLACEHOLDER_PRICING_USD_PER_MILLION` — every single run would have thrown
+   `UnknownModelPricingError` on tick 1, forever, including the first scheduled cron run after merge.
+2. `BudgetMeter.check()`/`.record()` threw `BudgetExhaustedError` from *inside* the same
+   `withScopedTx` transaction that had just inserted the audit row — which rolls the insert back too
+   (standard SQL transaction semantics), so the `allowed:false` row the ledger's whole design exists
+   to preserve was never actually committed. Fixed by moving the throw to after the transaction
+   resolves.
+3. `check()`'s "prior spent" sum only counted `actual_cost_usd` (NULL until `record()` runs), so
+   multiple `check()` calls in a row before any `record()` could each independently pass even though
+   their combined estimate exceeded the cap. Fixed by coalescing to `estimated_cost_usd` for
+   still-pending rows (and, as a consequence, a failed provider call now resolves its ledger row as
+   $0 in a `try/catch` in `router.ts` rather than leaving it permanently pending).
+See D111 and the code comments at each fix site for the full reasoning. All three were caught by an
+adversarial-review subagent reading the code fresh, not by any test — a reminder that "the offline
+suite is green" and "this code is correct" are different claims when the only suites that exercise
+the real code path (not a stub) are the live ones that have not run yet (below).
+
+**Verification status — fully live-verified, migration applied.** After the review above, this was
+run for real against the shared Supabase project (`DATABASE_URL`/`DATABASE_ADMIN_URL` sourced from
+the main checkout's `.env`, which this worktree doesn't carry its own copy of):
+
+```text
+bun run typecheck                                         clean
+bun run test (offline)                                    681 pass / 242 skip / 0 fail
+bun run migrate                                            applied 0020_cycle_engine.sql cleanly
+bun run doctor                                             82/82 after `--update` (fixture diff
+                                                             reviewed: 5 new workspace-equality RLS
+                                                             policies, cb_app-only grants, zero
+                                                             cb_auth exposure, nothing else touched)
+test/cycle.live.test.ts (CB_REQUIRE_LIVE_TESTS=1)           20/20 pass
+test/cycle-kill9.live.test.ts (the actual exit criterion)   1/1 pass
+test/hybrid.test.ts (regression check on router.ts)         18/18 pass, unaffected
+```
+
+**Two more real bugs surfaced only by actually hitting the database** — confirming the review's own
+point that offline-clean and correct are different claims:
+
+4. `saveCheckpoint()`/`writeIngestLog()` wrote jsonb columns via
+   `${JSON.stringify(value)}::jsonb` — postgres.js infers a jsonb parameter from the `::jsonb` cast
+   and JSON-encodes whatever it's handed, so a pre-stringified value gets encoded a **second** time:
+   the column ends up holding a jsonb *string* whose content is the array/object's JSON text, not a
+   jsonb array/object. `op_checkpoints`'s own `completed_keys_array` CHECK constraint caught this
+   immediately on the very first live run. Fixed by passing the value directly
+   (`${completedKeys}::jsonb`, `tx.json(entry.details)`) — never pre-stringify for a `postgres`
+   tagged-template jsonb slot.
+5. The dead-holder reap (`HOLDER_TAKEOVER_GRACE_MS`) and the TTL/steal-grace fallback both have a
+   **hardcoded 60-second floor** before a crashed lock becomes reclaimable, regardless of how short a
+   TTL it was given — confirmed live when the kill-9 test's first version retried within seconds and
+   reliably got `skipped (cycle_already_running)` back. This isn't a bug so much as a previously
+   undocumented, now-proven characteristic: crash recovery is never faster than ~60s, which matters
+   for anyone tuning the lock TTL expecting sub-minute recovery. Restored gbrain's own
+   `GBRAIN_LOCK_STEAL_GRACE_SECONDS` escape hatch as `CB_CYCLE_LOCK_STEAL_GRACE_SECONDS` (dropped
+   during the original port) so the kill-9 test can actually exercise reclaim in ~15s instead of
+   waiting out the real floor.
+
+Test coverage also grew during review, independent of the DB run: RLS cross-tenant isolation tests
+for `cycle_budget_ledger` and `cycle_failures` (previously only `cycle_locks`/`op_checkpoints` had
+one), a regression test for bug 3, `runCycle`'s ok/partial/failed status-aggregation logic
+(previously only ever exercised via the always-succeeds noop phase), and chat()/embed()
+budget-denial and failed-call-resolution tests in `test/router.test.ts`.
+
+**Not yet done, deliberately out of scope for this change:** M9 itself (the cycle engine has no
+phase to run beyond the proof-of-concept no-op); wiring `scripts/purge-deleted.ts` into the new
+schedule (still run by hand); verifying `PLACEHOLDER_PRICING_USD_PER_MILLION` in `budget-meter.ts`
+against a live provider response (only matters once a real phase calls `chat()`/`embed()` with a
+budget scope — the noop phase never does); tuning the cron cadence and lock TTL defaults (both
+placeholders — see D111); the disclosed-not-fixed design gaps from the review (budget cap doesn't
+survive a crash/restart since `run_id` is fresh each time; no fencing token if a heartbeat fails
+silently; the sequential per-workspace CLI loop has no fairness mechanism as tenant count grows) —
+all inert for the current noop-only scope, all worth a second look before a real M9+ phase leans on
+this.
+
+**Before merging this to master, know what it activates:** `.github/workflows/cycle.yml` is a real
+`schedule:` trigger. Once this reaches `master`, GitHub Actions will start running `bun run cycle
+--phase noop` hourly against the one shared Supabase project — the same one `ci.yml`'s `live` job
+uses — indefinitely, using existing `DATABASE_URL`/`DATABASE_ADMIN_URL` repo secrets. That is a
+standing recurring job, not a one-time action; confirm the cadence and target project are actually
+wanted before pushing to master, not just the code.
 
 ## Working-tree cautions
 
 The untracked `.claude/` directory and `docs/enterprise-learning-roadmap.md` predate this work and
-belong to the user; they were not edited. No migration was added or changed. Keep the transaction
-handle literally named `tx`, and never weaken the RLS boundary while resolving evaluation issues.
+belong to the user; they were not edited. `src/db/migrations/0020_cycle_engine.sql` is new (M8) —
+applied to the shared Supabase project (see "Milestone 8" above), but this diff itself is still
+uncommitted, so a fresh clone or another worktree won't have it applied until `bun run migrate` runs
+there too. Keep the transaction handle literally named `tx`, and never weaken the RLS
+boundary while resolving evaluation issues.
