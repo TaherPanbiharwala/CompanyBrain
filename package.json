@@ -37,6 +37,7 @@
     "load:eval": "bun run scripts/load-eval-corpus.ts",
     "eval:rag": "bun run scripts/run-rag-eval.ts",
     "eval:sweep": "bun run scripts/run-retrieval-sweep.ts",
+    "grade:answers": "bun run scripts/grade-answers.ts",
     "replay-eval": "bun run scripts/replay-eval.ts",
     "purge:deleted": "bun run scripts/purge-deleted.ts"
   },

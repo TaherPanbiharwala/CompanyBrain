@@ -5,8 +5,9 @@
 import type { DatasetAdapter } from '../types.ts';
 import { multihopAdapter } from './multihop.ts';
 import { ragtestAdapter } from './ragtest.ts';
+import { singletopicAdapter } from './singletopic.ts';
 
-const ADAPTERS: DatasetAdapter[] = [multihopAdapter, ragtestAdapter];
+const ADAPTERS: DatasetAdapter[] = [multihopAdapter, ragtestAdapter, singletopicAdapter];
 
 export const DEFAULT_DATASET = 'multihop';
 
@@ -24,4 +25,4 @@ export function resolveAdapter(name: string): DatasetAdapter {
   return found;
 }
 
-export { multihopAdapter, ragtestAdapter };
+export { multihopAdapter, ragtestAdapter, singletopicAdapter };

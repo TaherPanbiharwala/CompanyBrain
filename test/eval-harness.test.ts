@@ -14,7 +14,9 @@
 // Hand-computed expectations throughout. A test that re-derives the formula proves nothing.
 import { describe, it, expect } from 'bun:test';
 import { existsSync } from 'node:fs';
-import { SLUG_MAX_LEN as OP_SLUG_MAX_LEN, SLUG_RE as OP_SLUG_RE } from '../src/api/operations.ts';
+import {
+  SLUG_MAX_LEN as OP_SLUG_MAX_LEN, SLUG_RE as OP_SLUG_RE, MAX_BODY_CHARS,
+} from '../src/api/operations.ts';
 import { slugify, findSlugCollisions, SLUG_MAX_LEN, SLUG_RE } from '../src/eval/slug.ts';
 import {
   classifyAnswer,
@@ -413,6 +415,87 @@ describe.if(HAVE_DATASET)('MultiHop adapter, against the real files', () => {
     const withAuthor = bundle.docs.filter((d) => d.metadata?.author !== undefined);
     expect(withAuthor.length).toBe(541);
     expect(withAuthor.every((d) => (d.metadata!.author as string).trim().length > 0)).toBe(true);
+  });
+});
+
+// ── singletopic adapter, against the real files ──────────────────────────────────────────────
+
+const SINGLETOPIC_DIR = process.env.SINGLETOPIC_DIR ?? `${process.env.HOME}/Desktop/RAGTest`;
+const HAVE_SINGLETOPIC = existsSync(`${SINGLETOPIC_DIR}/documents.csv`);
+if (!HAVE_SINGLETOPIC) {
+  console.warn(
+    `[eval-harness.test] SKIPPING dataset checks: no corpus at ${SINGLETOPIC_DIR}. ` +
+      `The singletopic adapter-conformance checks did NOT run.`,
+  );
+}
+
+describe.if(HAVE_SINGLETOPIC)('singletopic adapter, against the real files', () => {
+  let bundle: DatasetBundle;
+  const load = async () => (bundle ??= await resolveAdapter('singletopic').load(SINGLETOPIC_DIR));
+
+  it('loads 20 documents and 120 questions (40 single + 40 multi + 40 no-answer)', async () => {
+    bundle = await load();
+    expect(bundle.docs.length).toBe(20);
+    expect(bundle.questions.length).toBe(120);
+  });
+
+  it('EVERY document slug satisfies the ingest op, cap included', async () => {
+    bundle = await load();
+    const bad = bundle.docs
+      .map((d) => ({ id: d.id, slug: slugify(d.id) }))
+      .filter((x) => x.slug.length > OP_SLUG_MAX_LEN || !OP_SLUG_RE.test(x.slug));
+    expect(bad).toEqual([]);
+  });
+
+  it('slugs are unique across the corpus', async () => {
+    bundle = await load();
+    expect(findSlugCollisions(bundle.docs.map((d) => d.id)).size).toBe(0);
+  });
+
+  it('every document body fits the ingest op\'s MAX_BODY_CHARS, even document 16', async () => {
+    // Pinned to the live op constant, not to SAFE_BODY_CHARS's own copy of it — the same reason the
+    // slug-rule test above pins to OP_SLUG_MAX_LEN: two independent copies of the same bound are a
+    // silent-drift risk, one test away from a paid embedding call failing 16 documents into a load.
+    bundle = await load();
+    const over = bundle.docs.filter((d) => d.body.length > MAX_BODY_CHARS);
+    expect(over).toEqual([]);
+    // And the truncation is real, not a no-op — document 16 (Stardew Valley's Version History,
+    // ~212k raw chars) must actually have been cut down, or this test would pass for the wrong reason.
+    const doc16 = bundle.docs.find((d) => d.id === '16');
+    expect(doc16?.body.length).toBeLessThan(200_000);
+  });
+
+  it('ROUND TRIP: every gold id resolves to a document that was loaded', async () => {
+    bundle = await load();
+    const corpus = new Set(bundle.docs.map((d) => slugify(d.id)));
+    const dangling = bundle.questions
+      .flatMap((q) => [...goldSlugs(q)])
+      .filter((slug) => !corpus.has(slug));
+    expect(dangling).toEqual([]);
+  });
+
+  it('single- and multi-passage questions each name EXACTLY ONE gold document', async () => {
+    // Unlike MultiHop, this dataset has no cross-document multi-hop — see singletopic.ts's header.
+    bundle = await load();
+    for (const type of ['single_passage', 'multi_passage']) {
+      const qs = bundle.questions.filter((q) => q.type === type);
+      expect(qs.length).toBe(40);
+      expect(qs.every((q) => q.goldDocIds.length === 1)).toBe(true);
+    }
+  });
+
+  it('no-answer questions carry an EMPTY gold list, not the document they were paired with', async () => {
+    bundle = await load();
+    const nulls = bundle.questions.filter((q) => q.type === 'no_answer');
+    expect(nulls.length).toBe(40);
+    expect(nulls.every((q) => q.goldDocIds.length === 0)).toBe(true);
+  });
+
+  it('every document carries its source URL, for the plain-vs-meta A/B', async () => {
+    bundle = await load();
+    expect(bundle.docs.every((d) => typeof d.metadata?.source === 'string' && d.metadata.source.length > 0)).toBe(
+      true,
+    );
   });
 });
 

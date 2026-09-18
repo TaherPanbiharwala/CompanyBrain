@@ -291,6 +291,67 @@ licence ODC-BY. The loader also detects the HuggingFace snapshot layout (`<sha>/
 
 ---
 
+## The `singletopic` dataset
+
+A second, much smaller benchmark: Kaggle's ["Single-Topic RAG Evaluation
+Dataset"](https://www.kaggle.com/datasets/samuelmatsuoharris/single-topic-rag-evaluation-dataset).
+20 documents (2,750-~212k chars each, unrelated topics — game wikis, an arXiv PDF, EU policy, a TV
+transcript, cooking), 40 single-passage questions, 40 multi-passage questions, 40 no-answer
+questions. Adapter: `src/eval/adapters/singletopic.ts`.
+
+```bash
+eval "$(bun run --silent seed:eval --dataset singletopic)"
+bun run load:eval --dataset singletopic
+bun run eval:rag --dataset singletopic --dry-run
+bun run eval:rag --dataset singletopic
+bun run eval:rag --dataset singletopic --nulls
+```
+
+**Read this before trusting a number from it:**
+
+- **Every question has AT MOST ONE gold document.** "multi passage" here means the answer needs
+  several passages of the SAME document, not several documents — there is no cross-document
+  multi-hop in this corpus, unlike MultiHop. `distinct-docs-in-context` and `evidence-recall`
+  degenerate to 0-or-1 and say nothing useful; **hit@k/MRR** (did retrieval surface the one right
+  document at all) and **`--nulls`** (does the model abstain on the 40 questions with no answer in
+  the corpus) are the metrics actually worth reading here.
+- **Document 16** ("Stardew Valley: Version History", ~212k chars) exceeds the `ingest` op's
+  `MAX_BODY_CHARS` (200,000) and is truncated to 195,000 chars by the adapter — pinned by
+  `test/eval-harness.test.ts`. Its questions may score worse than the other 19 documents' purely
+  because of where the cut lands, not because retrieval regressed.
+- **This dataset is small.** 120 questions total, 40 per tier — enough for a real yes/no on "does
+  abstention work at all," not enough to detect a small regression the way MultiHop's 2,556
+  questions can. Treat a delta of a few questions as noise.
+- Default location: `~/Desktop/RAGTest` (override with `--dir` or `SINGLETOPIC_DIR`). Not vendored,
+  same as MultiHop — download it yourself from the Kaggle link above.
+
+---
+
+## Answer-correctness grading (`grade:answers`)
+
+Everything above is retrieval-only or abstention-only — deliberately, per "Which numbers you can
+trust" above. `scripts/grade-answers.ts` is the opt-in exception: it runs the real answer pipeline
+(real chat calls) on every question and grades the answer correct / partial / incorrect against the
+dataset's own gold text, using the chat model itself as judge (or `FRONTIER_MODEL`, if you've set
+one — that avoids the model grading its own work, which `CHAT_MODEL`-as-judge cannot).
+
+```bash
+bun run grade:answers --dataset singletopic --dry-run
+bun run grade:answers --dataset singletopic --sample 20   # cheap smoke test first
+bun run grade:answers --dataset singletopic
+```
+
+Only use this on a corpus where memorization is implausible — `singletopic` qualifies (mostly
+obscure blogs, wikis, and one private Dropbox doc); MultiHop does not (see its own header comment in
+`scripts/run-rag-eval.ts`). The report includes, per question: the verdict, the judge's one-line
+reason, the gold answer, the full model answer, and — for answerable questions — whether the gold
+document ever made it into the exact 8 chunks the model was shown (`rankInContext`), so a wrong
+verdict can be traced to "retrieval never found it" vs. "found it and still got it wrong." No-answer
+questions are graded via the existing abstention classifier, so all three question types land in one
+report with one correct/partial/incorrect vocabulary.
+
+---
+
 ## Adding another dataset
 
 Write one adapter and add one registry line. Nothing else changes.
@@ -331,4 +392,6 @@ so an adapter that cannot express it cannot use `--nulls`.
 | `scripts/seed-eval-workspace.ts` | Creates the two workspaces |
 | `scripts/load-eval-corpus.ts` | Ingests both variants |
 | `scripts/run-rag-eval.ts` | The harness |
+| `scripts/grade-answers.ts` | Answer-correctness grading (opt-in, see above) |
+| `src/eval/adapters/singletopic.ts` | The `singletopic` dataset adapter |
 | `test/eval-harness.test.ts` | No DB, no network, no money |
