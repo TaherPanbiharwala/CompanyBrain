@@ -129,10 +129,19 @@ retry from zero on every crash."
 
 **Depends on M8.** Best value-to-effort ratio of the enrichment phases.
 
+**Status (2026-09-19): link extraction shipped and live-verified; fact extraction deliberately
+deferred.** The exit criteria below names only link extraction — fact extraction is in the ship
+table but was never part of what "done" requires, and gbrain's own fact-extraction system turned out
+to be a large separate subsystem (bi-temporal versioning, per-write LLM calls, embedding-based
+dedup) once actually investigated. The founder was shown that scope split explicitly and chose link
+extraction only for this pass; see D112 for the full reasoning and `HANDOVER.md`'s "Milestone 9"
+section for exactly what is and isn't verified (the retrieval-lift sweep itself has not been run
+yet — the arm is built and measured-as-correct, not measured-as-valuable).
+
 | Ship | Why first |
 | --- | --- |
 | **Link extraction + backlinks** (`links` table) | **The single highest-leverage phase for the measured problem.** Multi-hop questions need documents that relate to each other; explicit edges make that structural — a graph traversal — rather than something the ranker has to rediscover per query from embeddings alone. |
-| Fact extraction | Independently useful for direct lookups; also the raw material `compiled_truth` synthesis (M10) consumes. |
+| Fact extraction | Independently useful for direct lookups; also the raw material `compiled_truth` synthesis (M10) consumes. **Deferred — see status line above.** |
 
 **Exit criteria:** backlinks populate on ingest; a link-aware retrieval variant (e.g. one-hop graph
 expansion before fusion) runs through the M7 sweep harness and is measured, not assumed.

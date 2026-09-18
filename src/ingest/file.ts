@@ -18,6 +18,7 @@ import { assessExtraction, contentHash, sanitySuggestion } from './sanity.ts';
 import { deriveEffectiveDate, textHash as computeTextHash } from './provenance.ts';
 import { chunkBlocks, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
+import { extractAndReconcileLinks } from '../core/links/reconcile.ts';
 
 export interface ImportFileInput {
   bytes: Uint8Array;
@@ -295,6 +296,10 @@ async function importFileAdmitted(ctx: OperationContext, input: ImportFileInput)
     }));
     await tx`
       insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'locator', 'embedding', 'effective_date', 'author', 'chunker_version')}`;
+
+    // M9: backlinks populate on ingest. Pure regex/mention work (no LLM call), so it's safe inside
+    // this transaction per D6.
+    await extractAndReconcileLinks(tx, { workspaceId: ctx.workspaceId, pageId, pageAcl: acl, text: extractedText });
 
     return {
       pageId,

@@ -33,7 +33,21 @@ start). It is deliberately short: an index into the documents below, not a copy 
 - **Don't trust a claim about the query planner — run `bun run explain:search` and read the actual
   plan.** This repo has paid for that lesson twice now (`0013`, `D106`): a correlated predicate silently
   losing its index is invisible in code review and in a passing test suite alike.
-- **`bun run typecheck` and the full `bun run test` suite clean before calling anything done.**
+- **`bun run typecheck` and the full `bun run test` suite clean before calling anything done — and
+  neither one is sufficient on its own.** M8 and M9 each shipped bugs that typecheck and the full
+  offline suite passed on, caught only by actually applying the migration and running the live suite
+  against a real database (D111, D112). Offline-clean and correct are different claims here; say so
+  explicitly rather than treating a green offline run as "verified."
+- **Never write a jsonb column via `${JSON.stringify(value)}::jsonb`.** `postgres` (the npm package)
+  infers a jsonb parameter from the `::jsonb` cast and JSON-encodes whatever JS value it's handed for
+  that slot — a pre-stringified value gets encoded a SECOND time, landing as a jsonb *string*
+  containing the value's JSON text, not the array/object itself. Pass the value directly
+  (`${arr}::jsonb`), or `tx.json(obj)` for an object needing a type assertion past
+  `Record<string, unknown>`. Bit twice in one milestone before this rule existed (D111).
+- **A live-DB test asserting an RLS property MUST run through a scoped connection
+  (`withScopedTx`/`buildContext`), never `adminSql()`.** The admin/owner pool is BYPASSRLS by design,
+  so a test written against it can pass even when the RLS policy it claims to prove is broken or
+  missing — a false-positive test, not a weak one. Caught live in D112's own soft-delete test.
 
 ## Environment-specific gotcha, current as of D106
 

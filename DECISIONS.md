@@ -1888,3 +1888,109 @@ catchable offline:
 Full detail on both, plus the earlier three bugs the `/review` pass caught pre-database (missing
 `noop` pricing entry, a transaction-rollback that silently discarded the denied-spend audit row, and
 `check()` undercounting still-pending spend), is in `HANDOVER.md`'s "Milestone 8" section.
+
+## D112 — M9 wave 1: link extraction ships, fact extraction deliberately deferred; a two-acl-column RLS shape for edges (2026-09-19)
+
+`docs/pipeline-roadmap.md`'s M9 ship table lists two items — link extraction and fact extraction —
+but its exit criteria names only the first: *"backlinks populate on ingest; a link-aware retrieval
+variant... runs through the M7 sweep harness and is measured, not assumed."* The founder was shown
+this asymmetry explicitly (fact extraction is absent from the exit criteria, and gbrain's own
+fact-extraction system is a large separate subsystem — bi-temporal versioning, per-write LLM calls,
+embedding-based dedup, markdown-fence-as-system-of-record) and chose link extraction only for this
+pass. Fact extraction stays scoped for later, ideally alongside M10 (`compiled_truth` synthesis),
+the milestone that actually names it as a consumer and can say what shape of fact it needs.
+
+**Schema** (`src/db/migrations/0021_link_extraction.sql`): a new `links` table — directional
+page-to-page edges (`from_page_id`, `to_page_id`, `link_kind` ∈ `{mention, markdown}`,
+`link_source`, `context`). `DECISIONS.md` D4 (2026-07-23, predates M9) already committed `links` to
+carry denormalized `workspace_id` + `acl`, never transitive via `page_id` — but D4 was written
+before this table's actual shape existed, and didn't anticipate that an EDGE has two endpoints. A
+single acl array can only express OR-visibility ("holds any of these tags"); it cannot express
+"visible only if the caller holds grants overlapping BOTH endpoints," which is the correct security
+property for a row that reveals two pages relate to each other (unioning the endpoints' acl would
+leak a private-page edge workspace-wide; intersecting would constraint-violate any edge touching a
+private page, including the author's own). Resolved with **two acl columns** (`from_acl`, `to_acl`),
+each independently GIN-indexed and required to overlap the caller's grants in RLS — an AND of two
+overlap tests, not one test against a merged array — reusing the exact `acl && current_grants()`
+primitive already proven on `pages`/`content_chunks`, just applied twice. Verified live: the fixture
+diff shows exactly the expected `qual`/`with_check` shape (workspace equality AND both conjuncts),
+and a dedicated live test proves the property directly — a member who can see one endpoint but not
+the other sees no edge at all, even though the edge itself exists (written by its own author).
+
+**No `links.deleted_at`** — a deliberate divergence from the M6-established "denormalize deleted_at
+onto every content-adjacent table" pattern. `content_chunks` needed its own copy because
+`hybridSearch` scans it directly with no join to `pages`; every read this milestone defines
+(backlinks, the graph-expansion retrieval arm) always joins through `pages`/`content_chunks` to
+render anything useful, so their existing `*_hide_deleted` RESTRICTIVE policies already drop
+soft-deleted edges for free. Verified live — the first version of this test used `adminSql()`
+(BYPASSRLS) and passed for the wrong reason (the restrictive policy never applies to the owner
+pool); fixed to run through a real RLS-scoped connection, which is what actually exercises the
+property being claimed.
+
+**Extraction — zero LLM cost, two ordered passes**: markdown `[text](href)` resolved against
+another page's slug (company-brain has no canonical-URL column on `pages`, so an external URL can
+never resolve to a page identity — checked before assuming otherwise), and case-insensitive
+word-boundary title/slug mention scanning (company-brain has no wikilink convention anywhere in the
+product, unlike gbrain — real content here is business documents referencing each other by name).
+Ported gbrain's own technique of masking already-matched spans between passes, after a live-caught
+bug: without it, a page's own slug appearing literally inside a markdown href's text was
+independently re-matched by the mention pass, producing a redundant second edge for the same
+reference.
+
+**One function, two call sites — "on ingest" AND the first real M8 phase consumer, not a choice
+between them.** `src/core/links/reconcile.ts`'s `extractAndReconcileLinks()` runs synchronously
+inside the same transaction `importPage`/`importFile`/`replacePage` already hold (pure regex/string
+work, not an LLM call, so this doesn't violate D6), AND is wrapped as `LinkExtractionPhase` — M8's
+cycle engine's first phase with an actual reason to exist beyond its own proof-of-concept `noop`.
+The phase is not redundant with the hook: it backfills pages ingested before this feature existed,
+and — the gap a write-time hook cannot structurally close — discovers *backward* mentions (an older
+page that happens to name a page created after it, which the older page's own hook run had no way to
+know about). Verified live: a page inserted directly (bypassing the hook, simulating pre-existing
+content) gets no edge from a subsequently-created page that mentions it until `runCycle` walks it.
+
+Full-replace (`DELETE` then re-`INSERT`) rather than gbrain's true add/remove diff, matching
+`replacePage`'s own established pattern for `content_chunks`. No advisory lock — Postgres row
+locking on the `DELETE` already serializes two concurrent reconciliations of the same page. Verified
+live, not just reasoned through: two concurrent `extractAndReconcileLinks` calls for the same page
+neither crashed nor produced a duplicate row.
+
+**Two more real bugs, caught only by actually running this against the database** (the M8 pattern
+holds again — see D111):
+- `saveCheckpoint`-adjacent code was fine, but the very FIRST live test attempt exposed that the
+  soft-delete test above was asserting through the wrong connection (BYPASSRLS), which would have
+  let a genuine RLS regression pass silently — fixed before it could ship as a false-positive test.
+- The `link_extraction` phase's first live run legitimately needed more than 30s once the eval
+  workspace accumulated pages across the test file's own earlier cases (each `withTx` call is a
+  separate round trip to a remote Supabase instance) — not a hang, confirmed by re-running with a
+  longer timeout, but a reminder that this repo's live suites need realistic timeouts for anything
+  doing real per-item DB work, not the 5s bun default.
+
+**Retrieval — one-hop graph expansion, off by default** (`src/search/retrieval-knobs.ts`'s new
+`graphExpansion` knob; `src/search/hybrid.ts`'s new fifth fusion arm). Seeded by the page ids every
+other arm already found, capped per-seed (not globally) so one heavily-linked page can't flood the
+arm, emitting CHUNK ids via each neighbor's `ord = 0` chunk (a wave-1 simplification — refine only
+if a sweep shows it scoring poorly). Entirely gated on `graphExpansion.enabled`, default `false`,
+per the D110/D111 precedent that every new ranking behavior ships evidence-gated behind a
+preregistered holdout sweep, never promoted on engineering confidence alone. `'graph-expansion-only'`
+added to `RETRIEVAL_SWEEP_CONFIGS`; `PLANNED_COMPARISONS` deliberately NOT bumped in the same
+change — deciding the right comparison count for a 9th profile is a preregistration commitment for a
+human to make before the sweep runs, not something to silently adjust alongside the profile that
+needs it.
+
+Verified live, beyond typecheck and the offline suite: a direct query against the graph CTE chain in
+isolation resolves the expected neighbor from a real `links` row; the full `hybridQuery`, run against
+a workspace with enough competing pages that the vector/keyword arms' own limits would otherwise
+exclude the neighbor, surfaces it ONLY when `graphExpansion.enabled` is true — proving the arm
+contributes a genuinely new result, not one the other arms would have found anyway. `EXPLAIN
+(ANALYZE, BUFFERS)` at this small scale (~25 pages) shows a clean plan — indexed lookups, a Memoize
+on the pages join, no sequential scan over content_chunks — with no sign of the pathological
+join-order failure mode `hybrid.ts`'s own header documents from a prior incident. **Not verified at
+production scale** (thousands of pages): the InitPlan cardinality-estimation trap that file's header
+warns about is specifically a large-workspace failure mode, and nothing in this pass exercised one —
+flagged honestly rather than claimed proven.
+
+**Fully live-verified otherwise**: migration applied to the shared Supabase project; `doctor --update`
+82/82, fixture diff reviewed (one new RLS policy carrying both acl conjuncts, `cb_app`-only grants,
+zero `cb_auth` exposure); the full `links.live.test.ts` suite (8/8) and the existing `hybrid.test.ts`
+(18/18) and `leak-canary.test.ts` (33/33, the sacred cross-tenant canary) all pass with these changes
+in place; M8's own `cycle.live.test.ts` (20/20) re-verified unaffected by the new phase registration.

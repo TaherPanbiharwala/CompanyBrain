@@ -552,6 +552,59 @@ export function hybridQuery(
       ) t
     ),
 
+    -- ── GRAPH EXPANSION ARM (M9, off by default) ─────────────────────────────
+    -- One-hop neighbor discovery over links, seeded by the page ids every OTHER arm already
+    -- found — "before fusion" (the exit criteria's own phrase) means this joins the SAME fused
+    -- CTE as a fifth weighted arm, not app-layer post-processing bolted on after scoring.
+    --
+    -- Emits CHUNK ids, same reason the title arm does (see that CTE's comment): a page-shaped arm
+    -- cannot meet "group by id" or the content_chunks join below. ord = 0 (a representative chunk)
+    -- is a wave-1 simplification — refine only if the sweep shows it scoring poorly, per this
+    -- file's own established discipline of not building unmeasured sophistication speculatively.
+    --
+    -- Entirely gated on graphExpansion.enabled: when off, every graph_* CTE below evaluates to zero
+    -- rows via the boolean guard on each branch, so this costs nothing on the baseline path — same
+    -- technique the vector arm's hasVector gate already uses.
+    graph_seed as (
+      select page_id from kw_and
+      union select page_id from kw_or
+      union select page_id from vec
+      union select page_id from title
+    ),
+    -- Both directions of each edge, tagged with WHICHEVER endpoint was the seed — a link is
+    -- undirected for retrieval purposes even though the table itself is directional (extraction
+    -- writes edges "from the page mentioning" to "the page mentioned", but a mention is evidence of
+    -- relatedness either way a reader might search).
+    graph_neighbor_candidates as (
+      select l.from_page_id as seed_id, l.to_page_id as page_id, l.created_at
+      from links l join graph_seed s on s.page_id = l.from_page_id
+      where ${knobs.graphExpansion.enabled}::boolean
+      union all
+      select l.to_page_id as seed_id, l.from_page_id as page_id, l.created_at
+      from links l join graph_seed s on s.page_id = l.to_page_id
+      where ${knobs.graphExpansion.enabled}::boolean
+    ),
+    -- Capped PER SEED (not globally) — one heavily-linked page must not flood the arm at the
+    -- expense of every other seed's own neighbors. Deduplicated by page afterward: a neighbor
+    -- reached from multiple seeds only needs to be scored once here (fused's own group-by already
+    -- rewards multi-arm/multi-seed agreement without a second signal for it here).
+    graph_neighbors as (
+      select distinct page_id
+      from (
+        select page_id, row_number() over (partition by seed_id order by created_at) as neighbor_rk
+        from graph_neighbor_candidates
+      ) ranked
+      where neighbor_rk <= ${knobs.graphExpansion.maxNeighborsPerSeed}
+        and page_id not in (select page_id from graph_seed)
+    ),
+    graph as (
+      select c.id, g.page_id, row_number() over (order by c.id) as rk
+      from graph_neighbors g
+      join content_chunks c on c.page_id = g.page_id and c.ord = 0
+      where true
+        ${metadataFilter(tx, since, until, author)}
+    ),
+
     -- ── WEIGHTED RRF ───────────────────────────────────────────────────────
     -- Must match rrfFuse exactly; test/hybrid.test.ts asserts it on real data and rrfFuse stays the
     -- specification (D65). Two traps live here: rrfFuse ranks from ZERO ("1/(k + rank)") while
@@ -574,6 +627,10 @@ export function hybridQuery(
         select id, page_id, rk, ${fusion.vectorWeight}::float8, ${vectorK}::float8 from vec
         union all
         select id, page_id, rk, ${fusion.titleWeight}::float8, ${keywordK}::float8 from title
+        union all
+        -- Not intent-weighted (graph expansion isn't intent-classified) — the raw configured rrfK,
+        -- same base every intent weight above is itself derived from.
+        select id, page_id, rk, ${knobs.graphExpansion.weight}::float8, ${fusion.rrfK}::float8 from graph
       ) u
       group by id, page_id
     ),

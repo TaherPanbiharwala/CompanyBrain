@@ -18,6 +18,7 @@ import { embedAll } from './embed.ts';
 import { textHash } from './provenance.ts';
 import { OperationError } from '../api/errors.ts';
 import { aclForScope, type OperationContext, type PageScope } from '../core/context.ts';
+import { extractAndReconcileLinks } from '../core/links/reconcile.ts';
 import type postgres from 'postgres';
 
 export interface PageSummary {
@@ -723,6 +724,11 @@ export async function replacePage(ctx: OperationContext, input: ReplacePageInput
              content_hash = ${textHash(input.body)},
              updated_at = now()
        where id = ${page.id}`;
+
+    // M9: a replace must re-run extraction — the body changed, so stale edges must be deleted and
+    // any new ones written. Pure regex/mention work (no LLM call), safe inside this transaction
+    // per D6.
+    await extractAndReconcileLinks(tx, { workspaceId: ctx.workspaceId, pageId: page.id, pageAcl: page.acl, text: input.body });
 
     return { pageId: page.id, slug: page.slug, chunkCount: chunks.length };
   });

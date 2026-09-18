@@ -100,4 +100,32 @@ describe('retrieval policy', () => {
     expect(isExactMatch(' garry tan ', 'ignored', '  Garry Tan ')).toBe(true);
     expect(isExactMatch('Garry Tan', 'people/not-garry', 'Garry Tann')).toBe(false);
   });
+
+  describe('graphExpansion (M9)', () => {
+    it('ships off by default, matching the D110/D111 evidence-gated precedent', () => {
+      expect(BASELINE_RETRIEVAL_KNOBS.graphExpansion.enabled).toBe(false);
+      expect(DEFAULT_RETRIEVAL_KNOBS.graphExpansion.enabled).toBe(false);
+    });
+
+    it('merges through the same reserved/environment/caller layering as every other knob', () => {
+      const resolved = resolveRetrievalKnobs({
+        reserved: { graphExpansion: { enabled: true } },
+        caller: { graphExpansion: { maxNeighborsPerSeed: 5 } },
+      });
+      expect(resolved.graphExpansion).toEqual({ enabled: true, maxNeighborsPerSeed: 5, weight: 0.3 });
+    });
+
+    it('rejects an unknown field and an out-of-range value', () => {
+      expect(() => resolveRetrievalKnobs({ caller: { graphExpansion: { mystery: 1 } } as never })).toThrow('graphExpansion.mystery');
+      expect(() => resolveRetrievalKnobs({ caller: { graphExpansion: { maxNeighborsPerSeed: 0 } } })).toThrow();
+      expect(() => resolveRetrievalKnobs({ caller: { graphExpansion: { maxNeighborsPerSeed: 11 } } })).toThrow();
+    });
+
+    it('changes the knob hash when toggled, and not when left at its default', () => {
+      const on = resolveRetrievalKnobs({ caller: { graphExpansion: { enabled: true } } });
+      expect(retrievalKnobHash(on)).not.toBe(retrievalKnobHash(BASELINE_RETRIEVAL_KNOBS));
+      const unchanged = resolveRetrievalKnobs({ caller: { candidatePool: { vectorLimit: 20 } } });
+      expect(retrievalKnobHash(unchanged)).toBe(retrievalKnobHash(BASELINE_RETRIEVAL_KNOBS));
+    });
+  });
 });

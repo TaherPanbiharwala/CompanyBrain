@@ -3,11 +3,11 @@
 This is a snapshot, not a running log. Read `AGENTS.md` first, then fetch origin before trusting the
 branch line below.
 
-**Branch/commit at write time:** `claude/session-summary-next-steps-784f80`, fast-forwarded onto
-`origin/master` `457a7ea` (M7 + the singletopic eval dataset + the meta-workspace eval rerun, all
-already merged). M8 — the cycle engine — is implemented on top of that as an uncommitted working-tree
-diff as this line is written; see "Milestone 8" below for its status and the one thing still
-outstanding (nothing has been run against a live database in this environment).
+**Branch/commit at write time:** `claude/session-summary-next-steps-784f80`. M8 (the cycle engine) is
+committed locally at `6eb8aa8`, on top of `origin/master` `457a7ea` — not yet pushed or merged. M9
+(link extraction, wave 1) is implemented on top of that as an uncommitted working-tree diff as this
+line is written; see "Milestone 9" below for its status (fully live-verified, same discipline as M8)
+and what's deliberately deferred.
 
 ## Current outcome (M7)
 
@@ -226,11 +226,65 @@ uses — indefinitely, using existing `DATABASE_URL`/`DATABASE_ADMIN_URL` repo s
 standing recurring job, not a one-time action; confirm the cadence and target project are actually
 wanted before pushing to master, not just the code.
 
+## Milestone 9 — link extraction, wave 1
+
+**Current outcome.** M9's exit criteria — *"backlinks populate on ingest; a link-aware retrieval
+variant... runs through the M7 sweep harness and is measured, not assumed"* — is implemented and
+fully live-verified. Fact extraction (also in the ship table, but absent from the exit criteria) was
+explicitly deferred by the founder's own call — see D112 for the full reasoning; it's not started.
+
+**What shipped:** a new `links` table (`src/db/migrations/0021_link_extraction.sql`) with a
+two-acl-column RLS shape (`from_acl`/`to_acl`, both required to overlap the caller's grants — see
+D112 for why a single column can't express this correctly for a two-endpoint edge); a zero-LLM-cost
+extraction algorithm (`src/core/links/extract.ts`, markdown-link + title/slug-mention, pure and
+unit-tested) and its DB wrapper (`src/core/links/reconcile.ts`); synchronous ingest hooks in
+`importPage`/`importFile`/`replacePage` for real-time freshness; `LinkExtractionPhase` — the M8
+cycle engine's **first real phase**, registered as `link_extraction`, doing backfill and
+backward-mention discovery the hook alone can't; a new `graphExpansion` retrieval knob
+(`src/search/retrieval-knobs.ts`) and fifth fusion arm (`src/search/hybrid.ts`), off by default; a
+new `'graph-expansion-only'` sweep profile (`src/eval/retrieval-sweep.ts`).
+
+**Fully live-verified against the shared Supabase project** — migration applied, `doctor --update`
+82/82 (fixture diff reviewed: one new RLS policy carrying both acl conjuncts, `cb_app`-only grants),
+`links.live.test.ts` (8/8), `hybrid.test.ts` (18/18, confirming the new arm doesn't disturb existing
+retrieval when off), `leak-canary.test.ts` (33/33, the sacred cross-tenant canary), and M8's own
+`cycle.live.test.ts` (20/20, confirming the new phase registration doesn't disturb `noop`). The graph
+expansion arm was verified two ways beyond the standard suite: a direct query against its CTE chain
+in isolation, and a full `hybridQuery` run where the neighbor page is absent from results with the
+arm off and present with it on — proving it surfaces something the other arms genuinely wouldn't
+have found, not just re-finding an already-reachable page.
+
+**Two real bugs, both caught only by hitting the database** (same pattern as M8 — see D111/D112 for
+the earlier five): a soft-delete test that used the admin/BYPASSRLS pool and would have passed
+silently even with a real RLS regression underneath it (fixed to run through a scoped connection);
+and the `link_extraction` phase's first live run exceeding a 30s test timeout — not a hang, confirmed
+by re-running with a longer one, but real network-round-trip latency against a remote Supabase
+instance compounding as the test file's shared workspace accumulated pages across earlier cases in
+the same file.
+
+**Not yet done, honestly flagged rather than assumed fine:**
+- The graph expansion arm's query plan was checked with `EXPLAIN (ANALYZE, BUFFERS)` only at small
+  scale (~25 pages) — clean at that size, but `hybrid.ts`'s own header documents a prior incident
+  where the planner badly misjudged a join specifically at production scale (a 2,829-chunk
+  workspace, 232ms → 0.3ms after a fix). Nothing in this pass exercised that scale for the new arm.
+- The **retrieval-lift measurement itself has not been run.** `'graph-expansion-only'` is registered
+  in the sweep harness but `bun run eval:sweep` was not executed — that requires the MultiHop eval
+  workspace to first be swept by `LinkExtractionPhase` (`bun run cycle --phase link_extraction
+  --workspace <eval-ws>`), and `PLANNED_COMPARISONS`'s new value needs a deliberate preregistration
+  decision before that run, per D112. Until this runs, `graphExpansion.enabled` staying `false` by
+  default is correct by the same "unrun gate means baseline stays selected" rule D110 established —
+  not a promotion decision made and then walked back.
+- Title/slug-mention extraction's real-world quality is unverified against actual customer content —
+  it was designed against "company-brain has no wikilink convention, business documents reference
+  each other by name" reasoning, not measured against a real corpus (see D112).
+- Fact extraction: not started, deliberately (see above).
+
 ## Working-tree cautions
 
 The untracked `.claude/` directory and `docs/enterprise-learning-roadmap.md` predate this work and
-belong to the user; they were not edited. `src/db/migrations/0020_cycle_engine.sql` is new (M8) —
-applied to the shared Supabase project (see "Milestone 8" above), but this diff itself is still
-uncommitted, so a fresh clone or another worktree won't have it applied until `bun run migrate` runs
-there too. Keep the transaction handle literally named `tx`, and never weaken the RLS
+belong to the user; they were not edited. `src/db/migrations/0020_cycle_engine.sql` (M8) is
+committed (`6eb8aa8`) and applied to the shared Supabase project. `src/db/migrations/
+0021_link_extraction.sql` (M9) is also applied to that same project, but this diff itself is still
+uncommitted — a fresh clone or another worktree won't have either migration applied until `bun run
+migrate` runs there too. Keep the transaction handle literally named `tx`, and never weaken the RLS
 boundary while resolving evaluation issues.

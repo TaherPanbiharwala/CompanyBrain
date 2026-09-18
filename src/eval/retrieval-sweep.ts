@@ -49,6 +49,17 @@ export const RETRIEVAL_SWEEP_CONFIGS: Readonly<Record<string, DeepReadonly<Retri
     defaults: GBRAIN_RETRIEVAL_KNOBS,
     caller: { recency: { mode: 'strong' } },
   }),
+  // M9: one-hop graph expansion over `links`, isolated from every intent/recency variant above so
+  // its own effect is measured independently. Requires the eval workspace to have been swept by
+  // LinkExtractionPhase first (`bun run cycle --phase link_extraction --workspace <eval-ws>`) —
+  // link-aware retrieval is meaningless against an unpopulated links table.
+  //
+  // PLANNED_COMPARISONS is intentionally NOT bumped here. It's a preregistration commitment (the
+  // whole point of Bonferroni-correcting is fixing the comparison count before seeing results,
+  // per D110's own discipline) — deciding the right count for a 9th profile is a human call to make
+  // before the sweep runs, not something to silently adjust in the same change that adds the
+  // profile.
+  'graph-expansion-only': resolveRetrievalKnobs({ caller: { graphExpansion: { enabled: true } } }),
 });
 
 export interface TuningSummary {

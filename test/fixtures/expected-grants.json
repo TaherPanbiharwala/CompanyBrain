@@ -36,6 +36,11 @@
   },
   {
     "grantee": "cb_app",
+    "table_name": "links",
+    "privileges": "DELETE,INSERT,SELECT,UPDATE"
+  },
+  {
+    "grantee": "cb_app",
     "table_name": "op_checkpoints",
     "privileges": "DELETE,INSERT,SELECT,UPDATE"
   },

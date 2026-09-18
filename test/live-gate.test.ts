@@ -216,6 +216,9 @@ const REQUIRED_LIVE_SUITES = [
   'invites',
   'leak-canary',
   'lifecycle',
+  // M9's links table: RLS cross-tenant isolation, the from_acl/to_acl conjunction, backlinks
+  // populating on ingest, and the link_extraction cycle phase — see test/links.live.test.ts.
+  'links',
   'm2-auth',
   'mcp',
   'rls-smoke',

@@ -49,6 +49,16 @@ export interface RetrievalKnobs {
     halflifeDays: number;
     coefficient: number;
   };
+  /** M9: one-hop graph expansion over the `links` table, added as a fifth fusion arm. Off by
+   *  default, per D110/D111's precedent — every new ranking behavior ships evidence-gated behind a
+   *  preregistered holdout sweep, never promoted on engineering confidence alone. */
+  graphExpansion: {
+    enabled: boolean;
+    /** Cap on how many one-hop neighbors a single seed page contributes, so one heavily-linked
+     *  page can't flood the arm. */
+    maxNeighborsPerSeed: number;
+    weight: number;
+  };
 }
 
 type DeepPartial<T> = { [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P] };
@@ -100,6 +110,11 @@ const recencySchema = z.object({
     halflifeDays: z.number().finite().min(0).max(3650),
     coefficient: z.number().finite().min(0).max(2),
   }).strict();
+const graphExpansionSchema = z.object({
+    enabled: z.boolean(),
+    maxNeighborsPerSeed: z.number().int().min(1).max(10),
+    weight: positiveWeight,
+  }).strict();
 
 const retrievalKnobsSchema = z.object({
   candidatePool: candidatePoolSchema,
@@ -107,6 +122,7 @@ const retrievalKnobsSchema = z.object({
   fusion: fusionSchema,
   intent: intentSchema,
   recency: recencySchema,
+  graphExpansion: graphExpansionSchema,
 }).strict().superRefine((value, context) => {
   const pool = value.candidatePool;
   const capacity = pool.vectorLimit + pool.keywordAndLimit + pool.keywordOrLimit + pool.titleLimit;
@@ -136,6 +152,7 @@ const overrideSchema = z.object({
     }).strict().optional(),
   }).strict().optional(),
   recency: recencySchema.partial().strict().optional(),
+  graphExpansion: graphExpansionSchema.partial().strict().optional(),
 }).strict();
 
 const GBRAIN_INTENT_WEIGHTS: Record<QueryIntent, IntentWeights> = {
@@ -168,6 +185,7 @@ const BASE_PROFILE: RetrievalKnobs = {
   },
   intent: { enabled: false, weights: GBRAIN_INTENT_WEIGHTS },
   recency: { mode: 'off', halflifeDays: 90, coefficient: 0.3 },
+  graphExpansion: { enabled: false, maxNeighborsPerSeed: 3, weight: 0.3 },
 };
 
 function deepFreeze<T>(value: T): T {
@@ -208,6 +226,7 @@ function mergeKnobs(base: RetrievalKnobs, override: RetrievalKnobOverrides): Ret
       },
     },
     recency: { ...base.recency, ...override.recency },
+    graphExpansion: { ...base.graphExpansion, ...override.graphExpansion },
   };
 }
 

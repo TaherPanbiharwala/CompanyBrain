@@ -13,6 +13,7 @@ import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
 import { embedAll } from './embed.ts';
 import { deriveEffectiveDate, textHash as computeTextHash } from './provenance.ts';
 import { OperationError } from '../api/errors.ts';
+import { extractAndReconcileLinks } from '../core/links/reconcile.ts';
 
 export interface ImportPageInput {
   slug: string;
@@ -154,6 +155,11 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
       await tx`
         insert into content_chunks ${tx(values, 'workspace_id', 'page_id', 'acl', 'tags', 'ord', 'content', 'token_count', 'embedding', 'effective_date', 'author', 'chunker_version')}`;
     }
+
+    // M9: backlinks populate on ingest. Pure regex/mention work (no LLM call), so it's safe inside
+    // this transaction per D6 — that rule is about never holding a transaction open across a
+    // provider round-trip, which this never does.
+    await extractAndReconcileLinks(tx, { workspaceId: ctx.workspaceId, pageId, pageAcl: acl, text: input.body });
 
     return { pageId, chunkCount: chunks.length };
   });

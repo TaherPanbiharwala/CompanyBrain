@@ -29,7 +29,9 @@ describe('held-out retrieval sweep primitives', () => {
     expect(new Set([...a.tuning, ...a.holdout].map((q) => q.id)).size).toBe(questions.length);
   });
 
-  it('registers exactly the eight preregistered configurations with stable hashes', () => {
+  it('registers exactly the nine preregistered configurations with stable hashes', () => {
+    // Eight from M7, plus M9's graph-expansion-only — see retrieval-sweep.ts's own comment on why
+    // PLANNED_COMPARISONS is not bumped in the same change that adds this profile.
     expect(Object.keys(RETRIEVAL_SWEEP_CONFIGS)).toEqual([
       'baseline',
       'gbrain-exact-only',
@@ -39,9 +41,10 @@ describe('held-out retrieval sweep primitives', () => {
       'gbrain-intent-auto-recency',
       'gbrain-intent-recency-on',
       'gbrain-intent-recency-strong',
+      'graph-expansion-only',
     ]);
     const manifest = sweepConfigManifest();
-    expect(new Set(Object.values(manifest)).size).toBe(8);
+    expect(new Set(Object.values(manifest)).size).toBe(9);
     expect(Object.values(manifest).every((hash) => /^[a-f0-9]{64}$/.test(hash))).toBe(true);
   });
 
