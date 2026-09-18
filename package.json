@@ -33,6 +33,7 @@
     "seed:eval": "bun run scripts/seed-eval-workspace.ts",
     "load:eval": "bun run scripts/load-eval-corpus.ts",
     "eval:rag": "bun run scripts/run-rag-eval.ts",
+    "grade:answers": "bun run scripts/grade-answers.ts",
     "replay-eval": "bun run scripts/replay-eval.ts",
     "purge:deleted": "bun run scripts/purge-deleted.ts"
   },
