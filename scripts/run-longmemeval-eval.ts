@@ -282,6 +282,10 @@ async function main(): Promise<void> {
       const sessionId = item.sessionIds[index]!;
       const slug = itemState.sessionSlugById[sessionId]!;
       if (alreadyPresent.has(slug)) continue;
+      // LongMemEval-S has legitimate empty distractors. They are preserved in the session ID →
+      // slug mapping but cannot be imported as a normal Company Brain page because no content
+      // exists to chunk or embed. normalizeLongMemEval() rejects any empty gold session.
+      if (item.sessions[index]!.length === 0) continue;
       await importPage(ctx, { slug, title: `LongMemEval session ${sessionId}`, body: renderLongMemEvalSession(item.sessions[index]!), tags: ['eval', 'longmemeval'] }, { budget: budgetSetup.budget });
     }
     const started = Date.now();

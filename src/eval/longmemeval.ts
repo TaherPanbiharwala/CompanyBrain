@@ -88,7 +88,10 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
       throw new Error(`${label} has ${Array.isArray(sessionsRaw) ? sessionsRaw.length : 'non-array'} sessions for ${sessionIds.length} ids`);
     }
     const sessions = sessionsRaw.map((session, sessionIndex) => {
-      if (!Array.isArray(session) || session.length === 0) throw new Error(`${label}.haystack_sessions[${sessionIndex}] must be a non-empty turn array`);
+      // The published LongMemEval-S split contains empty distractor sessions. Retain their IDs in
+      // the immutable case mapping, but do not manufacture content for a page that has no turns.
+      // Gold evidence must still name a real, ingestible session (checked below).
+      if (!Array.isArray(session)) throw new Error(`${label}.haystack_sessions[${sessionIndex}] must be a turn array`);
       return session.map((turn, turnIndex) => {
         const turnRow = asRecord(turn, `${label}.haystack_sessions[${sessionIndex}][${turnIndex}]`);
         return {
@@ -100,6 +103,8 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
     const sessionIdSet = new Set(sessionIds);
     for (const gold of goldSessionIds) {
       if (!sessionIdSet.has(gold)) throw new Error(`${label} gold session ${gold} is not in haystack_session_ids`);
+      const sessionIndex = sessionIds.indexOf(gold);
+      if (sessions[sessionIndex]!.length === 0) throw new Error(`${label} gold session ${gold} has no turns`);
     }
     return {
       questionId,
