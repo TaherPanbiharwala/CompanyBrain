@@ -49,16 +49,20 @@ export class RouterError extends Error {
   }
 }
 
-interface RouterScope {
+/** Internal model-spend contract. Kept out of HTTP/MCP operation inputs; cycle and evaluation
+ * runners pass it only while they hold a trusted server-side context. */
+export interface RouterBudget {
+  check: (estimate: SubmitEstimate) => Promise<BudgetCheckResult>;
+  record: (actual: ActualUsage) => Promise<void>;
+}
+
+export interface RouterScope {
   workspaceId: string; // per-workspace binding; M5 spend caps key on this
   zdr: boolean;
   /** Set only by the cycle engine (M8). A normal user request passes no budget field, so chat()/
    *  embed() behave exactly as before for every existing call site — this is additive, not a
    *  branch in the request path. */
-  budget?: {
-    check: (estimate: SubmitEstimate) => Promise<BudgetCheckResult>;
-    record: (actual: ActualUsage) => Promise<void>;
-  };
+  budget?: RouterBudget;
 }
 
 const als = new AsyncLocalStorage<RouterScope>();

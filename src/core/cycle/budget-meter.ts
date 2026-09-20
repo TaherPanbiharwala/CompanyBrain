@@ -74,7 +74,10 @@ export class UnknownModelPricingError extends Error {
   }
 }
 
-function estimateCostUsd(modelId: string, inputTokens: number, outputTokens: number): number {
+/** Shared by trusted evaluation preflight and the transactional ledger. Keeping the arithmetic in
+ * one exported function means a campaign's "would exceed" estimate cannot drift from the check()
+ * that gates the provider call. */
+export function estimateModelCostUsd(modelId: string, inputTokens: number, outputTokens: number): number {
   const rate = PLACEHOLDER_PRICING_USD_PER_MILLION[modelId];
   if (!rate) throw new UnknownModelPricingError(modelId);
   return (inputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
@@ -116,7 +119,7 @@ export class BudgetMeter {
    *  when the projected total would exceed the cap; the denied attempt is still committed as an
    *  `allowed:false` row, not silently dropped. */
   async check(estimate: SubmitEstimate): Promise<BudgetCheckResult> {
-    const estimatedCostUsd = estimateCostUsd(estimate.modelId, estimate.estimatedInputTokens, estimate.maxOutputTokens);
+    const estimatedCostUsd = estimateModelCostUsd(estimate.modelId, estimate.estimatedInputTokens, estimate.maxOutputTokens);
     const { budgetUsd, workspaceId, op, runId } = this.opts;
 
     // The BudgetExhaustedError throw MUST happen after this transaction has committed, not inside
@@ -154,7 +157,7 @@ export class BudgetMeter {
    *  the cap — mirrors gbrain's TX1 (an underestimated call can still exceed the ceiling after the
    *  fact). */
   async record(actual: ActualUsage): Promise<void> {
-    const actualCostUsd = estimateCostUsd(actual.modelId, actual.inputTokens, actual.outputTokens ?? 0);
+    const actualCostUsd = estimateModelCostUsd(actual.modelId, actual.inputTokens, actual.outputTokens ?? 0);
     const { budgetUsd, workspaceId, op, runId } = this.opts;
 
     // Same reasoning as check(): the post-hoc overspend throw happens AFTER this transaction

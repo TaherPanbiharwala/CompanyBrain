@@ -6,7 +6,15 @@
 import type postgres from 'postgres';
 import type { OperationContext } from '../core/context.ts';
 import { withScopedTx } from '../db/client.ts';
-import { embed, withRouterScope, rerank, isRerankEnabled, expandQuery, isExpansionEnabled } from '../ai/router.ts';
+import {
+  embed,
+  withRouterScope,
+  rerank,
+  isRerankEnabled,
+  expandQuery,
+  isExpansionEnabled,
+  type RouterBudget,
+} from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
 import { formatLocator, type Locator } from '../ingest/blocks.ts';
 import { config } from '../config.ts';
@@ -195,6 +203,8 @@ export interface HybridSearchOptions {
    * policy variants; public callers cannot supply HybridSearchOptions.
    */
   queryVector?: readonly number[];
+  /** Trusted evaluation/cycle-only spend gate. Public operations never construct this object. */
+  budget?: RouterBudget;
 }
 
 function validatedAsOf(value: string | undefined): string {
@@ -240,7 +250,7 @@ export async function hybridSearch(
   // Failure here is absorbed by expandQuery (returns []), so an expansion outage costs vocabulary,
   // never the request.
   const expansions = isExpansionEnabled()
-    ? await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => expandQuery(query))
+    ? await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false, budget: opts?.budget }, () => expandQuery(query))
     : [];
   const orQuery = keywordQueryText([query, ...expansions].join(' '), knobs.keyword);
 
@@ -257,7 +267,9 @@ export async function hybridSearch(
     vectorLiteral = toVectorLiteral(opts.queryVector);
   } else {
     try {
-      const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embed([query]));
+      const [queryVector] = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false, budget: opts?.budget }, () =>
+        embed([query]),
+      );
       vectorLiteral = toVectorLiteral(queryVector!);
     } catch (err) {
       degraded = 'keyword_only';
@@ -319,7 +331,7 @@ export async function hybridSearch(
   // whole retrieval arm. Only the second is worth telling the reader about.
   if (isRerankEnabled() && hits.length > 1) {
     try {
-      const scores = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () =>
+      const scores = await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false, budget: opts?.budget }, () =>
         rerank(query, hits.map((h) => ({ id: h.chunkId, text: h.content }))),
       );
       const byId = new Map(hits.map((h) => [h.chunkId, h]));

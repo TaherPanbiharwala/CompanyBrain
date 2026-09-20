@@ -194,6 +194,9 @@ test('every suite gated on a live database routes through liveOrFail', () => {
 const REQUIRED_LIVE_SUITES = [
   'answer',
   'api',
+  // M10 benchmark runners: a LongMemEval case workspace cannot retrieve another case's session,
+  // and an Amara fact written by fact_extraction remains invisible outside its workspace.
+  'benchmark-isolation',
   // M8's storage substrate (locks, checkpoints, budget ledger, failure ledger) and the
   // kill-9/resume exit criterion — see test/cycle.live.test.ts and test/cycle-kill9.live.test.ts.
   'cycle',

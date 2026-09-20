@@ -40,7 +40,9 @@
     "grade:answers": "bun run scripts/grade-answers.ts",
     "replay-eval": "bun run scripts/replay-eval.ts",
     "purge:deleted": "bun run scripts/purge-deleted.ts",
-    "cycle": "bun run scripts/run-cycle.ts"
+    "cycle": "bun run scripts/run-cycle.ts",
+    "eval:longmemeval": "bun run scripts/run-longmemeval-eval.ts",
+    "eval:brainbench": "bun run scripts/run-brainbench-eval.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

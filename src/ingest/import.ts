@@ -6,7 +6,7 @@
 import { aclForScope, DEFAULT_PAGE_SCOPE, type OperationContext, type PageScope } from '../core/context.ts';
 import { DEFAULT_PACK_KIND, type PackKind } from '../core/pack.ts';
 import { withScopedTx } from '../db/client.ts';
-import { withRouterScope } from '../ai/router.ts';
+import { withRouterScope, type RouterBudget } from '../ai/router.ts';
 import { toVectorLiteral } from '../ai/vector.ts';
 import type postgres from 'postgres';
 import { chunkText, estimateTokens, CHUNKER_VERSION } from './chunk.ts';
@@ -35,7 +35,17 @@ export interface ImportPageResult {
   chunkCount: number;
 }
 
-export async function importPage(ctx: OperationContext, input: ImportPageInput): Promise<ImportPageResult> {
+/** Trusted server-only options. They are intentionally absent from ImportPageInput, which is the
+ * shape reached by the public ingest operation. */
+export interface ImportPageOptions {
+  budget?: RouterBudget;
+}
+
+export async function importPage(
+  ctx: OperationContext,
+  input: ImportPageInput,
+  opts?: ImportPageOptions,
+): Promise<ImportPageResult> {
   const chunks = chunkText(input.body);
   const tags = input.tags ?? [];
   // The acl is DERIVED from the scope — never stamped independently. `scope` names a visibility
@@ -57,7 +67,9 @@ export async function importPage(ctx: OperationContext, input: ImportPageInput):
   const embeddings =
     chunks.length === 0
       ? []
-      : await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false }, () => embedAll(chunks.map((c) => c.text)));
+      : await withRouterScope({ workspaceId: ctx.workspaceId, zdr: false, budget: opts?.budget }, () =>
+          embedAll(chunks.map((c) => c.text)),
+        );
 
   return withScopedTx(ctx, async (tx) => {
     let rows: { id: string }[];

@@ -217,8 +217,13 @@ describe.skipIf(!live)('facts security (M10 wave 1 sub-step A / 0023) — live',
       select id from cb_internal.cycle_fact_extraction_candidates(null, 1000) where id = ${page.pageId}`);
     expect(beforeStamp).toHaveLength(1);
 
-    const [{ content_hash }] = await adminSql()<{ content_hash: string }[]>`
+    const [pageHash] = await adminSql()<{ content_hash: string }[]>`
       select content_hash from pages where id = ${page.pageId}`;
+    // The page was just created above, so absence is a test setup failure rather than an optional
+    // property. Narrow explicitly instead of destructuring an array element TypeScript correctly
+    // considers possibly undefined.
+    if (!pageHash) throw new Error('fresh page missing from admin lookup');
+    const { content_hash } = pageHash;
     await withScopedTx(cycleCtx, (tx) => tx`
       select cb_internal.cycle_write_fact_extraction_stamp(${page.pageId}, ${content_hash})`);
 
