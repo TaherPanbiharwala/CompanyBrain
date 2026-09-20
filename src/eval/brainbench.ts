@@ -23,6 +23,7 @@ export interface BrainBenchQuery {
 export interface BrainBenchGoldBearingPartition {
   candidates: unknown[];
   excludedAbstentionQueryIds: string[];
+  excludedExampleQueryIds: string[];
 }
 
 export interface BrainBenchQueryScore {
@@ -166,14 +167,21 @@ export function partitionBrainBenchGoldBearingQueries(raw: unknown, family: stri
   if (!Array.isArray(raw) || raw.length === 0) throw new Error(`${family} queries must be a non-empty array`);
   const candidates: unknown[] = [];
   const excludedAbstentionQueryIds: string[] = [];
+  const excludedExampleQueryIds: string[] = [];
   for (let index = 0; index < raw.length; index++) {
     const value = record(raw[index], `${family}[${index}]`);
+    const id = nonEmpty(value.id ?? value.query_id, `${family}[${index}].id`);
+    // qrels.json at the pinned revision includes an explicitly labelled documentation row whose
+    // target is not part of the generated public corpus. It is not an evaluation query.
+    if (value._example === true || value._example === 'true') {
+      excludedExampleQueryIds.push(id);
+      continue;
+    }
     const goldRecord = value.gold && typeof value.gold === 'object' && !Array.isArray(value.gold) ? (value.gold as RecordValue) : undefined;
     if (goldRecord?.expected_abstention !== true && value.expected_abstention !== true) {
       candidates.push(raw[index]);
       continue;
     }
-    const id = nonEmpty(value.id ?? value.query_id, `${family}[${index}].id`);
     const relevant = value.relevant ?? value.relevantSlugs ?? value.relevant_slugs ?? goldRecord?.relevant ?? goldRecord?.relevant_slugs;
     if (relevant !== undefined && (!Array.isArray(relevant) || relevant.length > 0)) {
       throw new Error(`BrainBench abstention query ${id} unexpectedly has retrieval qrels`);
@@ -183,7 +191,10 @@ export function partitionBrainBenchGoldBearingQueries(raw: unknown, family: stri
   if (new Set(excludedAbstentionQueryIds).size !== excludedAbstentionQueryIds.length) {
     throw new Error(`${family} has duplicate abstention query ids`);
   }
-  return { candidates, excludedAbstentionQueryIds };
+  if (new Set(excludedExampleQueryIds).size !== excludedExampleQueryIds.length) {
+    throw new Error(`${family} has duplicate example query ids`);
+  }
+  return { candidates, excludedAbstentionQueryIds, excludedExampleQueryIds };
 }
 
 /** Convert a native chunk result list to page ranking, retaining the first appearance of each page.

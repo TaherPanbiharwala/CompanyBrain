@@ -45,6 +45,15 @@ describe('BrainBench public corpus boundary', () => {
     expect(normalizeBrainBenchQueries(partition.candidates, 'fuzzy', new Set(['people/a']))).toHaveLength(1);
     expect(() => partitionBrainBenchGoldBearingQueries([{ id: 'bad', gold: { expected_abstention: true, relevant: ['people/a'] } }], 'fuzzy')).toThrow('unexpectedly has retrieval qrels');
   });
+
+  it('excludes explicitly marked documentation examples without accepting malformed qrels', () => {
+    const partition = partitionBrainBenchGoldBearingQueries([
+      { id: 'example', _example: 'true', query: 'documentation only', relevant: ['absent/page'] },
+      { id: 'scored', question: 'where?', gold: { relevant: ['people/a'] } },
+    ], 'relational');
+    expect(partition.excludedExampleQueryIds).toEqual(['example']);
+    expect(normalizeBrainBenchQueries(partition.candidates, 'relational', new Set(['people/a']))).toHaveLength(1);
+  });
 });
 
 describe('BrainBench page ranking and scoring', () => {
