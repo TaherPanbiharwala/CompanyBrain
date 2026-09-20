@@ -34,6 +34,7 @@ import {
   benchmarkContext,
   campaignBudget,
   campaignDir,
+  campaignLedgerRunId,
   ensureBenchmarkPrincipal,
   ensureBenchmarkWorkspace,
   existingPageSlugs,
@@ -298,6 +299,7 @@ function profileManifest(campaignId: string, checkout: CheckoutInfo, maxEmbedUsd
   return {
     benchmark: 'BrainBench',
     campaign_id: campaignId,
+    campaign_ledger_run_id: campaignLedgerRunId(campaignId),
     company_brain_commit: companyBrainCommit,
     benchmark_revision: checkout.revision,
     benchmark_data_tree: checkout.corpusHash,

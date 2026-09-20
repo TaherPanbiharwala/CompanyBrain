@@ -79,6 +79,16 @@ export function newCampaignId(prefix: string): string {
   return `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-').toLowerCase()}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+/** The filesystem/report campaign token is deliberately readable, while M8's transactional
+ * ledger requires UUID `run_id` values. Derive a stable UUIDv5-shaped value so resume reads the
+ * exact same ledger rows without leaking the display token into a UUID database column. */
+export function campaignLedgerRunId(campaignId: string): string {
+  const hash = createHash('sha256').update(`company-brain-benchmark-campaign\u0000${campaignId}`).digest('hex');
+  const variant = ((Number.parseInt(hash[16]!, 16) & 0b0011) | 0b1000).toString(16);
+  const uuid = `${hash.slice(0, 12)}5${hash.slice(13, 16)}${variant}${hash.slice(17, 32)}`;
+  return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
+}
+
 export function requireBaselineProfile(): { model: string; dimensions: number; retrievalKnobHash: string } {
   if (config.RERANK_MODEL) throw new Error('benchmark refuses RERANK_MODEL: the registered profile is default retrieval with no reranker');
   if (config.QUERY_EXPANSION !== 0) throw new Error('benchmark refuses QUERY_EXPANSION: the registered profile is default retrieval with no query expansion');
@@ -134,15 +144,16 @@ export async function campaignBudget(
 ): Promise<{ controllerWorkspaceId: string; ctx: OperationContext; budget: RouterBudget }> {
   const workspaceId = controllerWorkspaceId ?? await ensureBenchmarkWorkspace(principalId, `eval budget ${campaignId}`);
   const ctx = await benchmarkContext(principalId, workspaceId);
-  const opts: BudgetMeterOpts = { workspaceId, op: 'benchmark_embedding', runId: campaignId, budgetUsd: maxEmbedUsd };
+  const opts: BudgetMeterOpts = { workspaceId, op: 'benchmark_embedding', runId: campaignLedgerRunId(campaignId), budgetUsd: maxEmbedUsd };
   const meter = new BudgetMeter(ctx, opts);
   return { controllerWorkspaceId: workspaceId, ctx, budget: { check: (estimate) => meter.check(estimate), record: (actual) => meter.record(actual) } };
 }
 
 export async function recordedCampaignSpend(ctx: OperationContext, campaignId: string): Promise<number> {
+  const ledgerRunId = campaignLedgerRunId(campaignId);
   const [row] = await withScopedTx(ctx, async (tx) => tx<{ spend: string | null }[]>`
     select sum(coalesce(actual_cost_usd, estimated_cost_usd)) as spend
-    from cycle_budget_ledger where op = 'benchmark_embedding' and run_id = ${campaignId} and allowed = true`);
+    from cycle_budget_ledger where op = 'benchmark_embedding' and run_id = ${ledgerRunId} and allowed = true`);
   return Number(row?.spend ?? 0);
 }
 
