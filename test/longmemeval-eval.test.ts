@@ -42,6 +42,18 @@ describe('LongMemEval-S normalization and scoring', () => {
     expect(() => normalizeLongMemEval([{ ...withEmptyDistractor, answer_session_ids: ['noise'] }], 1)).toThrow('gold session noise has no turns');
   });
 
+  it('canonicalizes identical repeated distractors and refuses conflicting repeats', () => {
+    const duplicate = {
+      ...raw[0],
+      haystack_session_ids: ['noise', 'noise', 'gold-a'],
+      haystack_sessions: [[{ role: 'user', content: 'same' }], [{ role: 'user', content: 'same' }], [{ role: 'user', content: 'a' }]],
+      answer_session_ids: ['gold-a'],
+    };
+    const [item] = normalizeLongMemEval([duplicate], 1);
+    expect(item!.sessionIds).toEqual(['noise', 'gold-a']);
+    expect(() => normalizeLongMemEval([{ ...duplicate, haystack_sessions: [[{ role: 'user', content: 'first' }], [{ role: 'user', content: 'second' }], [{ role: 'user', content: 'a' }]] }], 1)).toThrow('duplicated with conflicting turns');
+  });
+
   it('uses collision-safe case namespaced session slugs', () => {
     expect(longMemEvalSessionSlug('q-a', 'same')).not.toBe(longMemEvalSessionSlug('q-b', 'same'));
     expect(longMemEvalSessionSlug('q-a', 'same')).toBe(longMemEvalSessionSlug('q-a', 'same'));

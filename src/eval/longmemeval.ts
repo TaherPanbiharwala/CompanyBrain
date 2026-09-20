@@ -81,7 +81,6 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
     ids.add(questionId);
     const sessionIds = stringArray(row.haystack_session_ids, `${label}.haystack_session_ids`);
     const goldSessionIds = stringArray(row.answer_session_ids, `${label}.answer_session_ids`);
-    if (new Set(sessionIds).size !== sessionIds.length) throw new Error(`${label} has duplicate haystack session ids`);
     if (new Set(goldSessionIds).size !== goldSessionIds.length) throw new Error(`${label} has duplicate answer session ids`);
     const sessionsRaw = row.haystack_sessions;
     if (!Array.isArray(sessionsRaw) || sessionsRaw.length !== sessionIds.length) {
@@ -100,19 +99,36 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
         };
       });
     });
-    const sessionIdSet = new Set(sessionIds);
+    // The published split has a small number of byte-identical repeated distractor IDs. Canonicalize
+    // only those exact repeats. A reused ID with changed turns is ambiguous evidence and remains a
+    // hard failure rather than being silently overwritten by the slug map.
+    const canonicalSessionIds: string[] = [];
+    const canonicalSessions: LongMemEvalTurn[][] = [];
+    const sessionIndexById = new Map<string, number>();
+    for (let sessionIndex = 0; sessionIndex < sessionIds.length; sessionIndex++) {
+      const sessionId = sessionIds[sessionIndex]!;
+      const existing = sessionIndexById.get(sessionId);
+      if (existing === undefined) {
+        sessionIndexById.set(sessionId, canonicalSessionIds.length);
+        canonicalSessionIds.push(sessionId);
+        canonicalSessions.push(sessions[sessionIndex]!);
+      } else if (JSON.stringify(canonicalSessions[existing]) !== JSON.stringify(sessions[sessionIndex])) {
+        throw new Error(`${label} session ${sessionId} is duplicated with conflicting turns`);
+      }
+    }
+    const sessionIdSet = new Set(canonicalSessionIds);
     for (const gold of goldSessionIds) {
       if (!sessionIdSet.has(gold)) throw new Error(`${label} gold session ${gold} is not in haystack_session_ids`);
-      const sessionIndex = sessionIds.indexOf(gold);
-      if (sessions[sessionIndex]!.length === 0) throw new Error(`${label} gold session ${gold} has no turns`);
+      const sessionIndex = sessionIndexById.get(gold)!;
+      if (canonicalSessions[sessionIndex]!.length === 0) throw new Error(`${label} gold session ${gold} has no turns`);
     }
     return {
       questionId,
       type: stringField(row, 'question_type', label),
       question: stringField(row, 'question', label),
       answer: stringField(row, 'answer', label),
-      sessionIds,
-      sessions,
+      sessionIds: canonicalSessionIds,
+      sessions: canonicalSessions,
       goldSessionIds,
     };
   });
