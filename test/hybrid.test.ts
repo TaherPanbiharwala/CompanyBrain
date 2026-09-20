@@ -487,6 +487,138 @@ describe.skipIf(!live)('hybridSearch — live', () => {
     expect(promoted.hits[0]?.slug).toBe('bulk-marker');
   }, 40_000);
 
+  it('reserves graph capacity when the four base arms use their full 400-row policy budget', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const admin = adminSql();
+    const targetSlug = `graph-shortlist-target-${RUN}`;
+    const seedPrefix = `graph-shortlist-seed-${RUN}-`;
+    const acl = [`ws:${ws1}`];
+
+    // rls-exempt: compact synthetic fixture write into this test's disposable workspace. The
+    // search under test still runs through hybridSearch -> withScopedTx as cb_app.
+    await admin`
+      with inserted as (
+        insert into pages (workspace_id, slug, title, owner_principal, scope, acl, body, effective_date)
+        select ${ws1}::uuid,
+               ${seedPrefix} || n::text,
+               'Graph shortlist seed ' || n::text,
+               ${p1}, 'workspace', ${acl}::text[],
+               ${targetSlug} || ' appears here as seed evidence ' || n::text,
+               current_date
+        from generate_series(1, 5) n
+        union all
+        select ${ws1}::uuid, ${targetSlug}, 'Neutral adjacency node', ${p1}, 'workspace',
+               ${acl}::text[], 'Only unrelated adjacency payload lives in this body.', current_date
+        returning id, slug, acl, body
+      ), inserted_chunks as (
+        insert into content_chunks (workspace_id, page_id, acl, ord, content, embedding, effective_date)
+        select ${ws1}::uuid, id, acl, 0, body, null::vector, current_date
+        from inserted
+        returning page_id
+      )
+      insert into links (
+        workspace_id, from_page_id, to_page_id, from_acl, to_acl,
+        link_kind, link_source, context, created_at
+      )
+      select ${ws1}::uuid, seed.id, target.id, seed.acl, target.acl,
+             'mention', seed.slug, 'shortlist graph fixture', now()
+      from inserted seed
+      cross join inserted target
+      where seed.slug like ${seedPrefix + '%'} and target.slug = ${targetSlug}`;
+
+    const policy = {
+      candidatePool: {
+        vectorLimit: 100,
+        keywordAndLimit: 100,
+        keywordOrLimit: 100,
+        titleLimit: 100,
+        maxPerPage: 1,
+      },
+      // The configured base arms total the maximum 400 even though this compact fixture does not
+      // fill every slot. The target is graph-only: its body/title do not match. Exact matching
+      // applies after the shortlist, where its slug should promote it above the stronger seed-arm
+      // candidates. This proves the separate graph reservation is non-zero at the boundary and
+      // that every graph row admitted into fusion survives through the scoring stage.
+      intent: { enabled: true, weights: { general: { exactMatchBoost: 4 } } },
+    } as const;
+
+    const withoutGraph = await hybridSearch(ctx, targetSlug, { topK: 1, knobs: policy });
+    expect(withoutGraph.hits.some((hit) => hit.slug === targetSlug)).toBe(false);
+
+    const withGraph = await hybridSearch(ctx, targetSlug, {
+      topK: 1,
+      knobs: {
+        ...policy,
+        graphExpansion: { enabled: true, maxNeighborsPerSeed: 1, weight: 1 },
+      },
+    });
+    expect(withGraph.hits[0]?.slug).toBe(targetSlug);
+  }, 30_000);
+
+  it('deduplicates reciprocal edges before the per-seed graph cap', async () => {
+    const ctx = buildContext({ principal: p1, workspaceId: ws1, role: 'owner', grants: resolveGrants(p1, ws1), remote: false });
+    const admin = adminSql();
+    const token = `graph-reciprocal-${RUN}`;
+    const seedSlug = `graph-cap-seed-${RUN}`;
+    const aSlug = `graph-cap-a-${RUN}`;
+    const bSlug = `graph-cap-b-${RUN}`;
+    const cSlug = `graph-cap-c-${RUN}`;
+    const acl = [`ws:${ws1}`];
+
+    // rls-exempt: compact synthetic graph fixture in this test's disposable workspace. The
+    // reciprocal rows intentionally model two physical edges for the same undirected neighbor.
+    await admin`
+      with fixture(slug, title, body) as (values
+        (${seedSlug}::text, 'Graph cap seed', ${token + ' is the only searchable seed evidence'}::text),
+        (${aSlug}::text, 'Graph cap neighbor A', 'Unique adjacency payload alpha'::text),
+        (${bSlug}::text, 'Graph cap neighbor B', 'Unique adjacency payload bravo'::text),
+        (${cSlug}::text, 'Graph cap neighbor C', 'Unique adjacency payload charlie'::text)
+      ), inserted as (
+        insert into pages (workspace_id, slug, title, owner_principal, scope, acl, body, effective_date)
+        select ${ws1}::uuid, slug, title, ${p1}, 'workspace', ${acl}::text[], body, current_date
+        from fixture
+        returning id, slug, acl, body
+      ), inserted_chunks as (
+        insert into content_chunks (workspace_id, page_id, acl, ord, content, embedding, effective_date)
+        select ${ws1}::uuid, id, acl, 0, body, null::vector, current_date
+        from inserted
+        returning page_id
+      ), edge_specs(from_slug, to_slug, source, edge_created_at) as (values
+        (${seedSlug}::text, ${aSlug}::text, 'forward-a'::text, '2026-01-01T00:00:00Z'::timestamptz),
+        (${aSlug}::text, ${seedSlug}::text, 'reverse-a'::text, '2026-01-02T00:00:00Z'::timestamptz),
+        (${seedSlug}::text, ${bSlug}::text, 'forward-b'::text, '2026-02-01T00:00:00Z'::timestamptz),
+        (${seedSlug}::text, ${cSlug}::text, 'forward-c'::text, '2026-03-01T00:00:00Z'::timestamptz)
+      )
+      insert into links (
+        workspace_id, from_page_id, to_page_id, from_acl, to_acl,
+        link_kind, link_source, context, created_at
+      )
+      select ${ws1}::uuid, from_page.id, to_page.id, from_page.acl, to_page.acl,
+             'mention', edge_specs.source, 'reciprocal graph fixture', edge_specs.edge_created_at
+      from edge_specs
+      join inserted from_page on from_page.slug = edge_specs.from_slug
+      join inserted to_page on to_page.slug = edge_specs.to_slug`;
+
+    const { hits } = await hybridSearch(ctx, token, {
+      topK: 4,
+      knobs: {
+        candidatePool: {
+          vectorLimit: 0,
+          keywordAndLimit: 1,
+          keywordOrLimit: 0,
+          titleLimit: 0,
+          maxPerPage: 1,
+        },
+        graphExpansion: { enabled: true, maxNeighborsPerSeed: 2 },
+      },
+    });
+    const slugs = hits.map((hit) => hit.slug);
+    expect(slugs).toContain(seedSlug);
+    expect(slugs).toContain(aSlug);
+    expect(slugs).toContain(bSlug);
+    expect(slugs, 'the third unique neighbor exceeded maxNeighborsPerSeed=2').not.toContain(cSlug);
+  }, 30_000);
+
   it('workspace isolation: a second, empty workspace sees none of the first workspace\'s content', async () => {
     const ctx2 = buildContext({ principal: p2, workspaceId: ws2, role: 'owner', grants: resolveGrants(p2, ws2), remote: false });
     const { hits } = await hybridSearch(ctx2, 'zzzqqqmarker');

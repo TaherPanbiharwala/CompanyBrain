@@ -6,9 +6,8 @@ name: Cycle engine
 # concurrency group keeps scheduled runs serialized against EACH OTHER without blocking or being
 # blocked by ci.yml's `live` job, which uses a differently-named group.
 #
-# Cadence is a placeholder (hourly) — the roadmap's exit criteria only says "runs on a schedule", no
-# cadence is specified anywhere, and there is no real enrichment phase yet to have a freshness
-# requirement. Tighten or loosen once M9+ gives this something with actual staleness to care about.
+# Cadence is hourly for M9 backward-mention discovery. Synchronous ingest keeps ordinary outgoing
+# edges fresh; the scheduled full walk is what finds an older page naming a page created later.
 #
 # Never runs `bun run migrate` — assumes the target DB is already migrated, so a scheduled tick
 # can't race or interact with ci.yml's migration-serialization concerns.
@@ -24,7 +23,7 @@ concurrency:
 
 jobs:
   run-cycle:
-    name: run cycle (noop)
+    name: run cycle (link extraction)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -38,4 +37,4 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
-        run: bun run cycle --phase noop
+        run: bun run cycle --phase link_extraction

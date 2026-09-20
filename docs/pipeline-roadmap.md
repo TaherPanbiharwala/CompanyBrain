@@ -65,27 +65,29 @@ product capability.
 
 **Depends on M6** (recency needs `effective_date`).
 
-**Status (2026-09-06): implemented behind the baseline default; promotion evidence is pending.**
-The commit-pinned behavioral port, one-statement SQL integration, typed policy resolver, eight-profile
-held-out sweep, and NovaByte comparator are built and locally green. The plain MultiHop eval workspace
-is seeded but its corpus is not loaded: corpus/query embedding and NovaByte answer runs send data to
-the configured external model providers and still require explicit data-egress approval. Until those
-gates run and pass, `DEFAULT_RETRIEVAL_KNOBS` intentionally aliases the exact baseline profile.
+**Status (2026-09-20): implemented and measured; baseline retained.** The commit-pinned behavioral
+port, one-statement SQL integration, typed policy resolver, nine-profile held-out sweep, and NovaByte
+comparator are built. The completed plain MultiHop sweep selected `gbrain-intent` on tuning but its
+untouched-holdout gate failed (0.44pp mean recall@8 lift, adjusted p=1), so
+`DEFAULT_RETRIEVAL_KNOBS` intentionally continues to alias the exact baseline profile. NovaByte was
+not run: a failed retrieval gate already rules out promotion.
 
 | Ship | Evidence this is worth building |
 | --- | --- |
 | Injectable knobs (`RetrievalKnobs` on `hybridSearch`) | Implemented as one deeply immutable policy, with validated server-wide JSON and trusted internal per-call overrides. Public HTTP/MCP schemas do not expose it. |
 | Intent classifier + per-intent fusion weights | **Measured on the full 2,255-question MultiHop run:** `inference_query` scores 22.8% vs `comparison_query` 51.9% at k=8 (n=816 vs n=856). A 29-point gap is exactly what gbrain's `entity` intent (`keywordWeight 1.15`, `exactMatchBoost 1.25`) targets — "who is X" lookups should lean keyword, not vector. |
 | Recency decay, **shipped OFF by default** | Implemented with M6 `effective_date`, a frozen evaluation clock, and off/auto/on/strong modes. Null dates are neutral and future dates clamp to age zero. |
-| `eval:sweep` with a held-out split | Implemented with a joint type × required-document-count split, immutable resume contract, eight registered profiles, per-hop/type/intent reporting, and a paired-bootstrap/Bonferroni promotion gate. |
+| `eval:sweep` with a held-out split | Implemented with a joint type × required-document-count split, immutable resume contract, nine registered profiles, per-hop/type/intent reporting, and a paired-bootstrap/Bonferroni promotion gate. The latest completed run failed its gate, so baseline remains selected. |
 
-**Exit criteria:** the full provider-backed sweep reports all eight configurations; the untouched
+**Exit criteria:** the full provider-backed sweep reports all nine configurations; the untouched
 holdout gate passes; the actual MultiHop query plan preserves the stored FTS/GIN and HNSW paths plus
 the lateral hydration fence; and the strict NovaByte baseline/candidate comparison passes. Only then
-may `DEFAULT_RETRIEVAL_KNOBS` change. See `docs/eval-rag.md`; D110 records the current boundary.
+may `DEFAULT_RETRIEVAL_KNOBS` change. The latest completed sweep did not pass, so a future promotion
+attempt needs a new preregistered run. See `docs/eval-rag.md`; D110/D113 record the boundary.
 
-**Size:** 2 weeks / 2–4 days. Highest measured value per day of anything in this roadmap — the
-intent gap is not a hypothesis, it is a number already sitting in `eval/multihop-latest.md`.
+**Size:** 2 weeks / 2–4 days. The initial tuning signal did not survive its holdout gate; further work
+must improve the retrieval inputs or corpus representation rather than treat that tuning number as a
+shipping decision.
 
 ---
 
@@ -129,14 +131,13 @@ retry from zero on every crash."
 
 **Depends on M8.** Best value-to-effort ratio of the enrichment phases.
 
-**Status (2026-09-19): link extraction shipped and live-verified; fact extraction deliberately
-deferred.** The exit criteria below names only link extraction — fact extraction is in the ship
-table but was never part of what "done" requires, and gbrain's own fact-extraction system turned out
-to be a large separate subsystem (bi-temporal versioning, per-write LLM calls, embedding-based
-dedup) once actually investigated. The founder was shown that scope split explicitly and chose link
-extraction only for this pass; see D112 for the full reasoning and `HANDOVER.md`'s "Milestone 9"
-section for exactly what is and isn't verified (the retrieval-lift sweep itself has not been run
-yet — the arm is built and measured-as-correct, not measured-as-valuable).
+**Status (2026-09-20): link extraction shipped, review-hardened, and measured; fact extraction
+deliberately deferred.** The exit criteria below name only link extraction. The completed graph-only
+profile scored 38.68% all-evidence recall@8 versus baseline 38.76% on tuning, with two errored rows,
+so it is neither a candidate nor a promotion. The feature remains default-off. gbrain's fact system
+is a separate subsystem (bi-temporal versioning, per-write LLM calls, embedding dedup), and the
+founder chose not to smuggle that scope into this milestone. D112/D113 and `HANDOVER.md` record the
+security hardening, operational verification, and final evaluation result.
 
 | Ship | Why first |
 | --- | --- |
@@ -240,12 +241,11 @@ likely to be "I can't add my colleague" than "recall is 40% instead of 55%."
 ## What to actually build
 
 If the goal is the pipeline's value without the full quarter: **M6 + M7 + M9** is roughly 20% of
-the list and carries most of its measured value, at ~2 weeks CC-assisted. Metadata unlocks filters
-customers already want; intent weighting has a 29-point measured gap sitting in
-`eval/multihop-latest.md` waiting for it; link extraction attacks multi-hop coverage structurally
-instead of through ranking tuning. M8's cycle engine only pays for itself once several phases share
-it — if M9 turns out to be the only enrichment phase that ships, write it as one script and skip
-building the engine.
+the list and carries most of its structural value, at ~2 weeks CC-assisted. Metadata unlocks filters
+customers already want; the first intent and graph sweeps did **not** produce a promotable lift, so
+the next evidence-backed lever is better corpus representation rather than turning ranking knobs on.
+Link extraction still creates the substrate M10 needs, and M8 now has a real phase consumer rather
+than only no-op proof machinery.
 
 M5b competes with all of this for the same weeks. That tradeoff is a founder call, not an
 engineering one, and this document does not make it.

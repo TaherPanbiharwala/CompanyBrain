@@ -37,7 +37,7 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "privileges": "DELETE,INSERT,SELECT,UPDATE"
+    "privileges": "DELETE,INSERT,SELECT"
   },
   {
     "grantee": "cb_app",

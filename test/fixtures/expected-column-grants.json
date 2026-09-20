@@ -1190,12 +1190,6 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "context",
-    "privilege_type": "UPDATE"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
     "column_name": "created_at",
     "privilege_type": "INSERT"
   },
@@ -1204,12 +1198,6 @@
     "table_name": "links",
     "column_name": "created_at",
     "privilege_type": "SELECT"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
-    "column_name": "created_at",
-    "privilege_type": "UPDATE"
   },
   {
     "grantee": "cb_app",
@@ -1226,8 +1214,14 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "from_acl",
-    "privilege_type": "UPDATE"
+    "column_name": "from_deleted_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "links",
+    "column_name": "from_deleted_at",
+    "privilege_type": "SELECT"
   },
   {
     "grantee": "cb_app",
@@ -1240,12 +1234,6 @@
     "table_name": "links",
     "column_name": "from_page_id",
     "privilege_type": "SELECT"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
-    "column_name": "from_page_id",
-    "privilege_type": "UPDATE"
   },
   {
     "grantee": "cb_app",
@@ -1262,12 +1250,6 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "id",
-    "privilege_type": "UPDATE"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
     "column_name": "link_kind",
     "privilege_type": "INSERT"
   },
@@ -1276,12 +1258,6 @@
     "table_name": "links",
     "column_name": "link_kind",
     "privilege_type": "SELECT"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
-    "column_name": "link_kind",
-    "privilege_type": "UPDATE"
   },
   {
     "grantee": "cb_app",
@@ -1298,12 +1274,6 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "link_source",
-    "privilege_type": "UPDATE"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
     "column_name": "to_acl",
     "privilege_type": "INSERT"
   },
@@ -1316,8 +1286,14 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "to_acl",
-    "privilege_type": "UPDATE"
+    "column_name": "to_deleted_at",
+    "privilege_type": "INSERT"
+  },
+  {
+    "grantee": "cb_app",
+    "table_name": "links",
+    "column_name": "to_deleted_at",
+    "privilege_type": "SELECT"
   },
   {
     "grantee": "cb_app",
@@ -1334,12 +1310,6 @@
   {
     "grantee": "cb_app",
     "table_name": "links",
-    "column_name": "to_page_id",
-    "privilege_type": "UPDATE"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
     "column_name": "workspace_id",
     "privilege_type": "INSERT"
   },
@@ -1348,12 +1318,6 @@
     "table_name": "links",
     "column_name": "workspace_id",
     "privilege_type": "SELECT"
-  },
-  {
-    "grantee": "cb_app",
-    "table_name": "links",
-    "column_name": "workspace_id",
-    "privilege_type": "UPDATE"
   },
   {
     "grantee": "cb_app",

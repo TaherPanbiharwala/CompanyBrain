@@ -386,6 +386,12 @@ DO $$ BEGIN
   IF to_regclass('public.quarantine') IS NOT NULL THEN
     EXECUTE 'revoke update on quarantine from cb_app';
   END IF;
+  -- Link security fields are derived exclusively from the endpoint pages by the trigger installed
+  -- in 0022. INSERT and DELETE stay for reconciliation; UPDATE would let a caller rewrite content
+  -- or attempt to fight the canonicalizing trigger and has no production caller.
+  IF to_regclass('public.links') IS NOT NULL THEN
+    EXECUTE 'revoke update on links from cb_app';
+  END IF;
 END $$;`);
   // Unchanged, full DML: pages, content_chunks. Unchanged: _migrations stays fully revoked.
 }
@@ -504,12 +510,18 @@ AS $fn$ UPDATE public.principals SET google_sub = p_sub, updated_at = now()
 CREATE OR REPLACE FUNCTION cb_internal.soft_delete_page(p_page_id uuid) RETURNS boolean
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $fn$
-  WITH page_upd AS (
-    UPDATE public.pages SET deleted_at = now()
+  WITH locked AS MATERIALIZED (
+    SELECT id FROM public.pages
     WHERE id = p_page_id
       AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
       AND acl && (SELECT public.current_grants())
       AND deleted_at IS NULL
+    ORDER BY id
+    FOR UPDATE
+  ),
+  page_upd AS (
+    UPDATE public.pages SET deleted_at = now()
+    WHERE id IN (SELECT id FROM locked)
     RETURNING id
   ),
   chunks_upd AS (
@@ -531,12 +543,18 @@ $fn$;
 CREATE OR REPLACE FUNCTION cb_internal.soft_delete_pages(p_page_ids uuid[]) RETURNS SETOF uuid
 LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $fn$
-  WITH page_upd AS (
-    UPDATE public.pages SET deleted_at = now()
+  WITH locked AS MATERIALIZED (
+    SELECT id FROM public.pages
     WHERE id = ANY(p_page_ids)
       AND workspace_id = (SELECT NULLIF(current_setting('app.workspace', true), '')::uuid)
       AND acl && (SELECT public.current_grants())
       AND deleted_at IS NULL
+    ORDER BY id
+    FOR UPDATE
+  ),
+  page_upd AS (
+    UPDATE public.pages SET deleted_at = now()
+    WHERE id IN (SELECT id FROM locked)
     RETURNING id
   ),
   chunks_upd AS (
@@ -552,15 +570,254 @@ AS $fn$
   SELECT id FROM page_upd
 $fn$;
 
+-- (8) M9 link-security denormalization (migration 0022). One trigger function serves both sides of
+-- the invariant. On links it canonicalizes every caller-supplied security field from the endpoint
+-- pages before RLS WITH CHECK runs. On pages it propagates acl/deleted_at changes to outgoing AND
+-- incoming edges as the owner, including edges the caller cannot see. The migration creates this
+-- function atomically with its triggers; CREATE OR REPLACE here keeps the body and ACL under the
+-- same every-run posture discipline as the other definers.
+CREATE OR REPLACE FUNCTION cb_internal.sync_link_security_state() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  from_workspace uuid;
+  to_workspace uuid;
+  canonical_from_acl text[];
+  canonical_to_acl text[];
+  canonical_from_deleted_at timestamptz;
+  canonical_to_deleted_at timestamptz;
+BEGIN
+  IF TG_TABLE_SCHEMA = 'public' AND TG_TABLE_NAME = 'links' THEN
+    -- workspace_id is immutable and is needed only to choose the lock key. Canonical security state
+    -- is read (again) after the lock, so a concurrent rescope/delete cannot leave a stale edge.
+    SELECT p.workspace_id
+      INTO from_workspace
+      FROM public.pages p
+      WHERE p.id = NEW.from_page_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23503',
+        MESSAGE = 'links.from_page_id does not reference a page';
+    END IF;
+
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended('company-brain:links:' || from_workspace::text, 0)
+    );
+
+    SELECT p.workspace_id, p.acl, p.deleted_at
+      INTO from_workspace, canonical_from_acl, canonical_from_deleted_at
+      FROM public.pages p
+      WHERE p.id = NEW.from_page_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23503',
+        MESSAGE = 'links.from_page_id does not reference a page';
+    END IF;
+
+    SELECT p.workspace_id, p.acl, p.deleted_at
+      INTO to_workspace, canonical_to_acl, canonical_to_deleted_at
+      FROM public.pages p
+      WHERE p.id = NEW.to_page_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23503',
+        MESSAGE = 'links.to_page_id does not reference a page';
+    END IF;
+
+    IF from_workspace IS DISTINCT FROM to_workspace THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = 'link endpoints must belong to the same workspace';
+    END IF;
+
+    -- These assignments are the anti-spoofing boundary. RLS WITH CHECK runs on this canonical NEW
+    -- row, so a caller cannot make an otherwise-hidden endpoint pass by supplying its own acl.
+    NEW.workspace_id    := from_workspace;
+    NEW.from_acl        := canonical_from_acl;
+    NEW.to_acl          := canonical_to_acl;
+    NEW.from_deleted_at := canonical_from_deleted_at;
+    NEW.to_deleted_at   := canonical_to_deleted_at;
+    RETURN NEW;
+  END IF;
+
+  IF TG_TABLE_SCHEMA = 'public' AND TG_TABLE_NAME = 'pages' THEN
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended('company-brain:links:' || NEW.workspace_id::text, 0)
+    );
+
+    UPDATE public.links
+       SET from_acl = NEW.acl,
+           from_deleted_at = NEW.deleted_at
+     WHERE from_page_id = NEW.id;
+
+    UPDATE public.links
+       SET to_acl = NEW.acl,
+           to_deleted_at = NEW.deleted_at
+     WHERE to_page_id = NEW.id;
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'sync_link_security_state attached to unexpected relation %.%',
+    TG_TABLE_SCHEMA, TG_TABLE_NAME;
+END
+$fn$;
+
+-- (9)/(10) The cycle's tightly-scoped private-page aperture (migration 0022). The system principal
+-- deliberately has only a workspace grant, so ordinary pages RLS must not be weakened to make the
+-- scheduled backfill work. Instead these definers require the exact sentinel plus the tx-local
+-- workspace: one returns a bounded keyset page of active candidates; the other locks and returns
+-- the current ACLs of a bounded source batch so reconciliation cannot race a rescope.
+CREATE OR REPLACE FUNCTION cb_internal.cycle_link_pages(p_after uuid, p_limit int)
+RETURNS TABLE (
+  id uuid,
+  slug text,
+  title text,
+  acl text[],
+  body text,
+  extracted_text text
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_link_pages is restricted to the cycle system principal';
+  END IF;
+
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 1000 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_link_pages limit must be between 1 and 1000';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_link_pages requires a scoped workspace';
+  END IF;
+
+  RETURN QUERY
+    SELECT p.id, p.slug, p.title, p.acl, p.body, p.extracted_text
+    FROM public.pages p
+    WHERE p.workspace_id = scoped_workspace
+      AND p.deleted_at IS NULL
+      AND (p_after IS NULL OR p.id > p_after)
+    ORDER BY p.id
+    LIMIT p_limit;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION cb_internal.cycle_link_page_acls(p_page_ids uuid[])
+RETURNS TABLE (id uuid, acl text[])
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_link_page_acls is restricted to the cycle system principal';
+  END IF;
+
+  IF p_page_ids IS NULL OR cardinality(p_page_ids) < 1 OR cardinality(p_page_ids) > 1000 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_link_page_acls requires between 1 and 1000 page ids';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_link_page_acls requires a scoped workspace';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('company-brain:links:' || scoped_workspace::text, 0)
+  );
+
+  RETURN QUERY
+    SELECT p.id, p.acl
+    FROM public.pages p
+    WHERE p.workspace_id = scoped_workspace
+      AND p.deleted_at IS NULL
+      AND p.id = ANY(p_page_ids)
+    ORDER BY p.id;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION cb_internal.cycle_lock_link_sources(p_page_ids uuid[])
+RETURNS TABLE (id uuid, acl text[], body text, extracted_text text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_lock_link_sources is restricted to the cycle system principal';
+  END IF;
+
+  IF p_page_ids IS NULL OR cardinality(p_page_ids) < 1 OR cardinality(p_page_ids) > 1000 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_lock_link_sources requires between 1 and 1000 page ids';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_lock_link_sources requires a scoped workspace';
+  END IF;
+
+  -- PERFORM is intentional: acquire every source row lock before the workspace advisory. A second
+  -- SELECT below returns security state only after both serialization layers are held.
+  PERFORM p.id
+  FROM public.pages p
+  WHERE p.workspace_id = scoped_workspace
+    AND p.deleted_at IS NULL
+    AND p.id = ANY(p_page_ids)
+  ORDER BY p.id
+  FOR UPDATE;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('company-brain:links:' || scoped_workspace::text, 0)
+  );
+
+  RETURN QUERY
+    SELECT p.id, p.acl, p.body, p.extracted_text
+    FROM public.pages p
+    WHERE p.workspace_id = scoped_workspace
+      AND p.deleted_at IS NULL
+      AND p.id = ANY(p_page_ids)
+    ORDER BY p.id;
+END
+$fn$;
+
 -- Postgres grants EXECUTE to PUBLIC on every new function. Without this REVOKE the definers would
 -- be callable by every role the moment they are created, inverting the whole design.
 REVOKE ALL ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
   cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid),
   cb_internal.adopt_principal(uuid,text), cb_internal.soft_delete_page(uuid),
-  cb_internal.soft_delete_pages(uuid[]) FROM PUBLIC;
+  cb_internal.soft_delete_pages(uuid[]), cb_internal.sync_link_security_state() FROM PUBLIC;
+REVOKE ALL ON FUNCTION cb_internal.sync_link_security_state() FROM cb_app, cb_auth;
+REVOKE ALL ON FUNCTION cb_internal.cycle_link_pages(uuid,int),
+  cb_internal.cycle_link_page_acls(uuid[]), cb_internal.cycle_lock_link_sources(uuid[]) FROM PUBLIC, cb_auth;
 GRANT EXECUTE ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
   cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid),
   cb_internal.soft_delete_page(uuid), cb_internal.soft_delete_pages(uuid[]) TO cb_app;
+GRANT EXECUTE ON FUNCTION cb_internal.cycle_link_pages(uuid,int),
+  cb_internal.cycle_link_page_acls(uuid[]), cb_internal.cycle_lock_link_sources(uuid[]) TO cb_app;
 GRANT EXECUTE ON FUNCTION cb_internal.adopt_principal(uuid,text) TO cb_auth;
 
 -- public.current_grants() is CREATED by migration 0007, not here — a policy cannot reference a

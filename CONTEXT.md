@@ -5,18 +5,23 @@ existence, adversarially verified every claim against the code, and **actually r
 followed by the M4 build and its own seven-pass review, which took the log to 101 entries (D0–D97).
 Read this once instead of re-deriving it.
 
-**2026-09-06 M7 update (branch `codex/intent_classifier`, based on freshly fetched
-`origin/master` `297c8ca`):** the commit-pinned gbrain retrieval-intelligence port is implemented but
-not promoted. `src/search/{query-intent,recency-decay,retrieval-knobs}.ts` owns the pure classifier,
-recency math, immutable profiles, validation, override cascade, and canonical policy hash;
-`hybrid.ts` applies intent-specific effective RRF k, exact-match, and optional recency inside its one
-RLS-scoped SQL statement before final top-k. Public operation schemas are unchanged. The eight-profile
-MultiHop runner is `eval:sweep`; NovaByte is now setup-once/evaluate-many with a strict
-`compare:novabyte` gate. `DEFAULT_RETRIEVAL_KNOBS` still aliases the exact baseline because the
-provider-backed MultiHop load/sweep and NovaByte comparison have not been authorized or run. Local
-evidence on this diff: typecheck clean, full suite 812 pass / 17 intentional skip / 0 fail, doctor
-82/82, performance suite 10/10. D110 and `HANDOVER.md` are the authoritative current boundary; older
-measurements and M7-as-future prose below are historical.
+**2026-09-20 M7/M9 update (branch `codex/session-summary-next-steps-784f80`, based on freshly fetched
+`origin/master` `457a7ea`):** the commit-pinned gbrain retrieval-intelligence port and M9 link
+extraction are implemented but not promoted. `src/search/{query-intent,recency-decay,retrieval-knobs}.ts`
+owns pure retrieval policy; `hybrid.ts` keeps it inside one RLS-scoped SQL statement. M9 adds
+two-endpoint-ACL links, zero-LLM extraction on ingest plus the first real cycle phase, and a
+default-off graph arm. Applied forward migration `0022_link_security_hardening.sql` canonicalizes
+edge security/deletion state, fixes the RLS/lifecycle/concurrency review findings, and gives the
+cycle sentinel bounded SECURITY DEFINER apertures rather than broader page access.
+
+The completed nine-profile MultiHop sweep ran with a fixed 1,579/676 tuning/holdout split. Its tuning
+winner, `gbrain-intent`, improved all-evidence recall@8 by 0.44pp on holdout, but the 10,000-sample
+Bonferroni-corrected gate failed (adjusted p=1). Graph-only scored below baseline and had two tuning
+errors. `DEFAULT_RETRIEVAL_KNOBS` therefore aliases baseline and graph remains off; the runner's
+exit 1 is an intentional failed-gate signal. Fact extraction remains deliberate future scope.
+Verification on the review diff: typecheck clean; full offline suite 713 pass / 268 skip / 0 fail;
+doctor 104/104 after fixture review; affected M9 live suites plus cycle/leak canary pass. D112/D113
+and `HANDOVER.md` are authoritative; older M7-as-future prose below is historical.
 
 **`master` is the single trunk. Branch from it, merge back into it.** As of 2026-07-30 every branch
 in the repo is an ancestor of master — the M3 line, the CONTEXT.md line and five stale copies were

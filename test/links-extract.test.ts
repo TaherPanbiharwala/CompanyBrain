@@ -33,6 +33,16 @@ describe('extractLinks — markdown pass', () => {
     const links = extractLinks('Please review the [contract](acme-contract) before signing.', candidates);
     expect(links[0]?.context).toContain('contract');
   });
+
+  it('masks markdown spans correctly when astral characters precede the link', () => {
+    const candidates = [candidate('p2', 'acme-contract', 'Acme Contract')];
+    const links = extractLinks(
+      `${'😀'.repeat(20)} [Acme Contract](acme-contract) trailing text`,
+      candidates,
+    );
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ toPageId: 'p2', linkKind: 'markdown' });
+  });
 });
 
 describe('extractLinks — mention pass', () => {
@@ -99,6 +109,17 @@ describe('extractLinks — cross-cutting behavior', () => {
     const text = candidates.map((c) => c.title).join('. ');
     const links = extractLinks(text, candidates);
     expect(links.length).toBe(MAX_LINKS_PER_PAGE);
+  });
+
+  it('chooses the same capped links regardless of candidate row order', () => {
+    const candidates = Array.from({ length: MAX_LINKS_PER_PAGE + 10 }, (_, i) => {
+      const suffix = String(i).padStart(2, '0');
+      return candidate(`p${suffix}`, `page-${suffix}`, `Unique Title ${suffix}`);
+    });
+    const text = candidates.map((c) => c.title).join('. ');
+    const forward = extractLinks(text, candidates).map((link) => link.toPageId);
+    const reversed = extractLinks(text, [...candidates].reverse()).map((link) => link.toPageId);
+    expect(reversed).toEqual(forward);
   });
 
   it('returns no links for text mentioning nothing and no candidates', () => {

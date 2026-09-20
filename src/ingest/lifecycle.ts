@@ -536,6 +536,18 @@ export async function rescopePages(
     if (candidates.length === 0) return { rescoped: 0, scope, outcomes };
     const moving = candidates.map((c) => c.id);
 
+    // Every multi-page writer must acquire page locks in the same global order as the M9 cycle
+    // batch (`cycle_lock_link_sources`). Without this pre-lock, PostgreSQL may visit an
+    // `id = ANY(...)` UPDATE in a planner-dependent order: a cycle batch holding A then waiting for
+    // B can deadlock with a rescope holding B then waiting for A before either reaches the shared
+    // link-advisory lock. The rows were authorized above; this query only establishes ordering and
+    // re-confirms they are still visible in this transaction.
+    await tx`
+      select id from pages
+      where id = any(${moving}::uuid[])
+      order by id
+      for update`;
+
     // Chunks FIRST. Their acl is a denormalized copy of the page's (schema.sql:236), and the policy's
     // USING clause is evaluated against the row's CURRENT acl — which the caller still holds. Doing
     // the page first would leave the chunks readable only under the old grant while the page claims

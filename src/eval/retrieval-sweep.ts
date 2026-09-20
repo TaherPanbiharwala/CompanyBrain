@@ -13,6 +13,10 @@ import type { QueryIntent } from '../search/query-intent.ts';
 export const SWEEP_SEED = 42;
 export const SWEEP_KS = [4, 8, 12, 16, 20] as const;
 export const BOOTSTRAP_RESAMPLES = 10_000;
+// D113 keeps this at 12 for M9: it is the family size of the one untouched-holdout overall test
+// plus its type/hop/intent subgroup tests. The ninth tuning profile does not add a holdout test —
+// only the tuning winner and baseline may touch holdout — so increasing this with the profile count
+// would correct for hypotheses the promotion gate never evaluates.
 export const PLANNED_COMPARISONS = 12;
 
 function intentOverride(options: { fusion: boolean; exact: boolean }) {
@@ -30,7 +34,7 @@ function intentOverride(options: { fusion: boolean; exact: boolean }) {
   return { enabled: true, weights };
 }
 
-/** The eight preregistered configurations. Candidate limits, parsing, page cap, and base blend stay fixed. */
+/** The registered configurations. Candidate limits, parsing, page cap, and base blend stay fixed. */
 export const RETRIEVAL_SWEEP_CONFIGS: Readonly<Record<string, DeepReadonly<RetrievalKnobs>>> = Object.freeze({
   baseline: BASELINE_RETRIEVAL_KNOBS,
   'gbrain-exact-only': resolveRetrievalKnobs({ caller: { intent: intentOverride({ fusion: false, exact: true }) } }),
@@ -54,11 +58,8 @@ export const RETRIEVAL_SWEEP_CONFIGS: Readonly<Record<string, DeepReadonly<Retri
   // LinkExtractionPhase first (`bun run cycle --phase link_extraction --workspace <eval-ws>`) —
   // link-aware retrieval is meaningless against an unpopulated links table.
   //
-  // PLANNED_COMPARISONS is intentionally NOT bumped here. It's a preregistration commitment (the
-  // whole point of Bonferroni-correcting is fixing the comparison count before seeing results,
-  // per D110's own discipline) — deciding the right count for a 9th profile is a human call to make
-  // before the sweep runs, not something to silently adjust in the same change that adds the
-  // profile.
+  // D113 records the pre-run decision to keep PLANNED_COMPARISONS at 12: configs compete only on
+  // tuning; the holdout family remains one overall comparison plus the same subgroup comparisons.
   'graph-expansion-only': resolveRetrievalKnobs({ caller: { graphExpansion: { enabled: true } } }),
 });
 

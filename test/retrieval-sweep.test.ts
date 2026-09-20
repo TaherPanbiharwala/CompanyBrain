@@ -3,6 +3,7 @@ import { stratifiedSplit } from '../src/eval/core.ts';
 import type { EvalQuestion } from '../src/eval/types.ts';
 import {
   RETRIEVAL_SWEEP_CONFIGS,
+  PLANNED_COMPARISONS,
   chooseTuningWinner,
   pairedBootstrap,
   stableIdHash,
@@ -30,8 +31,8 @@ describe('held-out retrieval sweep primitives', () => {
   });
 
   it('registers exactly the nine preregistered configurations with stable hashes', () => {
-    // Eight from M7, plus M9's graph-expansion-only — see retrieval-sweep.ts's own comment on why
-    // PLANNED_COMPARISONS is not bumped in the same change that adds this profile.
+    // Eight from M7, plus M9's graph-expansion-only. D113 records why the holdout comparison family
+    // remains 12 even though the tuning profile count increased.
     expect(Object.keys(RETRIEVAL_SWEEP_CONFIGS)).toEqual([
       'baseline',
       'gbrain-exact-only',
@@ -46,6 +47,7 @@ describe('held-out retrieval sweep primitives', () => {
     const manifest = sweepConfigManifest();
     expect(new Set(Object.values(manifest)).size).toBe(9);
     expect(Object.values(manifest).every((hash) => /^[a-f0-9]{64}$/.test(hash))).toBe(true);
+    expect(PLANNED_COMPARISONS).toBe(12);
   });
 
   it('selects lexicographically across the registered winner criteria', () => {

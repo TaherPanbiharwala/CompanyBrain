@@ -10,6 +10,33 @@
   },
   {
     "schema": "cb_internal",
+    "name": "cycle_link_page_acls",
+    "args": "p_page_ids uuid[]",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "ac9c9d7b17208cd1c36de14957d5a0fb"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "cycle_link_pages",
+    "args": "p_after uuid, p_limit integer",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "995596d9b70bb64484b03286e584cfdd"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "cycle_lock_link_sources",
+    "args": "p_page_ids uuid[]",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "d0547e49c698ce67c5905d2aa1a02669"
+  },
+  {
+    "schema": "cb_internal",
     "name": "membership_role",
     "args": "p_principal uuid, p_workspace uuid",
     "owner": "postgres",
@@ -51,7 +78,7 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "176edfad3728b2b7e4600082f2d17721"
+    "body_md5": "f050713260db0ef3800bd0ab59a65b4a"
   },
   {
     "schema": "cb_internal",
@@ -60,7 +87,16 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "a32db2278c33ef75d3f167d8a4f248b1"
+    "body_md5": "1fc14a315c6e2651e8b721df600e16f9"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "sync_link_security_state",
+    "args": "",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres}",
+    "body_md5": "0e715bee288f87e21e93ad808a54ee4b"
   },
   {
     "schema": "public",

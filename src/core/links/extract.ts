@@ -66,7 +66,10 @@ export function extractLinks(sourceText: string, candidates: readonly LinkCandid
   // sourceText, never the masked copy, so masking never shows up in what a reader sees.
   const slugToCandidate = new Map(candidates.map((c) => [c.slug, c] as const));
   const mdLinkRe = /\[[^\]]+\]\(([^)\s]+)\)/g;
-  const maskedChars = [...sourceText];
+  // RegExp match indexes and String#length are UTF-16 code-unit offsets. split('') preserves that
+  // indexing, unlike `[...sourceText]`, which collapses astral characters (for example emoji) to
+  // one array entry and can leave part of a markdown span unmasked.
+  const maskedChars = sourceText.split('');
   for (const m of sourceText.matchAll(mdLinkRe)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
@@ -107,5 +110,10 @@ export function extractLinks(sourceText: string, candidates: readonly LinkCandid
 
   const links = [...found.values()];
   if (links.length <= MAX_LINKS_PER_PAGE) return links;
-  return links.sort((a, b) => b.linkSource.length - a.linkSource.length).slice(0, MAX_LINKS_PER_PAGE);
+  return links.sort((a, b) =>
+    b.linkSource.length - a.linkSource.length ||
+    a.toPageId.localeCompare(b.toPageId) ||
+    a.linkKind.localeCompare(b.linkKind) ||
+    a.linkSource.localeCompare(b.linkSource),
+  ).slice(0, MAX_LINKS_PER_PAGE);
 }

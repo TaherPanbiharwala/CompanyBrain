@@ -1994,3 +1994,71 @@ flagged honestly rather than claimed proven.
 zero `cb_auth` exposure); the full `links.live.test.ts` suite (8/8) and the existing `hybrid.test.ts`
 (18/18) and `leak-canary.test.ts` (33/33, the sacred cross-tenant canary) all pass with these changes
 in place; M8's own `cycle.live.test.ts` (20/20) re-verified unaffected by the new phase registration.
+
+## D113 — M9 review hardening and the completed graph-expansion gate (2026-09-20)
+
+The M9 implementation in D112 was correct at the narrow feature level, but its review exposed gaps
+that would have made that claim unsafe at production concurrency or at a larger workspace. All fixes
+land forward in `0022_link_security_hardening.sql`; `0021` was already applied and checksum-immutable.
+
+**Edge security state is now canonical and lifecycle-complete.** The original two endpoint ACL columns
+expressed the right read predicate, but `links` did not denormalize endpoint `deleted_at`; a direct
+link write could supply stale ACLs; and the anonymous `array_length` CHECK passed for an empty array
+because SQL CHECK accepts NULL. `0022` adds `from_deleted_at`/`to_deleted_at`, named
+`cardinality(...) >= 1` constraints, and the postgres-owned, pinned-search-path SECURITY DEFINER
+trigger `cb_internal.sync_link_security_state()`. On link insert/update it rereads both endpoint
+pages and overwrites workspace, ACLs, and deletion state; on page ACL/deletion changes it refreshes
+both outgoing and incoming edges. A RESTRICTIVE SELECT policy hides an edge when either endpoint is
+deleted. `cb_app` loses direct UPDATE on `links`; no production reconciliation path needs it. The
+doctor fixture changes were reviewed as the security boundary: `links_ws` is cb_app-only, the cycle
+sentinel has a separate workspace-bound permissive path, the deletion policy remains restrictive,
+and no auth role gains access.
+
+**The cycle read aperture is narrow and the write protocol has one order.** A cycle run uses a
+sentinel principal with no human `self:*` grant, so it cannot read private pages through ordinary
+page RLS. Rather than broadening that policy, three bounded SECURITY DEFINER functions provide only
+active pages, source locks, and target ACLs for the exact sentinel and transaction-local workspace.
+They reject arbitrary principals, workspaces, and arrays over 1,000 ids. Reconciliation and page
+ACL/delete propagation share a workspace advisory xact lock keyed by
+`hashtextextended('company-brain:links:' || workspace, 0)`. Sources lock first in UUID order, then
+the advisory lock; targets are never row-locked. That removes the empty-edge race and reciprocal
+A→B/B→A deadlock while ensuring a rescope/delete and reconciliation observe one canonical order.
+Database failures abort a batch for replay rather than being recorded as a per-page success.
+
+**Scale hardening changes the phase's operational shape, not its semantics.** The candidate catalog
+keeps only id/slug/title. Source body reads, reconciliations, failure cleanup, and checkpoints occur
+in 200-page batches; a single high-water UUID is the crash-resume state, and replay is idempotent.
+Target ACL function calls are chunked at 1,000 ids and inserts at 5,000 edge rows, below PostgreSQL's
+bind ceiling. This removes O(P) remote transactions and O(P) retained bodies, but title/slug matching
+is deliberately still O(P²) CPU in wave 1 — the right future optimization target, not a reason to
+invent a partial invalidation cache that misses backward mentions. The markdown mask now uses UTF-16
+code-unit offsets, and link/graph truncation has stable tie breakers. The scheduled workflow runs the
+real `link_extraction` phase instead of no-op.
+
+**Graph candidate capacity must not be stolen from the base arms.** Before the review, an enabled
+graph arm could receive no candidate at the valid 400-row base-arm boundary, and duplicate reciprocal
+edges could consume a per-seed limit before deduplication. Base and graph arms now receive separate,
+bounded reservations (at most 400 each; at most 800 hydrated rows), page pairs deduplicate before
+the per-seed cap, seeds are excluded before that cap, and global graph ordering is deterministic.
+The actual 609-page/2,829-chunk MultiHop planner run with graph enabled retained the bounded indexed
+hydration plan. The workspace had only two extracted edges, so the planner's tiny `links` scan was
+the correct plan, not evidence of a lost index.
+
+**Preregistration was resolved before the M9 sweep.** `PLANNED_COMPARISONS` stays 12. The ninth
+profile competes only on tuning; only baseline and the one tuning winner touch the untouched holdout,
+so its family remains the single overall test plus the same type/hop/intent subgroup tests. Raising
+the correction count for tuning-only alternatives would falsely claim the promotion gate evaluates
+more holdout hypotheses than it does. The rationale is in code and `docs/eval-rag.md` before the run,
+not inferred after its result.
+
+**The completed run measures no promotable lift.** Immutable run
+`2026-09-19T19-11-33-790Z-be63188-m7` used MultiHop plain, seed 42, 1,579 tuning questions, 676
+untouched holdout questions, nine profiles, and 10,000 bootstrap resamples. `gbrain-intent` was the
+tuning winner at 39.01% all-evidence recall@8 versus baseline 38.76%. On holdout its mean lift was
+0.44 percentage points (3 fixed, 0 broken), 95% CI 0.00–1.33 points, raw p=0.102,
+Bonferroni-adjusted p=1: not significant. It had no holdout errors/degradation and faster p95
+latency (1,969 ms versus baseline 2,362 ms), so statistics are the only failed gate. The graph-only
+profile scored 38.68% on tuning and had two errors, making it ineligible. The runner intentionally
+exits 1 on a failed gate. `DEFAULT_RETRIEVAL_KNOBS` therefore remains the baseline and
+`graphExpansion.enabled` remains false; this completes M9's "measured, not assumed" criterion but
+does not license a ranking promotion. Fact extraction remains deliberately deferred under D112.

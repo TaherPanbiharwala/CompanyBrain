@@ -433,10 +433,20 @@ export function hybridQuery(
   const keywordK = fusion.rrfK / intentWeights.keywordWeight;
   const vectorK = fusion.rrfK / intentWeights.vectorWeight;
   const exactQuery = normalizeExactQuery(query);
+  const retrievalArmCapacity = candidatePool.vectorLimit + candidatePool.keywordAndLimit +
+    candidatePool.keywordOrLimit + candidatePool.titleLimit;
+  // Keep graph expansion in its own bounded reservation. The original four arms may legitimately
+  // use their entire validated 400-row budget; carving graph slots out of that same budget made an
+  // enabled graph arm admit ZERO rows at exactly that boundary. Graph expansion can fan each seed
+  // out to several neighbors, so it needs BOTH this global 400-row cap and the per-seed cap below.
+  // Adding both reservations to the shortlist means every admitted row reaches exact/recency
+  // scoring, while the expensive hydration path remains bounded at 800 rows total.
+  const graphArmCapacity = knobs.graphExpansion.enabled
+    ? Math.min(retrievalArmCapacity * knobs.graphExpansion.maxNeighborsPerSeed, 400)
+    : 0;
   const shortlistCapacity = Math.max(
     fetchK * 4,
-    candidatePool.vectorLimit + candidatePool.keywordAndLimit +
-      candidatePool.keywordOrLimit + candidatePool.titleLimit,
+    retrievalArmCapacity + graphArmCapacity,
   );
   return tx<FusedRow[]>`
     with
@@ -584,25 +594,55 @@ export function hybridQuery(
       from links l join graph_seed s on s.page_id = l.to_page_id
       where ${knobs.graphExpansion.enabled}::boolean
     ),
-    -- Capped PER SEED (not globally) — one heavily-linked page must not flood the arm at the
-    -- expense of every other seed's own neighbors. Deduplicated by page afterward: a neighbor
-    -- reached from multiple seeds only needs to be scored once here (fused's own group-by already
-    -- rewards multi-arm/multi-seed agreement without a second signal for it here).
-    graph_neighbors as (
-      select distinct page_id
-      from (
-        select page_id, row_number() over (partition by seed_id order by created_at) as neighbor_rk
-        from graph_neighbor_candidates
-      ) ranked
-      where neighbor_rk <= ${knobs.graphExpansion.maxNeighborsPerSeed}
-        and page_id not in (select page_id from graph_seed)
+    -- A reciprocal pair (A -> B and B -> A), or two extracted references with different
+    -- link_source values, produces more than one physical links row for the same seed/neighbor.
+    -- Collapse that pair BEFORE applying maxNeighborsPerSeed; otherwise duplicates consume slots
+    -- and a cap of 2 can return just one unique neighbor. The earliest edge is the stable evidence
+    -- timestamp for ordering, with page_id breaking timestamp ties deterministically.
+    graph_neighbor_pairs as (
+      select seed_id, page_id, min(created_at) as first_edge_created_at
+      from graph_neighbor_candidates c
+      -- A page already admitted by another arm is not graph expansion and must not consume a
+      -- per-seed neighbor slot before being filtered out.
+      where not exists (select 1 from graph_seed s where s.page_id = c.page_id)
+      group by seed_id, page_id
     ),
-    graph as (
-      select c.id, g.page_id, row_number() over (order by c.id) as rk
+    graph_ranked_per_seed as (
+      select seed_id, page_id, first_edge_created_at,
+             row_number() over (
+               partition by seed_id order by first_edge_created_at, page_id
+             ) as neighbor_rk
+      from graph_neighbor_pairs
+    ),
+    -- Capped PER SEED (not globally) — one heavily-linked page must not flood the arm at the
+    -- expense of every other seed's own neighbors. A neighbor reached from several seeds is then
+    -- collapsed to one graph-arm signal. Its best per-seed rank and earliest edge determine stable
+    -- global order; agreement across seeds is deliberately not counted as several graph votes.
+    graph_neighbors as (
+      select page_id,
+             min(neighbor_rk) as best_seed_rk,
+             min(first_edge_created_at) as first_edge_created_at
+      from graph_ranked_per_seed r
+      where neighbor_rk <= ${knobs.graphExpansion.maxNeighborsPerSeed}
+      group by page_id
+    ),
+    graph_ranked as (
+      select c.id, g.page_id,
+             row_number() over (
+               order by g.best_seed_rk, g.first_edge_created_at, g.page_id, c.id
+             ) as rk
       from graph_neighbors g
       join content_chunks c on c.page_id = g.page_id and c.ord = 0
       where true
         ${metadataFilter(tx, since, until, author)}
+    ),
+    -- The separate global graph reservation admits at most 400 graph candidates in addition to the
+    -- original arms' at-most-400 budget. shortlistCapacity includes both exact reservations, so a
+    -- graph row admitted here cannot disappear merely because graph carries a lower fusion weight.
+    graph as (
+      select id, page_id, rk
+      from graph_ranked
+      where rk <= ${graphArmCapacity}
     ),
 
     -- ── WEIGHTED RRF ───────────────────────────────────────────────────────
@@ -684,7 +724,8 @@ export function hybridQuery(
     -- 367ms plan. "offset 0" is the documented optimisation fence that blocks the pull-up — a no-op
     -- semantically (offset 0 rows), which is precisely why it is safe, and it is the reason the
     -- LATERAL survives to mean what it says. With the fence the shortlist is necessarily the outer
-    -- relation and each row (bounded by the validated arm capacity, at most 400) is one primary-key lookup:
+    -- relation and each row (bounded by the validated base + graph capacities, at most 800) is one
+    -- primary-key lookup:
     --
     --   before  Nested Loop … Rows Removed by Join Filter: 96152      232ms
     --   after   Index Scan using content_chunks_pkey … loops=34       0.3ms   (+ Memoize on pages)

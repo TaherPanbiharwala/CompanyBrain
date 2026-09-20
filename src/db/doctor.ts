@@ -168,7 +168,11 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
       has_column_privilege('cb_auth','workspaces','domain','UPDATE')      as auth_ws_domain,
       has_table_privilege('cb_app','workspaces','DELETE')                 as app_ws_del,
       has_table_privilege('cb_app','workspace_members','DELETE')          as app_wm_del,
-      has_table_privilege('cb_app','sessions','SELECT')                   as app_sessions_sel`
+      has_table_privilege('cb_app','sessions','SELECT')                   as app_sessions_sel,
+      has_table_privilege('cb_app',to_regclass('public.links'),'SELECT')  as app_links_sel,
+      has_table_privilege('cb_app',to_regclass('public.links'),'INSERT')  as app_links_ins,
+      has_table_privilege('cb_app',to_regclass('public.links'),'DELETE')  as app_links_del,
+      has_table_privilege('cb_app',to_regclass('public.links'),'UPDATE')  as app_links_upd`
   )[0]!;
 
   add('cb_app cannot UPDATE invites.role (no self-minted owner invites)', p.app_invite_role === false);
@@ -182,6 +186,9 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   add('cb_app cannot DELETE workspaces (whole-tenant destruction)', p.app_ws_del === false);
   add('cb_app cannot DELETE workspace_members (lock out every colleague)', p.app_wm_del === false);
   add('cb_app has no SELECT on sessions (definer-only access)', p.app_sessions_sel === false);
+  add('cb_app has SELECT/INSERT/DELETE but no UPDATE on derived links',
+    p.app_links_sel === true && p.app_links_ins === true && p.app_links_del === true && p.app_links_upd === false,
+    `select=${p.app_links_sel} insert=${p.app_links_ins} delete=${p.app_links_del} update=${p.app_links_upd}`);
 
   // Function-level ACLs. The definers exist to SHRINK the pre-auth surface; a PUBLIC EXECUTE would
   // hand it to every role, and cb_auth executing resolve_session would widen it back out.
@@ -192,6 +199,21 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
       has_function_privilege('cb_auth','cb_internal.resolve_session(text)','EXECUTE') as auth_resolve,
       has_function_privilege('cb_auth','cb_internal.adopt_principal(uuid,text)','EXECUTE') as auth_adopt,
       has_function_privilege('cb_app','cb_internal.adopt_principal(uuid,text)','EXECUTE')  as app_adopt,
+      -- OID form + to_regprocedure is intentional: on a database with 0022 still pending these
+      -- evaluate to NULL/false instead of throwing undefined_function and erasing the actionable
+      -- "run migrate" checks later in this report.
+      has_function_privilege('public',to_regprocedure('cb_internal.sync_link_security_state()'),'EXECUTE') as pub_link_sync,
+      has_function_privilege('cb_app',to_regprocedure('cb_internal.sync_link_security_state()'),'EXECUTE') as app_link_sync,
+      has_function_privilege('cb_auth',to_regprocedure('cb_internal.sync_link_security_state()'),'EXECUTE') as auth_link_sync,
+      has_function_privilege('public',to_regprocedure('cb_internal.cycle_link_pages(uuid,integer)'),'EXECUTE') as pub_cycle_pages,
+      has_function_privilege('cb_app',to_regprocedure('cb_internal.cycle_link_pages(uuid,integer)'),'EXECUTE') as app_cycle_pages,
+      has_function_privilege('cb_auth',to_regprocedure('cb_internal.cycle_link_pages(uuid,integer)'),'EXECUTE') as auth_cycle_pages,
+      has_function_privilege('public',to_regprocedure('cb_internal.cycle_link_page_acls(uuid[])'),'EXECUTE') as pub_cycle_lock,
+      has_function_privilege('cb_app',to_regprocedure('cb_internal.cycle_link_page_acls(uuid[])'),'EXECUTE') as app_cycle_lock,
+      has_function_privilege('cb_auth',to_regprocedure('cb_internal.cycle_link_page_acls(uuid[])'),'EXECUTE') as auth_cycle_lock,
+      has_function_privilege('public',to_regprocedure('cb_internal.cycle_lock_link_sources(uuid[])'),'EXECUTE') as pub_cycle_source_lock,
+      has_function_privilege('cb_app',to_regprocedure('cb_internal.cycle_lock_link_sources(uuid[])'),'EXECUTE') as app_cycle_source_lock,
+      has_function_privilege('cb_auth',to_regprocedure('cb_internal.cycle_lock_link_sources(uuid[])'),'EXECUTE') as auth_cycle_source_lock,
       has_schema_privilege('cb_app','cb_internal','CREATE')  as app_create_internal,
       has_schema_privilege('cb_app','public','CREATE')       as app_create_public,
       has_schema_privilege('cb_auth','public','CREATE')      as auth_create_public`
@@ -202,6 +224,15 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   add('cb_auth cannot EXECUTE resolve_session (login role stays off the hot path)', f.auth_resolve === false);
   add('cb_auth CAN EXECUTE adopt_principal (its only definer)', f.auth_adopt === true);
   add('cb_app cannot EXECUTE adopt_principal', f.app_adopt === false);
+  add('link sync trigger function is not directly executable by PUBLIC/cb_app/cb_auth',
+    f.pub_link_sync === false && f.app_link_sync === false && f.auth_link_sync === false);
+  add('only cb_app can EXECUTE the cycle link snapshot/lock definers',
+    f.pub_cycle_pages === false && f.app_cycle_pages === true && f.auth_cycle_pages === false &&
+      f.pub_cycle_lock === false && f.app_cycle_lock === true && f.auth_cycle_lock === false &&
+      f.pub_cycle_source_lock === false && f.app_cycle_source_lock === true && f.auth_cycle_source_lock === false,
+    `pages(public=${f.pub_cycle_pages}, app=${f.app_cycle_pages}, auth=${f.auth_cycle_pages}) ` +
+      `target-lock(public=${f.pub_cycle_lock}, app=${f.app_cycle_lock}, auth=${f.auth_cycle_lock}) ` +
+      `source-lock(public=${f.pub_cycle_source_lock}, app=${f.app_cycle_source_lock}, auth=${f.auth_cycle_source_lock})`);
   add('cb_app cannot CREATE in cb_internal (cannot replace a definer body)', f.app_create_internal === false);
   add('cb_app cannot CREATE in public', f.app_create_public === false);
   add('cb_auth cannot CREATE in public', f.auth_create_public === false);
@@ -274,7 +305,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // the policy from inside the policy would be circular.
   const aclPolicies = await sql<{ tablename: string; qual: string | null; with_check: string | null }[]>`
     select tablename, qual, with_check from pg_policies
-    where schemaname = 'public' and tablename in ('pages','content_chunks','page_sources') and policyname like '%_ws'`;
+    where schemaname = 'public' and tablename in ('pages','content_chunks','page_sources','links') and policyname like '%_ws'`;
   const missingAcl = aclPolicies.filter(
     (p) => !(p.qual ?? '').includes('current_grants') || !(p.with_check ?? '').includes('current_grants'),
   );
@@ -284,6 +315,33 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
       : `missing on: ${missingAcl.map((p) => p.tablename).join(', ')}. A content policy without this clause makes ` +
         `every private page readable by every workspace member. Do NOT run \`doctor --update\`. Re-run ` +
         `\`bun run migrate\`, then confirm: select * from _migrations where filename = 'migrations/0007_acl_rls.sql';`);
+
+  const [linksWs] = await sql<{
+    roles: string; cmd: string; permissive: string; qual: string | null; with_check: string | null;
+  }[]>`
+    select roles::text as roles, cmd, permissive, qual, with_check
+    from pg_policies
+    where schemaname = 'public' and tablename = 'links' and policyname = 'links_ws'`;
+  const linksWsClauses = `${linksWs?.qual ?? ''} ${linksWs?.with_check ?? ''}`;
+  add('links_ws is cb_app-only and enforces workspace plus BOTH endpoint ACLs on reads and writes',
+    linksWs?.roles === '{cb_app}' && linksWs.cmd === 'ALL' && linksWs.permissive === 'PERMISSIVE' &&
+      (linksWs.qual ?? '').includes('from_acl') && (linksWs.qual ?? '').includes('to_acl') &&
+      (linksWs.with_check ?? '').includes('from_acl') && (linksWs.with_check ?? '').includes('to_acl') &&
+      linksWsClauses.includes('app.workspace') && linksWsClauses.includes('current_grants'),
+    linksWs ? `roles=${linksWs.roles} cmd=${linksWs.cmd} permissive=${linksWs.permissive}` : 'missing');
+
+  const [linksCycle] = await sql<{
+    roles: string; cmd: string; permissive: string; qual: string | null; with_check: string | null;
+  }[]>`
+    select roles::text as roles, cmd, permissive, qual, with_check
+    from pg_policies
+    where schemaname = 'public' and tablename = 'links' and policyname = 'links_cycle_system'`;
+  const cycleClauses = `${linksCycle?.qual ?? ''} ${linksCycle?.with_check ?? ''}`;
+  add('links_cycle_system is confined to cb_app + current workspace + the exact cycle sentinel',
+    linksCycle?.roles === '{cb_app}' && linksCycle.cmd === 'ALL' && linksCycle.permissive === 'PERMISSIVE' &&
+      cycleClauses.includes('app.workspace') && cycleClauses.includes('app.principal') &&
+      cycleClauses.includes('00000000-0000-0000-0000-000000000000'),
+    linksCycle ? `roles=${linksCycle.roles} cmd=${linksCycle.cmd} permissive=${linksCycle.permissive}` : 'missing');
 
   // ── M6: soft-delete visibility ─────────────────────────────────────────
   // deleted_at IS NULL lives on a SEPARATE, RESTRICTIVE, FOR SELECT-only policy (migration 0016) —
@@ -300,20 +358,23 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // reasoning as the aclPolicies query above; auditing a policy from inside the policy is circular.
   const hideDeletedPolicies = await sql<{ tablename: string; policyname: string; permissive: string; cmd: string; qual: string | null }[]>`
     select tablename, policyname, permissive, cmd, qual from pg_policies
-    where schemaname = 'public' and tablename in ('pages', 'content_chunks', 'page_sources') and policyname like '%_hide_deleted'`;
+    where schemaname = 'public' and tablename in ('pages', 'content_chunks', 'page_sources', 'links') and policyname like '%_hide_deleted'`;
   // page_sources joined this set in migration 0017 — it holds the original uploaded file bytes
   // (D71) and was the gap an adversarial review found: 0014/0016 gave pages/content_chunks a
   // deleted_at column and this restrictive policy, but left page_sources fully live/readable
   // indefinitely after "delete", contradicting lifecycle.ts's own claim otherwise.
-  const EXPECTED_HIDE_DELETED_TABLES = ['content_chunks', 'page_sources', 'pages'];
+  const EXPECTED_HIDE_DELETED_TABLES = ['content_chunks', 'links', 'page_sources', 'pages'];
   const badHideDeleted = hideDeletedPolicies.filter(
-    (p) => p.permissive !== 'RESTRICTIVE' || p.cmd !== 'SELECT' || !(p.qual ?? '').includes('deleted_at'),
+    (p) => p.permissive !== 'RESTRICTIVE' || p.cmd !== 'SELECT' ||
+      (p.tablename === 'links'
+        ? !(p.qual ?? '').includes('from_deleted_at') || !(p.qual ?? '').includes('to_deleted_at')
+        : !(p.qual ?? '').includes('deleted_at')),
   );
   const hideDeletedTables = [...hideDeletedPolicies.map((p) => p.tablename)].sort();
-  add('a RESTRICTIVE, SELECT-only deleted_at policy exists on pages, content_chunks and page_sources (migrations 0016/0017)',
+  add('a RESTRICTIVE, SELECT-only deleted_at policy exists on pages, content_chunks, page_sources and links',
     JSON.stringify(hideDeletedTables) === JSON.stringify(EXPECTED_HIDE_DELETED_TABLES) && badHideDeleted.length === 0,
     JSON.stringify(hideDeletedTables) !== JSON.stringify(EXPECTED_HIDE_DELETED_TABLES)
-      ? `found on: ${hideDeletedTables.join(', ') || 'none'} — expected pages, content_chunks and page_sources. Re-run \`bun run migrate\`.`
+      ? `found on: ${hideDeletedTables.join(', ') || 'none'} — expected pages, content_chunks, page_sources and links. Re-run \`bun run migrate\`.`
       : badHideDeleted.length
         ? `wrong shape on: ${badHideDeleted.map((p) => `${p.tablename} (permissive=${p.permissive}, cmd=${p.cmd})`).join(', ')} — must be RESTRICTIVE + FOR SELECT.`
         : '');
@@ -321,7 +382,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   const wsPoliciesMentionDeletedAt = aclPolicies.filter(
     (p) => (p.qual ?? '').includes('deleted_at') || (p.with_check ?? '').includes('deleted_at'),
   );
-  add('pages_ws/content_chunks_ws/page_sources_ws do NOT mention deleted_at (it lives only in the restrictive policies above)',
+  add('content *_ws policies do NOT mention deleted_at (it lives only in restrictive SELECT policies)',
     wsPoliciesMentionDeletedAt.length === 0,
     wsPoliciesMentionDeletedAt.length === 0
       ? ''
@@ -440,6 +501,40 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
       `${srcDrift[0]?.n ?? '?'} drifted source row(s) — a widened one keeps the original file readable after its page was made private`);
   }
 
+  // links has two independently-enforced endpoint snapshots. Drift in either ACL can disclose the
+  // relationship/context after a rescope; drift in either deletion marker can preserve a direct raw
+  // read after soft delete. Owner-side count is intentional: a scoped caller cannot see all rows
+  // whose very defect is a wrong security label.
+  // rls-exempt: catalog probe on the owner pool — asks whether links exists, reads no tenant rows.
+  const hasLinks =
+    (await sql<{ present: boolean }[]>`select to_regclass('public.links') is not null as present`)[0]!.present;
+  const linkSecurityColumnCount = hasLinks
+    ? (await sql<{ n: number }[]>`
+        select count(*)::int as n from information_schema.columns
+        where table_schema = 'public' and table_name = 'links'
+          and column_name in ('from_deleted_at', 'to_deleted_at')`)[0]?.n ?? 0
+    : 0;
+  if (!hasLinks || linkSecurityColumnCount !== 2) {
+    add('link endpoint security state matches both pages', false,
+      hasLinks
+        ? 'links.from_deleted_at/to_deleted_at are missing — migration 0022 has not been applied. Run `bun run migrate`.'
+        : 'links does not exist — migration 0021 has not been applied. Run `bun run migrate`.');
+  } else {
+    // rls-exempt: cross-tenant owner-side integrity count. A scoped query cannot find an edge whose
+    // denormalized ACL is precisely what (incorrectly) hides that edge from the scoped principal.
+    const [linkDrift] = await sql<{ n: number }[]>`
+      select count(*)::int as n
+      from links l
+      join pages fp on fp.id = l.from_page_id
+      join pages tp on tp.id = l.to_page_id
+      where l.from_acl is distinct from fp.acl
+         or l.to_acl is distinct from tp.acl
+         or l.from_deleted_at is distinct from fp.deleted_at
+         or l.to_deleted_at is distinct from tp.deleted_at`;
+    add('link endpoint ACL/deletion state matches both pages', (linkDrift?.n ?? -1) === 0,
+      `${linkDrift?.n ?? '?'} link(s) drifted — direct links RLS trusts these four denormalized fields`);
+  }
+
   // Index VALIDITY, which no other check here can see. All five index assertions below read
   // pg_indexes, whose columns are schemaname/tablename/indexname/tablespace/indexdef — there is no
   // validity column, so an INVALID index left by a cancelled CREATE INDEX CONCURRENTLY renders
@@ -464,16 +559,25 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
   // a row permanently invisible to every principal including its author — was accepted for the
   // whole life of 0007. Asserting the definition, not the name, is the same lesson the index checks
   // above learned when a same-named btree shipped where a GIN index was needed.
-  const aclChecks = await sql<{ conname: string; def: string }[]>`
-    select conname, pg_get_constraintdef(oid) as def
+  const aclChecks = await sql<{ conname: string; def: string; validated: boolean }[]>`
+    select conname, pg_get_constraintdef(oid) as def, convalidated as validated
     from pg_constraint where conname like '%\_acl\_nonempty' order by conname`;
-  const EXPECTED_ACL_CHECKS = ['chunks_acl_nonempty', 'page_sources_acl_nonempty', 'pages_acl_nonempty', 'quarantine_acl_nonempty'];
+  const EXPECTED_ACL_CHECKS = [
+    'chunks_acl_nonempty',
+    'links_from_acl_nonempty',
+    'links_to_acl_nonempty',
+    'page_sources_acl_nonempty',
+    'pages_acl_nonempty',
+    'quarantine_acl_nonempty',
+  ];
   const foundNames = aclChecks.map((r) => r.conname);
-  add('all four acl non-empty CHECK constraints are present',
-    EXPECTED_ACL_CHECKS.every((n) => foundNames.includes(n)),
-    `found: ${foundNames.join(', ') || 'none'} — expected ${EXPECTED_ACL_CHECKS.join(', ')}`);
+  const unvalidatedAclChecks = aclChecks.filter((r) => !r.validated).map((r) => r.conname);
+  add('exactly the six expected acl non-empty CHECK constraints are present and validated',
+    JSON.stringify(foundNames) === JSON.stringify(EXPECTED_ACL_CHECKS) && aclChecks.every((r) => r.validated),
+    `found: ${foundNames.join(', ') || 'none'} — expected ${EXPECTED_ACL_CHECKS.join(', ')}` +
+      (unvalidatedAclChecks.length ? `; NOT VALID: ${unvalidatedAclChecks.join(', ')}` : ''));
   const stillArrayLength = aclChecks.filter((r) => !r.def.includes('cardinality')).map((r) => r.conname);
-  add('acl non-empty CHECKs use cardinality(), not array_length() (migration 0012)',
+  add('acl non-empty CHECKs use cardinality(), not array_length() (migrations 0012/0022)',
     aclChecks.length > 0 && stillArrayLength.length === 0,
     stillArrayLength.length ? `${stillArrayLength.join(', ')} still use array_length, which returns NULL for '{}' — a CHECK is SATISFIED when NULL, so these enforce nothing` : '');
 
@@ -630,6 +734,39 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
         `and the keyring resolver.`
       : '');
 
+  // links carries two endpoint ACL columns rather than one column literally named `acl`, so the
+  // catalog-driven census above cannot discover it. Census both sides explicitly; otherwise M9 can
+  // admit malformed or presently-unmintable tags while the generic check stays green.
+  if (!hasLinks) {
+    add('both link endpoint ACL columns are included in the tag census', false,
+      'links does not exist — migration 0021 has not been applied.');
+  } else {
+    const linkAclCensus = await sql<{
+      side: string; malformed: number; unmintable: number; total: number;
+    }[]>`
+      select 'from_acl' as side,
+             count(*) filter (where tag !~ ${GRANT_TAG_SQL})::int as malformed,
+             count(*) filter (where tag ~ ${UNMINTABLE_SQL})::int as unmintable,
+             count(*)::int as total
+      from links, unnest(from_acl) tag
+      union all
+      select 'to_acl' as side,
+             count(*) filter (where tag !~ ${GRANT_TAG_SQL})::int as malformed,
+             count(*) filter (where tag ~ ${UNMINTABLE_SQL})::int as unmintable,
+             count(*)::int as total
+      from links, unnest(to_acl) tag
+      order by side`;
+    const badLinkTags = linkAclCensus.filter((r) => r.malformed > 0);
+    const unmintableLinkTags = linkAclCensus.filter((r) => r.unmintable > 0);
+    add('both link endpoint ACL columns are included in the tag census', linkAclCensus.length === 2,
+      linkAclCensus.map((r) => `${r.side}=${r.total}`).join(' '));
+    add('every link endpoint ACL tag matches the grant-tag format', badLinkTags.length === 0,
+      badLinkTags.map((r) => `${r.side}:${r.malformed}`).join(', '));
+    add('no link endpoint ACL tag is unmintable (team:/role: before team scope ships)',
+      unmintableLinkTags.length === 0,
+      unmintableLinkTags.map((r) => `${r.side}:${r.unmintable}`).join(', '));
+  }
+
   // scope/acl agreement — aclForScope's invariant (src/core/context.ts), asserted nowhere in the
   // database until now. `scope` NAMES a visibility policy and `acl` is what RLS actually reads; when
   // they disagree the label is decorative, which is precisely the regression D52 records. Also
@@ -684,11 +821,69 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
 
   // Our own definers must pin search_path (a definer running with a caller-controlled search_path is
   // a privilege-escalation primitive) and must never carry PUBLIC EXECUTE.
-  const ours = await sql<{ name: string; config: string | null; acl: string | null; prosrc: string }[]>`
-    select p.proname as name, p.proconfig::text as config, p.proacl::text as acl, p.prosrc as prosrc
+  const ours = await sql<{
+    name: string; config: string | null; acl: string | null; prosrc: string; volatility: string;
+  }[]>`
+    select p.proname as name, p.proconfig::text as config, p.proacl::text as acl,
+           p.prosrc as prosrc, p.provolatile as volatility
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where p.prosecdef and n.nspname = 'cb_internal' order by 1`;
-  add('all 7 cb_internal definers present', ours.length === 7, `found ${ours.length}`);
+  add('all 11 cb_internal definers present', ours.length === 11, `found ${ours.length}`);
+
+  const linkSync = ours.find((fn) => fn.name === 'sync_link_security_state');
+  add('link sync definer canonicalizes inserts and propagates page ACL/deletion changes both ways',
+    !!linkSync && linkSync.volatility === 'v' &&
+      linkSync.prosrc.includes("TG_TABLE_NAME = 'links'") &&
+      linkSync.prosrc.includes("TG_TABLE_NAME = 'pages'") &&
+      linkSync.prosrc.includes('NEW.from_acl') && linkSync.prosrc.includes('NEW.to_acl') &&
+      linkSync.prosrc.includes('from_deleted_at') && linkSync.prosrc.includes('to_deleted_at') &&
+      linkSync.prosrc.includes('WHERE from_page_id = NEW.id') &&
+      linkSync.prosrc.includes('WHERE to_page_id = NEW.id'),
+    linkSync ? `volatility=${linkSync.volatility}` : 'missing');
+
+  const linkTriggers = await sql<{
+    trigger_name: string; table_name: string; function_name: string; enabled: string;
+  }[]>`
+    select t.tgname as trigger_name, c.relname as table_name, p.proname as function_name,
+           t.tgenabled::text as enabled
+    from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    join pg_proc p on p.oid = t.tgfoid
+    where n.nspname = 'public' and not t.tgisinternal
+      and t.tgname in ('links_canonical_security', 'pages_sync_link_security')
+    order by t.tgname`;
+  add('both link security triggers are installed and enabled on the intended tables',
+    linkTriggers.length === 2 &&
+      linkTriggers.some((t) => t.trigger_name === 'links_canonical_security' &&
+        t.table_name === 'links' && t.function_name === 'sync_link_security_state' && t.enabled !== 'D') &&
+      linkTriggers.some((t) => t.trigger_name === 'pages_sync_link_security' &&
+        t.table_name === 'pages' && t.function_name === 'sync_link_security_state' && t.enabled !== 'D'),
+    linkTriggers.map((t) => `${t.table_name}.${t.trigger_name}->${t.function_name}[${t.enabled}]`).join(', ') || 'missing');
+
+  const cycleSnapshot = ours.find((fn) => fn.name === 'cycle_link_pages');
+  const cycleTargetAcl = ours.find((fn) => fn.name === 'cycle_link_page_acls');
+  const cycleSourceLock = ours.find((fn) => fn.name === 'cycle_lock_link_sources');
+  const hasCycleGuards = (fn: typeof cycleSnapshot): boolean => !!fn &&
+    fn.prosrc.includes('00000000-0000-0000-0000-000000000000') &&
+    fn.prosrc.includes('app.principal') && fn.prosrc.includes('app.workspace') &&
+    fn.prosrc.includes('p.deleted_at IS NULL');
+  add('cycle link definers require the sentinel, current workspace, bounded inputs, and active pages',
+    hasCycleGuards(cycleSnapshot) && hasCycleGuards(cycleTargetAcl) && hasCycleGuards(cycleSourceLock) &&
+      cycleSnapshot?.volatility === 's' && cycleSnapshot.prosrc.includes('p_limit > 1000') &&
+      cycleTargetAcl?.volatility === 'v' && cycleTargetAcl.prosrc.includes('cardinality(p_page_ids) > 1000') &&
+      cycleSourceLock?.volatility === 'v' && cycleSourceLock.prosrc.includes('cardinality(p_page_ids) > 1000'),
+    `snapshot=${cycleSnapshot?.volatility ?? 'missing'} target-acl=${cycleTargetAcl?.volatility ?? 'missing'} ` +
+      `source-lock=${cycleSourceLock?.volatility ?? 'missing'}`);
+  const advisoryLiteral = "company-brain:links:";
+  add('link trigger and cycle definers share the exact workspace advisory-lock namespace',
+    !!linkSync && linkSync.prosrc.includes(advisoryLiteral) && linkSync.prosrc.includes('pg_advisory_xact_lock') &&
+      !!cycleTargetAcl && cycleTargetAcl.prosrc.includes(advisoryLiteral) && cycleTargetAcl.prosrc.includes('pg_advisory_xact_lock') &&
+      !!cycleSourceLock && cycleSourceLock.prosrc.includes(advisoryLiteral) && cycleSourceLock.prosrc.includes('pg_advisory_xact_lock'));
+  add('cycle source lock is deterministic, FOR UPDATE, then rereads ACL and content under the advisory',
+    !!cycleSourceLock && cycleSourceLock.prosrc.includes('ORDER BY p.id') &&
+      cycleSourceLock.prosrc.includes('FOR UPDATE') && cycleSourceLock.prosrc.includes('p.body') &&
+      cycleSourceLock.prosrc.includes('p.extracted_text'));
 
   // soft_delete_page/soft_delete_pages must CALL current_grants(), not hand-copy its parsing — an
   // adversarial review found an earlier version doing exactly that, with nothing to stop the copy

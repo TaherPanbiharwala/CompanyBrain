@@ -115,6 +115,11 @@ candidates.** M7's SQL uses the larger of `fetchK × 4` and the sum of all arm l
 post-fusion capacity, so every admitted candidate is eligible for exact/recency rescoring. `topK`
 controls how many survive, not how many enter fusion.
 
+When graph expansion is enabled, it has a separate reservation capped at 400 candidates. The four
+base arms remain capped at 400 combined, so enabling graph traversal never silently steals their
+slots and the post-fusion shortlist remains bounded at 800 rows. Every row admitted by either
+reservation reaches exact/recency rescoring before `topK` is applied.
+
 | Observation | Cause | Fix |
 | --- | --- | --- |
 | Recall climbs with k | Budget — good chunks ranked below the cutoff | Raise `topK` |
@@ -189,8 +194,26 @@ The sweep is preregistered: seed 42; 70% tuning and 30% untouched holdout; joint
 question type and required-document count; recency frozen to one day after the corpus's latest
 publication date. Tuning runs exactly these profiles: `baseline`, `gbrain-exact-only`,
 `gbrain-fusion-only`, `gbrain-intent`, `recency-auto-only`, `gbrain-intent-auto-recency`,
-`gbrain-intent-recency-on`, and `gbrain-intent-recency-strong`. Only baseline and the tuning winner
-may touch holdout.
+`gbrain-intent-recency-on`, `gbrain-intent-recency-strong`, and M9's
+`graph-expansion-only`. The graph profile requires `link_extraction` to populate the eval workspace
+first. D113 keeps `PLANNED_COMPARISONS` at 12 because the holdout family is unchanged: the nine
+profiles compete only on tuning, then only baseline and the one tuning winner touch holdout.
+
+### Latest completed M9 run — baseline retained (2026-09-20)
+
+The completed immutable run `2026-09-19T19-11-33-790Z-be63188-m7` scored all nine profiles on
+1,579 seed-42 tuning questions and compared only baseline with the tuning winner on 676 untouched
+holdout questions. `gbrain-intent` won tuning at 39.01% all-evidence recall@8 versus 38.76% for
+baseline. Its holdout mean lift was 0.44 percentage points (3 fixed, 0 broken), but its 95% bootstrap
+interval was 0.00–1.33 points, raw p=0.102, and Bonferroni-adjusted p=1. The statistical gate failed,
+so `DEFAULT_RETRIEVAL_KNOBS` remains baseline. The runner's exit code 1 is the deliberate signal for
+that failed promotion gate, not an execution failure.
+
+The graph-only profile scored 38.68% at k=8 on tuning (below baseline) and had two errored rows, so
+it was ineligible to win. `graphExpansion.enabled` remains false. The measured artifact is
+`eval/runs/multihop-2026-09-19T19-11-33-790Z-be63188-m7.sweep.md`; its holdout had zero errors or
+degradations and the candidate p95 latency was lower than baseline (1,969 ms versus 2,362 ms), but
+latency cannot override the preregistered evidence gate.
 
 ```bash
 # MultiHop corpus must already be loaded into the seeded plain workspace.

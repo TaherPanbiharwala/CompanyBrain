@@ -219,6 +219,10 @@ const REQUIRED_LIVE_SUITES = [
   // M9's links table: RLS cross-tenant isolation, the from_acl/to_acl conjunction, backlinks
   // populating on ingest, and the link_extraction cycle phase — see test/links.live.test.ts.
   'links',
+  // M9 follow-up coverage: the upload-specific extraction hook and the empty-edge first-write race
+  // live in separate suites so neither can disappear while the broader links gate stays green.
+  'links-file',
+  'links-reconcile-concurrency',
   'm2-auth',
   'mcp',
   'rls-smoke',
