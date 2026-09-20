@@ -211,7 +211,8 @@ async function loadWorldQueries(root: string, pageSlugs: ReadonlySet<string>): P
 
 function loadWorldPages(root: string): BrainBenchWorldPage[] {
   const directory = join(root, 'eval/data/world-v1');
-  const entries = readdirSync(directory).filter((name) => name.endsWith('.json')).sort();
+  // `_ledger.json` records corpus-generation costs and is not a retrievable public page.
+  const entries = readdirSync(directory).filter((name) => name.endsWith('.json') && !name.startsWith('_')).sort();
   if (entries.length === 0) throw new Error('world-v1 contains no page JSON files');
   return normalizeWorldPages(entries.map((name) => JSON.parse(readFileSync(join(directory, name), 'utf8'))));
 }

@@ -20,6 +20,12 @@ describe('BrainBench public corpus boundary', () => {
     expect(body).not.toContain('SECRET QREL ONLY');
   });
 
+  it('renders published array timelines and rejects malformed timeline values', () => {
+    const page = normalizeWorldPage({ slug: 'companies/a', title: 'A', compiled_truth: 'PUBLIC', timeline: ['first', 'second'], _facts: { hidden: true } });
+    expect(worldPageBody(page)).toContain('first\nsecond');
+    expect(() => normalizeWorldPage({ slug: 'companies/a', title: 'A', compiled_truth: 'PUBLIC', timeline: [1] })).toThrow('timeline must be a string or array of strings');
+  });
+
   it('rejects a qrel that points outside public world pages', () => {
     expect(() => normalizeBrainBenchQueries([{ id: 'q', question: 'where?', gold: { relevant: ['missing'] } }], 'relational', new Set(['people/a']))).toThrow('unknown public page');
   });

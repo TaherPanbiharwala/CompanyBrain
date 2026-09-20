@@ -103,11 +103,17 @@ function stringList(value: unknown, label: string): string[] {
  * cannot be put into the Company Brain input by a later call-site refactor. */
 export function normalizeWorldPage(raw: unknown, label = 'world page'): BrainBenchWorldPage {
   const value = record(raw, label);
+  const rawTimeline = value.timeline;
+  const timeline = typeof rawTimeline === 'string'
+    ? rawTimeline
+    : Array.isArray(rawTimeline) && rawTimeline.every((entry) => typeof entry === 'string')
+      ? rawTimeline.join('\n')
+      : (() => { throw new Error(`${label}.timeline must be a string or array of strings`); })();
   return {
     slug: nonEmpty(value.slug, `${label}.slug`),
     title: nonEmpty(value.title, `${label}.title`),
     compiledTruth: nonEmpty(value.compiled_truth, `${label}.compiled_truth`),
-    timeline: typeof value.timeline === 'string' ? value.timeline : '',
+    timeline,
   };
 }
 
