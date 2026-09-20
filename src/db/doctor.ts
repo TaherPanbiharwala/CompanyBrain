@@ -664,7 +664,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
 
   // rls-exempt: not a query — the NAMES this census expects to find, compared against the catalog
   // above. A mismatch in either direction is the finding.
-  const EXPECTED_ACL_TABLES = ['content_chunks', 'page_sources', 'pages', 'quarantine'];
+  const EXPECTED_ACL_TABLES = ['content_chunks', 'facts', 'page_sources', 'pages', 'quarantine'];
   const unexpectedAcl = aclTables.filter((t) => !EXPECTED_ACL_TABLES.includes(t));
   const missingAclTables = EXPECTED_ACL_TABLES.filter((t) => !aclTables.includes(t));
   add('the acl-bearing tables are exactly the ones this census knows about',
@@ -828,7 +828,7 @@ async function booleanChecks(sql: postgres.Sql): Promise<Check[]> {
            p.prosrc as prosrc, p.provolatile as volatility
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where p.prosecdef and n.nspname = 'cb_internal' order by 1`;
-  add('all 11 cb_internal definers present', ours.length === 11, `found ${ours.length}`);
+  add('all 14 cb_internal definers present', ours.length === 14, `found ${ours.length}`);
 
   const linkSync = ours.find((fn) => fn.name === 'sync_link_security_state');
   add('link sync definer canonicalizes inserts and propagates page ACL/deletion changes both ways',

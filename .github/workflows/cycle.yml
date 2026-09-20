@@ -9,6 +9,14 @@ name: Cycle engine
 # Cadence is hourly for M9 backward-mention discovery. Synchronous ingest keeps ordinary outgoing
 # edges fresh; the scheduled full walk is what finds an older page naming a page created later.
 #
+# M10 wave 1 adds fact_extraction — UNLIKE link_extraction, this is real per-page LLM spend (capped
+# at its own $2.00/run budgetUsdDefault, but that is a PER-RUN cap, not a daily one, and this runs
+# hourly). cb_internal.cycle_fact_extraction_candidates filters to pages whose content_hash changed
+# since their last extraction, so a steady-state hour with no new/edited pages costs near zero — but
+# confirm that is still true, and that the cadence/cap are actually wanted, before this reaches
+# master. Explicit --phase order (not the registry's alphabetical fallback) so fact_extraction always
+# has a place in the sequence a human chose, not one `registeredPhaseNames()`'s sort happened to give.
+#
 # Never runs `bun run migrate` — assumes the target DB is already migrated, so a scheduled tick
 # can't race or interact with ci.yml's migration-serialization concerns.
 
@@ -23,7 +31,7 @@ concurrency:
 
 jobs:
   run-cycle:
-    name: run cycle (link extraction)
+    name: run cycle (link + fact extraction)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -37,4 +45,4 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_ADMIN_URL: ${{ secrets.DATABASE_ADMIN_URL }}
-        run: bun run cycle --phase link_extraction
+        run: bun run cycle --phase link_extraction --phase fact_extraction

@@ -155,15 +155,35 @@ expansion before fusion) runs through the M7 sweep harness and is measured, not 
 
 **Depends on M9.**
 
-Takes + grading (`take_proposals`, `take_grade_cache`), concept synthesis, **`compiled_truth`
-generation** — the column already exists in `pages`, ported from gbrain's schema, and nothing
-writes it; this is the phase that would — `emotional_weight` salience, timeline entries.
+**Status (2026-09-20): wave 1 sub-step A shipped — the facts substrate.** Takes + grading
+(`take_proposals`, `take_grade_cache`), concept synthesis, and timeline entries are **deliberately
+scoped out**, not attempted: research against gbrain found both takes+grading and concept synthesis
+are substantially non-functional in gbrain's own shipped code (no proposal→canonical-takes promotion
+path exists anywhere in gbrain's source; `grade_takes`'s evidence retrieval is a literal placeholder;
+concept synthesis's input tagging step is never written by gbrain's own atom extraction). Porting
+either would mean shipping broken scaffolding — see D114. Both need a founder scoping decision before
+any later wave.
+
+**`compiled_truth` generation** — the column already exists in `pages`, ported from gbrain's schema,
+and nothing writes it yet — and **`salience`** (renamed from gbrain's `emotional_weight`; see D114
+decision 6) are architected but not yet built: D114 locks the design (a full new retrieval fusion arm
+for compiled_truth, a facts-density-based salience formula) and builds them next, against this step's
+real fact data and real per-page cost numbers.
+
+**What shipped:** `0023_fact_extraction.sql` creates the `facts` table — bi-temporal, single-parent
+RLS (not links' two-endpoint shape), sentinel-only INSERT, acl-only ordinary UPDATE for rescope sync —
+and the `fact_extraction` cycle phase: one LLM call per candidate page (server-side skip-filtered on
+`content_hash`), structured extraction with per-fact-not-whole-response degradation on a malformed
+response, entity-scoped cosine dedup against the HNSW index, and per-page checkpointing so a crash or
+budget exhaustion redoes at most one page's spend. Full account, including the RLS design reasoning
+and a confirmed-live `RETURNING`-under-RLS gotcha, in D114.
 
 **Exit criteria:** `compiled_truth` is populated for a real corpus and measurably earns its
-retrieval boost through the M7 sweep; salience is computed and is itself a sweepable knob.
+retrieval boost through the M7 sweep; salience is computed and is itself a sweepable knob. **Not yet
+met** — this sub-step is the facts substrate those two depend on, not the criteria themselves.
 
-**Size:** 5–6 weeks / 2 weeks. The largest LLM spend of any milestone here — M8's budget meter is
-what makes running this safe rather than a surprise bill.
+**Size:** 5–6 weeks / 2 weeks for the original (now-descoped) full scope. The largest LLM spend of any
+milestone here — M8's budget meter is what makes running this safe rather than a surprise bill.
 
 ---
 

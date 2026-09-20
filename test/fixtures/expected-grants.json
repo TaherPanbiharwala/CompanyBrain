@@ -26,6 +26,11 @@
   },
   {
     "grantee": "cb_app",
+    "table_name": "facts",
+    "privileges": "INSERT,SELECT"
+  },
+  {
+    "grantee": "cb_app",
     "table_name": "ingest_log",
     "privileges": "DELETE,INSERT,SELECT,UPDATE"
   },

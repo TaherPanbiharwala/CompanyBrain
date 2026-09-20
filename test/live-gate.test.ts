@@ -198,6 +198,11 @@ const REQUIRED_LIVE_SUITES = [
   // kill-9/resume exit criterion — see test/cycle.live.test.ts and test/cycle-kill9.live.test.ts.
   'cycle',
   'cycle-kill9',
+  // M10 wave 1 sub-step A: the facts table's RLS/lifecycle-sync coverage and the fact_extraction
+  // cycle phase's live end-to-end coverage (dedup, budget denial, skip-if-unchanged) — see
+  // test/facts-security.live.test.ts and test/fact-extraction.live.test.ts.
+  'fact-extraction',
+  'facts',
   'hybrid',
   'ingest',
   // The batch page ops (delete_page's pageIds arm, rescope_pages). Registered deliberately rather

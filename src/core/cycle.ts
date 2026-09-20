@@ -8,6 +8,7 @@ import { buildCycleContext, CycleLockUnavailableError, reapDeadCycleLocks, withR
 import { writeIngestLog } from './cycle/ingest-log.ts';
 import { NoopPhase } from './cycle/phases/noop.ts';
 import { LinkExtractionPhase } from './cycle/phases/link-extraction.ts';
+import { FactExtractionPhase } from './cycle/phases/fact-extraction.ts';
 import { buildPhaseRunner } from './cycle/runner-context.ts';
 import type { CycleOpts, CycleReport, PhaseResult } from './cycle/types.ts';
 
@@ -17,6 +18,7 @@ export { CycleLockUnavailableError } from './cycle/lock.ts';
 const PHASE_REGISTRY: Record<string, () => BaseCyclePhase> = {
   noop: () => new NoopPhase(),
   link_extraction: () => new LinkExtractionPhase(),
+  fact_extraction: () => new FactExtractionPhase(),
 };
 
 export function registeredPhaseNames(): string[] {

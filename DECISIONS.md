@@ -2062,3 +2062,121 @@ profile scored 38.68% on tuning and had two errors, making it ineligible. The ru
 exits 1 on a failed gate. `DEFAULT_RETRIEVAL_KNOBS` therefore remains the baseline and
 `graphExpansion.enabled` remains false; this completes M9's "measured, not assumed" criterion but
 does not license a ranking promotion. Fact extraction remains deliberately deferred under D112.
+
+## D114 — M10 wave 1, sub-step A: the facts substrate ships; compiled_truth/salience and takes/concepts deliberately scoped out (2026-09-20)
+
+`docs/pipeline-roadmap.md`'s M10 exit criteria name only two things: `compiled_truth` measurably
+earning a retrieval boost through the M7 sweep, and salience as a sweepable knob. Takes/grading,
+concept synthesis, and timeline entries appear in the roadmap's rough "ships" sketch but were never
+named as exit criteria. D112 already committed fact extraction to be M10's job, since compiled_truth
+needs facts as its raw material.
+
+**Research against gbrain (`~/dev/gbrain`) before writing any code found a sharp split in how
+reference-quality each subsystem actually is.** Facts and salience are real, working, portable gbrain
+subsystems. `compiled_truth` in gbrain is architecturally different from what company-brain needs —
+gbrain treats a per-tenant git repo as the system of record and `compiled_truth` as literally the raw
+page body; company-brain has no such repo. Takes+grading and concept synthesis are substantially
+non-functional in gbrain's own shipped code: the LLM proposal→canonical-takes promotion command was
+never implemented anywhere in gbrain's source (proposals accumulate in a review queue forever);
+`grade_takes`'s evidence retrieval is a literal placeholder string; concept synthesis's input
+(`frontmatter.concepts` tagging) is never written by gbrain's own atom-extraction step, making it a
+structural no-op in gbrain's default pipeline. Porting either now would mean shipping broken
+scaffolding, which conflicts with this project's "live-verified, not just typechecked" discipline —
+**both need a founder scoping decision for a later wave, not a default port, and are explicitly not
+attempted here.**
+
+**This build ships only the facts-extraction substrate** — migration `0023_fact_extraction.sql`, the
+`facts` table, and the `fact_extraction` cycle phase — live-verified and reviewed on its own, matching
+this project's own track record (M8 shipped the cycle engine alone before M9 gave it a real phase; M9
+itself deferred fact extraction out of its own scope). `compiled_truth` synthesis and salience
+computation are architected (six decisions, below) but built in a following step, against this step's
+real fact data and real per-page cost numbers instead of guesses.
+
+**Schema.** `facts`: bi-temporal but deliberately minimal — only `valid_from`, `consolidated_at`,
+`consolidated_into` ship now. `valid_until`/`expired_at`/`superseded_by` are omitted: nothing in this
+build reads or writes them (no live "supersede" branch — matches gbrain's own actual, not
+aspirational, behavior). Mirrors D112's own "no `links.deleted_at`" divergence: don't add a column
+nothing consumes yet. `kind`/`notability` are `TEXT` with no `CHECK`, validated at the extraction
+boundary via zod — matches `pages.kind`/`effective_date_source` (D86), not `op_checkpoints.kind`/
+`links.link_kind`'s `CHECK` shape, because a fact's category is closer to open-ended content
+categorization than a small fixed operational enum. `pages` gains
+`facts_extracted_content_hash`/`facts_extracted_at` — `pages.content_hash` (M6, migration `0014`) had
+"no consumer yet" since it shipped; this phase is its first real one.
+
+**RLS is deliberately not `content_chunks_ws`'s shape.** Facts is single-parent like `content_chunks`,
+so it follows 0014/0016's denormalized-acl + restrictive-hide-deleted pattern, not 0021/0022's
+two-endpoint edge-trigger pattern (built for a row with two endpoints to AND, which facts doesn't
+have). But unlike `content_chunks` — where ordinary member ingest legitimately inserts rows under the
+caller's own request context — **no ordinary caller ever writes a fact in this build**: there is no
+`create_fact` operation and no synchronous per-write extraction hook, only the cycle phase. So
+`facts_ws` is `FOR SELECT` only, not `FOR ALL`: an ordinary member holds the table-level INSERT grant
+(GRANT is per-role; the sentinel and an ordinary member share `cb_app`) but no permissive INSERT
+policy ever applies to them, since only `facts_cycle_system` (`FOR INSERT`, sentinel-only) covers that
+command. Without this split, `facts_ws` shaped like `content_chunks_ws` would let an ordinary member
+INSERT a fabricated fact — any acl overlapping their own grants, any `source_page_id` in the
+workspace, including a private page they cannot otherwise read — since nothing here canonicalizes a
+caller-supplied acl the way `sync_link_security_state` does for links. The one ordinary-caller write
+is the acl side of a page rescope (`rescopePages`), narrowed to the `acl` column alone by a
+column-level `GRANT UPDATE (acl)` — table-level UPDATE is revoked, so satisfying `facts_rescope`'s
+acl-overlap check still cannot rewrite `claim_text`/confidence/anything else. `deleted_at` propagation
+instead extends the existing owner-privileged `cb_internal.soft_delete_page(s)` functions (the same
+ones that already reach `content_chunks`/`page_sources`), not a new trigger.
+
+**A confirmed-live gotcha worth carrying forward: never add `RETURNING` to the cycle sentinel's fact
+INSERT.** The WITH CHECK doesn't reference acl, so the INSERT itself succeeds for a private page — but
+the sentinel's own grants are workspace-only, and `RETURNING` additionally requires the new row to be
+visible under the table's SELECT-governing policy, the identical intrinsic-RLS property that made
+`soft_delete_page` need an owner-privileged bypass in the first place. A test helper using `RETURNING`
+for convenience hit this on its very first private-page case (`test/facts-security.live.test.ts`); the
+production phase's own bulk insert never had `RETURNING` and was unaffected. Documented on the policy
+in migration `0023` and on the insert call itself so a future edit cannot reintroduce it silently.
+
+**Dedup — cosine-ANN only, entity-scoped, threshold 0.95**, matching gbrain's actually-shipped path
+(its LLM-judge triadic duplicate/supersede/independent classifier is dead code, never called in
+gbrain's own production path — not the real reference). Ranked in SQL against the HNSW index via
+`cb_internal.cycle_facts_by_entity`, which returns similarity directly rather than transferring
+candidate vectors back to the application to re-score. A hit is recorded via
+`consolidated_at`/`consolidated_into` on the new row, not silently dropped. Verified live with
+`installFakeAiFetch`'s deterministic embeddings: two pages producing the identical claim text for the
+same entity produce identical fake vectors (cosine similarity 1.0), and the second fact lands
+`consolidated_into` the first.
+
+**Six decisions locked for the rest of M10, only the first two implemented now:**
+1. Facts ACL/`deleted_at` sync is imperative (`lifecycle.ts` + the existing soft-delete definers), not
+   a new SECURITY DEFINER trigger — facts is single-parent, not two-endpoint.
+2. Dedup is cosine-only at 0.95, as above.
+3. Bi-temporal columns stay minimal, as above.
+4. Phase ordering for the eventual `fact_extraction → compiled_truth_synthesis → salience_recompute`
+   sequence will use a `BaseCyclePhase.runsAfter` field + a toposort in `cycle.ts` — chosen but **not
+   implemented in this build**, since `fact_extraction` has nothing to order against yet and adding
+   the mechanism now with no real consumer would be exactly the kind of speculative infrastructure
+   decision 3 argues against. `PHASE_REGISTRY`'s default order remains alphabetical-by-name absent an
+   explicit `phases:` list; `.github/workflows/cycle.yml` now invokes `--phase link_extraction --phase
+   fact_extraction` explicitly, so this doesn't bite the scheduled workflow.
+5. `compiled_truth`'s eventual retrieval integration will be a full new fusion arm (precomputed
+   `pages.compiled_truth_embedding vector(1536)` + HNSW index, a sixth arm parallel to M9's
+   `graphExpansion`, with its own capacity-reservation logic per D113's arms-starving-arms lesson), not
+   a cheaper keyword-boost — founder's call, weighed against cost/review-surface at decision time.
+6. Naming: `salience`, not gbrain's `emotional_weight` — a B2B knowledge base's importance signal
+   isn't "emotional," and gbrain's own tag list/primary-holder concept is personal-life-biased.
+   `docs/pipeline-roadmap.md`'s current M10 line ("`emotional_weight` salience") should be updated to
+   match whenever that step lands.
+
+**Verification.** `bun run typecheck` clean. Migration `0023` applied to the shared Supabase project;
+`bun run doctor` 110/110 after a hand-reviewed fixture diff (new table's policies/grants/definers, plus
+two new columns on `pages` inheriting its existing full-DML grant). The full offline+live suite passes
+(see `bun run test`'s own summary at the time of this entry). Live-verified beyond typecheck: the
+two-phase RLS oracle (owner sees their own fact first, then an outside principal sees nothing) for
+both workspace- and private-scoped pages; soft-delete propagation via `facts_hide_deleted`; rescope
+propagation of `facts.acl` in the same transaction as `content_chunks.acl`; that no ordinary member can
+INSERT or rewrite a fact; that no non-sentinel caller can invoke any of the three new cycle definers;
+cross-tenant isolation of the candidate reader; the skip-if-unchanged candidate filter actually
+skipping a stamped page; a full extraction → embed → write → stamp round trip through the real cycle
+engine against fake AI; the dedup case above; a malformed LLM response recording a failure without
+writing facts or stamping the page; and an immediately-exhausted budget failing the whole phase
+(`BUDGET_EXHAUSTED`) rather than silently skipping.
+
+**Remaining, deliberately not claimed solved:** `compiled_truth` synthesis, salience computation, the
+two future retrieval knobs, takes+grading, and concept synthesis. The first two are architected above
+(decisions 4-6) and built next, against this step's real data. The latter two need a founder scoping
+decision before any future wave.

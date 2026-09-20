@@ -54,6 +54,42 @@
     "with_check": "(workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\"))"
   },
   {
+    "tablename": "facts",
+    "policyname": "facts_cycle_system",
+    "roles": "{cb_app}",
+    "cmd": "INSERT",
+    "permissive": "PERMISSIVE",
+    "qual": "(none)",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (NULLIF(current_setting('app.principal'::text, true), ''::text) = '00000000-0000-0000-0000-000000000000'::text))"
+  },
+  {
+    "tablename": "facts",
+    "policyname": "facts_hide_deleted",
+    "roles": "{cb_app}",
+    "cmd": "SELECT",
+    "permissive": "RESTRICTIVE",
+    "qual": "(deleted_at IS NULL)",
+    "with_check": "(none)"
+  },
+  {
+    "tablename": "facts",
+    "policyname": "facts_rescope",
+    "roles": "{cb_app}",
+    "cmd": "UPDATE",
+    "permissive": "PERMISSIVE",
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))"
+  },
+  {
+    "tablename": "facts",
+    "policyname": "facts_ws",
+    "roles": "{cb_app}",
+    "cmd": "SELECT",
+    "permissive": "PERMISSIVE",
+    "qual": "((workspace_id = ( SELECT (NULLIF(current_setting('app.workspace'::text, true), ''::text))::uuid AS \"nullif\")) AND (acl && ( SELECT current_grants() AS current_grants)))",
+    "with_check": "(none)"
+  },
+  {
     "tablename": "ingest_log",
     "policyname": "ingest_log_ws",
     "roles": "{public}",

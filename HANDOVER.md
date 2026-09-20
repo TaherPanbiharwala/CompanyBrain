@@ -3,11 +3,13 @@
 This is a snapshot, not a running log. Read `AGENTS.md` first, then fetch origin before trusting the
 branch line below.
 
-**Branch/commit at write time:** `codex/session-summary-next-steps-784f80` at `be63188`. M8 (the cycle
-engine) is committed at `6eb8aa8`, on top of `origin/master` `457a7ea`; M9 (link extraction, wave 1)
-is committed on top at `be63188`. The post-review M9 hardening, including applied forward migration
-`0022_link_security_hardening.sql`, remains an uncommitted working-tree diff. Nothing is pushed or
-merged. See "Milestone 9" below for the completed evidence gate and exact non-promotion result.
+**Branch/commit at write time:** `claude/milestone-9-docs-review-069176` at `68d1e61`. M8 (the cycle
+engine) is committed at `6eb8aa8`, on top of `origin/master` `457a7ea`; M9 (link extraction, wave 1) is
+committed at `be63188`; the post-review M9 hardening, including migration `0022_link_security_hardening.sql`,
+is committed on top at `68d1e61`. **M10 wave 1 sub-step A (the facts substrate) is applied to the
+shared Supabase project but is an uncommitted working-tree diff** — see "Working-tree cautions" and
+"Milestone 10" below. Nothing from this session is pushed or merged. See "Milestone 9" below for the
+completed evidence gate and exact non-promotion result.
 
 ## Current outcome (M7)
 
@@ -274,10 +276,68 @@ The runner's exit 1 is therefore intentional. `DEFAULT_RETRIEVAL_KNOBS` remains 
 of title/slug mentions; and the wave-1 extractor's CPU O(P²) candidate matching on a very large
 workspace. These are future scope, not open correctness, tenancy, or promotion-gate defects.
 
+## Milestone 10 — derived knowledge, wave 1 sub-step A (facts substrate)
+
+**Current outcome.** Research against gbrain before writing any code found takes+grading and concept
+synthesis are substantially non-functional in gbrain's own shipped code (no proposal→canonical-takes
+promotion path anywhere in its source; `grade_takes`'s evidence retrieval is a literal placeholder;
+concept synthesis's input tagging is never written by gbrain's own atom extraction). Porting either
+now would ship broken scaffolding — both are **deliberately scoped out**, pending a founder decision
+for a later wave. `compiled_truth` synthesis and salience are architected (six locked decisions, D114)
+but not yet built. **This sub-step ships only the facts-extraction substrate** those two depend on,
+live-verified and reviewed on its own — the same "one narrow slice at a time" discipline M9 used when
+it deferred fact extraction out of its own scope.
+
+**What shipped:** `0023_fact_extraction.sql` creates `facts` — bi-temporal but deliberately minimal
+(only `valid_from`/`consolidated_at`/`consolidated_into`; no live "supersede" branch, matching
+gbrain's actual, not aspirational, behavior). RLS is single-parent shaped (`content_chunks`'s pattern,
+not `links`' two-endpoint trigger), but `facts_ws` is SELECT-only rather than FOR ALL: no ordinary
+caller ever writes a fact in this build, only the cycle sentinel (`facts_cycle_system`, INSERT-only)
+and the ordinary acl-only rescope sync (`facts_rescope`, column-restricted `GRANT UPDATE (acl)`). The
+`fact_extraction` cycle phase does one LLM call per candidate page (server-side skip-filtered on
+`content_hash` via a dedicated definer, not `link_extraction`'s generic reader), per-fact-not-
+whole-response degradation on a malformed response, entity-scoped cosine dedup against the HNSW index
+at threshold 0.95, and per-page checkpointing.
+
+**A confirmed-live gotcha worth knowing before touching this code:** never add `RETURNING` to the
+sentinel's fact INSERT. `facts_cycle_system`'s WITH CHECK doesn't reference acl, so the INSERT itself
+succeeds for a private page — but the sentinel's grants are workspace-only, and `RETURNING`
+additionally requires the new row to pass the table's SELECT policy, the same intrinsic-RLS property
+that made `soft_delete_page` need an owner-privileged bypass. Caught live by a test helper, not the
+production phase (whose own bulk insert never had `RETURNING`). Full account in D114.
+
+**Verification.** `bun run typecheck` clean. Migration applied to the shared Supabase project;
+`bun run doctor` 110/110 after a hand-reviewed fixture diff. `bun run test` (the project's own script,
+`--timeout 30000` — a bare `bun test` under-times live suites and produces spurious timeouts, not a
+real signal): 957 pass / 19 skip / 6 fail, all six failures in `test/mcp.test.ts` and pre-existing —
+`CB_MCP_PRINCIPAL`/`CB_MCP_WORKSPACE` in `.env` point to a principal/workspace pair with no
+`workspace_members` row in the current shared database, unrelated to this work. Live-verified beyond
+typecheck: the two-phase RLS oracle for both workspace- and private-scoped pages, soft-delete and
+rescope propagation, that no ordinary member can INSERT or rewrite a fact, cross-tenant isolation of
+the candidate reader, the skip-if-unchanged filter, a full extraction→embed→write→stamp round trip
+against fake AI, the dedup case above, a malformed-response failure path, and an immediately-exhausted
+budget failing the whole phase rather than silently skipping.
+
+**Before merging this to master, know what it activates:** `.github/workflows/cycle.yml` now runs
+`bun run cycle --phase link_extraction --phase fact_extraction` hourly — unlike `link_extraction`,
+`fact_extraction` is real (capped) per-page LLM spend against the shared Supabase project, the same
+one `ci.yml`'s `live` job uses. The skip-if-unchanged filter keeps a steady-state hour near zero cost,
+but confirm that holds and that the cadence is actually wanted before this reaches master — same
+caution M8's own activation note gives, now with real spend attached rather than a no-op.
+
+**Remaining, deliberately not claimed solved:** `compiled_truth` synthesis, salience computation, the
+two future retrieval knobs (architected in D114, not built), takes+grading, and concept synthesis (need
+a founder scoping decision before any future wave — see above).
+
 ## Working-tree cautions
 
 The untracked `.claude/` directory and `docs/enterprise-learning-roadmap.md` predate this work and
-belong to the user; they were not edited. `0020` (M8) and `0021` (original M9) are committed and
-applied; review-hardening migration `0022` is applied to the shared project but remains uncommitted
-alongside its source/test/docs changes. A fresh clone or another worktree must run `bun run migrate`
-to apply them. Keep the transaction handle literally named `tx`, and never weaken the RLS boundary.
+belong to the user; they were not edited. `0020` (M8), `0021`/`0022` (M9), and everything through
+commit `68d1e61` are committed and applied. **M10 wave 1 sub-step A is applied to the shared Supabase
+project but is an uncommitted working-tree diff** — migration `0023_fact_extraction.sql`, the
+`facts_extraction` phase and its source/test/docs changes. A fresh clone or another worktree must run
+`bun run migrate` to apply `0023`; if `bun run migrate` refuses with a checksum-drift error first,
+that means this session's own post-apply comment-placement edit to `0023_fact_extraction.sql` hasn't
+been reconciled in `_migrations` yet — see this session's own conversation for the exact `UPDATE
+_migrations SET checksum = ...` statement, or diff the file against its applied state and re-derive
+it. Keep the transaction handle literally named `tx`, and never weaken the RLS boundary.

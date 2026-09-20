@@ -10,6 +10,24 @@
   },
   {
     "schema": "cb_internal",
+    "name": "cycle_fact_extraction_candidates",
+    "args": "p_after uuid, p_limit integer",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "f9bfb14734d92de5ebcc0432aa31161b"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "cycle_facts_by_entity",
+    "args": "p_entity_slug text, p_embedding vector, p_limit integer",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "3eb52422796876f84a42783ed0a25330"
+  },
+  {
+    "schema": "cb_internal",
     "name": "cycle_link_page_acls",
     "args": "p_page_ids uuid[]",
     "owner": "postgres",
@@ -34,6 +52,15 @@
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
     "body_md5": "d0547e49c698ce67c5905d2aa1a02669"
+  },
+  {
+    "schema": "cb_internal",
+    "name": "cycle_write_fact_extraction_stamp",
+    "args": "p_page_id uuid, p_content_hash text",
+    "owner": "postgres",
+    "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
+    "acl": "{postgres=X/postgres,cb_app=X/postgres}",
+    "body_md5": "828f2f5a49f748d781a7221ca3f21b0c"
   },
   {
     "schema": "cb_internal",
@@ -78,7 +105,7 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "f050713260db0ef3800bd0ab59a65b4a"
+    "body_md5": "8781d9152a12458607e6265fc9147f0f"
   },
   {
     "schema": "cb_internal",
@@ -87,7 +114,7 @@
     "owner": "postgres",
     "config": "{\"search_path=pg_catalog, public, pg_temp\"}",
     "acl": "{postgres=X/postgres,cb_app=X/postgres}",
-    "body_md5": "1fc14a315c6e2651e8b721df600e16f9"
+    "body_md5": "3fb6d5a1aa2273fca2c8041f52ef1afd"
   },
   {
     "schema": "cb_internal",

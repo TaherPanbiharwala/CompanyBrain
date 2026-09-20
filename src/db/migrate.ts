@@ -392,6 +392,15 @@ DO $$ BEGIN
   IF to_regclass('public.links') IS NOT NULL THEN
     EXECUTE 'revoke update on links from cb_app';
   END IF;
+  -- Facts (M10, migration 0023): only the cycle system principal ever inserts a row (RLS gates this,
+  -- not GRANT — see the migration's header). DELETE has no caller at all (soft-delete only). UPDATE
+  -- is narrowed to the acl column alone, for rescopePages' ordinary sync path — a full-row UPDATE
+  -- grant would let anyone who can satisfy facts_rescope's acl-overlap check also rewrite
+  -- claim_text/confidence/anything else on a fact they can see.
+  IF to_regclass('public.facts') IS NOT NULL THEN
+    EXECUTE 'revoke update, delete on facts from cb_app';
+    EXECUTE 'grant update (acl) on facts to cb_app';
+  END IF;
 END $$;`);
   // Unchanged, full DML: pages, content_chunks. Unchanged: _migrations stays fully revoked.
 }
@@ -533,6 +542,14 @@ AS $fn$
     UPDATE public.page_sources SET deleted_at = now()
     WHERE page_id IN (SELECT id FROM page_upd)
     RETURNING page_id
+  ),
+  -- M10: same reasoning as chunks_upd — facts.deleted_at is a denormalized copy (migration 0023)
+  -- that must reach every fact with this page_id regardless of acl drift, which only an owner-run
+  -- write (not an explicit child UPDATE under RLS) can guarantee.
+  facts_upd AS (
+    UPDATE public.facts SET deleted_at = now()
+    WHERE source_page_id IN (SELECT id FROM page_upd)
+    RETURNING id
   )
   SELECT EXISTS (SELECT 1 FROM page_upd)
 $fn$;
@@ -566,6 +583,12 @@ AS $fn$
     UPDATE public.page_sources SET deleted_at = now()
     WHERE page_id IN (SELECT id FROM page_upd)
     RETURNING page_id
+  ),
+  -- M10: batch form of soft_delete_page's facts_upd arm — see its comment.
+  facts_upd AS (
+    UPDATE public.facts SET deleted_at = now()
+    WHERE source_page_id IN (SELECT id FROM page_upd)
+    RETURNING id
   )
   SELECT id FROM page_upd
 $fn$;
@@ -804,6 +827,133 @@ BEGIN
 END
 $fn$;
 
+-- (11)/(12)/(13) M10 wave 1 sub-step A: the fact_extraction cycle phase's bounded apertures
+-- (migration 0023). Same shape as (9)/(10) above — exact sentinel principal, tx-local workspace,
+-- capped inputs, pinned search_path — kept byte-identical to the migration by
+-- test/facts-security-posture.test.ts.
+CREATE OR REPLACE FUNCTION cb_internal.cycle_fact_extraction_candidates(p_after uuid, p_limit int)
+RETURNS TABLE (
+  id uuid,
+  slug text,
+  title text,
+  kind text,
+  tags text[],
+  acl text[],
+  body text,
+  extracted_text text,
+  content_hash text
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_fact_extraction_candidates is restricted to the cycle system principal';
+  END IF;
+
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 1000 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_fact_extraction_candidates limit must be between 1 and 1000';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_fact_extraction_candidates requires a scoped workspace';
+  END IF;
+
+  RETURN QUERY
+    SELECT p.id, p.slug, p.title, p.kind, p.tags, p.acl, p.body, p.extracted_text, p.content_hash
+    FROM public.pages p
+    WHERE p.workspace_id = scoped_workspace
+      AND p.deleted_at IS NULL
+      AND (p_after IS NULL OR p.id > p_after)
+      AND (p.content_hash IS NULL OR p.content_hash IS DISTINCT FROM p.facts_extracted_content_hash)
+    ORDER BY p.id
+    LIMIT p_limit;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION cb_internal.cycle_write_fact_extraction_stamp(p_page_id uuid, p_content_hash text)
+RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_write_fact_extraction_stamp is restricted to the cycle system principal';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_write_fact_extraction_stamp requires a scoped workspace';
+  END IF;
+
+  UPDATE public.pages
+     SET facts_extracted_content_hash = p_content_hash,
+         facts_extracted_at = now()
+   WHERE id = p_page_id
+     AND workspace_id = scoped_workspace;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION cb_internal.cycle_facts_by_entity(p_entity_slug text, p_embedding vector(1536), p_limit int)
+RETURNS TABLE (id uuid, similarity real)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
+AS $fn$
+DECLARE
+  scoped_workspace uuid;
+BEGIN
+  IF NULLIF(current_setting('app.principal', true), '') IS DISTINCT FROM
+     '00000000-0000-0000-0000-000000000000' THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_facts_by_entity is restricted to the cycle system principal';
+  END IF;
+
+  IF p_entity_slug IS NULL OR length(p_entity_slug) = 0 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_facts_by_entity requires a non-empty entity slug';
+  END IF;
+
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 50 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '22023',
+      MESSAGE = 'cycle_facts_by_entity limit must be between 1 and 50';
+  END IF;
+
+  scoped_workspace := NULLIF(current_setting('app.workspace', true), '')::uuid;
+  IF scoped_workspace IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'cycle_facts_by_entity requires a scoped workspace';
+  END IF;
+
+  RETURN QUERY
+    SELECT f.id, (1 - (f.embedding <=> p_embedding))::real AS similarity
+    FROM public.facts f
+    WHERE f.workspace_id = scoped_workspace
+      AND f.entity_slug = p_entity_slug
+      AND f.deleted_at IS NULL
+      AND f.embedding IS NOT NULL
+    ORDER BY f.embedding <=> p_embedding
+    LIMIT p_limit;
+END
+$fn$;
+
 -- Postgres grants EXECUTE to PUBLIC on every new function. Without this REVOKE the definers would
 -- be callable by every role the moment they are created, inverting the whole design.
 REVOKE ALL ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
@@ -813,11 +963,17 @@ REVOKE ALL ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_ses
 REVOKE ALL ON FUNCTION cb_internal.sync_link_security_state() FROM cb_app, cb_auth;
 REVOKE ALL ON FUNCTION cb_internal.cycle_link_pages(uuid,int),
   cb_internal.cycle_link_page_acls(uuid[]), cb_internal.cycle_lock_link_sources(uuid[]) FROM PUBLIC, cb_auth;
+REVOKE ALL ON FUNCTION cb_internal.cycle_fact_extraction_candidates(uuid,int),
+  cb_internal.cycle_write_fact_extraction_stamp(uuid,text),
+  cb_internal.cycle_facts_by_entity(text,vector,int) FROM PUBLIC, cb_auth;
 GRANT EXECUTE ON FUNCTION cb_internal.resolve_session(text), cb_internal.revoke_session(text),
   cb_internal.revoke_all_sessions(text), cb_internal.membership_role(uuid,uuid),
   cb_internal.soft_delete_page(uuid), cb_internal.soft_delete_pages(uuid[]) TO cb_app;
 GRANT EXECUTE ON FUNCTION cb_internal.cycle_link_pages(uuid,int),
   cb_internal.cycle_link_page_acls(uuid[]), cb_internal.cycle_lock_link_sources(uuid[]) TO cb_app;
+GRANT EXECUTE ON FUNCTION cb_internal.cycle_fact_extraction_candidates(uuid,int),
+  cb_internal.cycle_write_fact_extraction_stamp(uuid,text),
+  cb_internal.cycle_facts_by_entity(text,vector,int) TO cb_app;
 GRANT EXECUTE ON FUNCTION cb_internal.adopt_principal(uuid,text) TO cb_auth;
 
 -- public.current_grants() is CREATED by migration 0007, not here — a policy cannot reference a

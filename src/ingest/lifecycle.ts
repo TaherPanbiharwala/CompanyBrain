@@ -588,6 +588,15 @@ export async function rescopePages(
       batchRows += n;
     }
     await flushChunks();
+
+    // Facts (M10), same "chunks/facts before the page" ordering as above and for the same reason: the
+    // policy's USING clause reads the row's CURRENT acl, so updating the page first would leave facts
+    // readable only under the OLD grant while the page already claims the new one. Not sub-batched
+    // like content_chunks: an acl-only UPDATE never touches facts.embedding, so it never pays HNSW's
+    // per-row graph-insert cost — only the GIN index on acl — and per-page fact volume (~10s, not
+    // thousands like chunks) keeps a full 250-page batch well under DB_STATEMENT_TIMEOUT.
+    await tx`update facts set acl = ${acl} where source_page_id = any(${moving}::uuid[])`;
+
     const moved = await tx<{ id: string; slug: string }[]>`
       update pages set scope = ${scope}, acl = ${acl}, updated_at = now()
        where id = any(${moving}::uuid[])

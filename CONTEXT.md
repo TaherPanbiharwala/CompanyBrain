@@ -23,6 +23,22 @@ Verification on the review diff: typecheck clean; full offline suite 713 pass / 
 doctor 104/104 after fixture review; affected M9 live suites plus cycle/leak canary pass. D112/D113
 and `HANDOVER.md` are authoritative; older M7-as-future prose below is historical.
 
+**2026-09-20 M10 update (same session continued, branch `claude/milestone-9-docs-review-069176` on
+top of `68d1e61`):** M10 wave 1 sub-step A — the facts substrate — is built and live-verified but
+**uncommitted**. Research against gbrain before writing code found takes+grading and concept synthesis
+are substantially non-functional in gbrain's own shipped source (no promotion path from proposals to
+canonical takes; grade_takes' evidence retrieval is a placeholder; concept synthesis's input tagging is
+never written) — both deliberately scoped out pending a founder decision, not ported. `compiled_truth`
+and salience are architected (D114's six decisions) but not yet built. Migration
+`0023_fact_extraction.sql` adds `facts` (single-parent RLS, SELECT-only for ordinary callers, INSERT
+only for the cycle sentinel) and the `fact_extraction` cycle phase. `bun run doctor` 110/110;
+`bun run test` (with `--timeout 30000` — a bare `bun test` under-times live suites) 957 pass / 19 skip
+/ 6 fail, all six pre-existing in `test/mcp.test.ts` (stale `CB_MCP_PRINCIPAL`/`CB_MCP_WORKSPACE` in
+`.env`, unrelated to this work). `.github/workflows/cycle.yml` now runs `fact_extraction` hourly —
+real, capped LLM spend once merged; confirm that's wanted first. D114 and `HANDOVER.md`'s "Milestone
+10" section are authoritative for the full account, including a confirmed-live RLS/`RETURNING` gotcha
+worth reading before touching `facts_cycle_system`.
+
 **`master` is the single trunk. Branch from it, merge back into it.** As of 2026-07-30 every branch
 in the repo is an ancestor of master — the M3 line, the CONTEXT.md line and five stale copies were
 all reconciled. There is no second tree to check any more; §1 records what that cost, because the
