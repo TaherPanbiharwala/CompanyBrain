@@ -65,6 +65,14 @@ function stringArray(value: unknown, label: string): string[] {
   return [...value] as string[];
 }
 
+/** LongMemEval's multi-session counting questions use numeric reference answers. The retrieval
+ * runner never judges answers, but retains a canonical string for immutable case identity. */
+function referenceAnswer(value: unknown, label: string): string {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  throw new Error(`${label}.answer must be a non-empty string or finite number`);
+}
+
 /** Validate all structural and gold/session relationships. `expectedCount` is optional only for
  * fixtures; the command always supplies the public split's required 500. */
 export function normalizeLongMemEval(raw: unknown, expectedCount?: number): LongMemEvalCase[] {
@@ -126,7 +134,7 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
       questionId,
       type: stringField(row, 'question_type', label),
       question: stringField(row, 'question', label),
-      answer: stringField(row, 'answer', label),
+      answer: referenceAnswer(row.answer, label),
       sessionIds: canonicalSessionIds,
       sessions: canonicalSessions,
       goldSessionIds,

@@ -54,6 +54,12 @@ describe('LongMemEval-S normalization and scoring', () => {
     expect(() => normalizeLongMemEval([{ ...duplicate, haystack_sessions: [[{ role: 'user', content: 'first' }], [{ role: 'user', content: 'second' }], [{ role: 'user', content: 'a' }]] }], 1)).toThrow('duplicated with conflicting turns');
   });
 
+  it('accepts numeric reference answers for retrieval-only counting questions', () => {
+    const [item] = normalizeLongMemEval([{ ...raw[0], answer: 3 }], 1);
+    expect(item!.answer).toBe('3');
+    expect(() => normalizeLongMemEval([{ ...raw[0], answer: null }], 1)).toThrow('non-empty string or finite number');
+  });
+
   it('uses collision-safe case namespaced session slugs', () => {
     expect(longMemEvalSessionSlug('q-a', 'same')).not.toBe(longMemEvalSessionSlug('q-b', 'same'));
     expect(longMemEvalSessionSlug('q-a', 'same')).toBe(longMemEvalSessionSlug('q-a', 'same'));
