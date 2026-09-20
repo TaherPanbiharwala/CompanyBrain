@@ -60,6 +60,16 @@ describe('LongMemEval-S normalization and scoring', () => {
     expect(() => normalizeLongMemEval([{ ...raw[0], answer: null }], 1)).toThrow('non-empty string or finite number');
   });
 
+  it('drops blank distractor turns but rejects non-string turn content', () => {
+    const blankTurn = {
+      ...raw[0],
+      haystack_sessions: [[{ role: 'user', content: '' }, { role: 'assistant', content: 'meaningful' }], ...raw[0].haystack_sessions.slice(1)],
+    };
+    const [item] = normalizeLongMemEval([blankTurn], 1);
+    expect(item!.sessions[0]).toEqual([{ role: 'assistant', content: 'meaningful' }]);
+    expect(() => normalizeLongMemEval([{ ...blankTurn, haystack_sessions: [[{ role: 'user', content: null }], ...raw[0].haystack_sessions.slice(1)] }], 1)).toThrow('content must be a string');
+  });
+
   it('uses collision-safe case namespaced session slugs', () => {
     expect(longMemEvalSessionSlug('q-a', 'same')).not.toBe(longMemEvalSessionSlug('q-b', 'same'));
     expect(longMemEvalSessionSlug('q-a', 'same')).toBe(longMemEvalSessionSlug('q-a', 'same'));

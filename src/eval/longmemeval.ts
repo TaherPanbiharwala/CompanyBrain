@@ -99,11 +99,20 @@ export function normalizeLongMemEval(raw: unknown, expectedCount?: number): Long
       // the immutable case mapping, but do not manufacture content for a page that has no turns.
       // Gold evidence must still name a real, ingestible session (checked below).
       if (!Array.isArray(session)) throw new Error(`${label}.haystack_sessions[${sessionIndex}] must be a turn array`);
-      return session.map((turn, turnIndex) => {
+      return session.flatMap((turn, turnIndex) => {
         const turnRow = asRecord(turn, `${label}.haystack_sessions[${sessionIndex}][${turnIndex}]`);
+        const role = stringField(turnRow, 'role', `${label}.haystack_sessions[${sessionIndex}][${turnIndex}]`);
+        const content = turnRow.content;
+        if (typeof content !== 'string') {
+          throw new Error(`${label}.haystack_sessions[${sessionIndex}][${turnIndex}].content must be a string`);
+        }
+        // The published split includes a handful of blank distractor turns. They convey no text to
+        // import or embed, so remove them; any session reduced to zero remains an empty distractor
+        // and is rejected below if it is ever referenced as gold evidence.
+        if (content.trim() === '') return [];
         return {
-          role: stringField(turnRow, 'role', `${label}.haystack_sessions[${sessionIndex}][${turnIndex}]`),
-          content: stringField(turnRow, 'content', `${label}.haystack_sessions[${sessionIndex}][${turnIndex}]`),
+          role,
+          content,
         };
       });
     });
