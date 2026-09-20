@@ -94,6 +94,7 @@ interface LoadedWorldQueries {
   queries: BrainBenchQuery[];
   excluded_abstention_query_ids: string[];
   excluded_example_query_ids: string[];
+  excluded_non_retrieval_query_ids: string[];
 }
 
 const HELP = `
@@ -191,6 +192,7 @@ function loadGoldBearingQueries(raw: unknown[], family: string, pageSlugs: Reado
     queries: partition.candidates.length === 0 ? [] : normalizeBrainBenchQueries(partition.candidates, family, pageSlugs),
     excluded_abstention_query_ids: partition.excludedAbstentionQueryIds,
     excluded_example_query_ids: partition.excludedExampleQueryIds,
+    excluded_non_retrieval_query_ids: partition.excludedNonRetrievalQueryIds,
   };
 }
 
@@ -210,7 +212,9 @@ async function loadWorldQueries(root: string, pageSlugs: ReadonlySet<string>): P
   if (new Set(excluded_abstention_query_ids).size !== excluded_abstention_query_ids.length) throw new Error('BrainBench abstention query id appears in multiple families');
   const excluded_example_query_ids = [...relational.excluded_example_query_ids, ...fuzzy.excluded_example_query_ids, ...outsider.excluded_example_query_ids];
   if (new Set(excluded_example_query_ids).size !== excluded_example_query_ids.length) throw new Error('BrainBench example query id appears in multiple families');
-  return { queries: [...relational.queries, ...fuzzy.queries, ...outsider.queries], excluded_abstention_query_ids, excluded_example_query_ids };
+  const excluded_non_retrieval_query_ids = [...relational.excluded_non_retrieval_query_ids, ...fuzzy.excluded_non_retrieval_query_ids, ...outsider.excluded_non_retrieval_query_ids];
+  if (new Set(excluded_non_retrieval_query_ids).size !== excluded_non_retrieval_query_ids.length) throw new Error('BrainBench non-retrieval query id appears in multiple families');
+  return { queries: [...relational.queries, ...fuzzy.queries, ...outsider.queries], excluded_abstention_query_ids, excluded_example_query_ids, excluded_non_retrieval_query_ids };
 }
 
 function loadWorldPages(root: string): BrainBenchWorldPage[] {
@@ -456,7 +460,7 @@ async function main(): Promise<void> {
   const estimatedUsd = estimateModelCostUsd(profile.model, estimatedTokens, 0);
   if (estimatedUsd > args.maxEmbedUsd) throw new Error(`preflight refuses this BrainBench campaign: estimated embedding cost $${estimatedUsd.toFixed(4)} exceeds cap $${args.maxEmbedUsd.toFixed(4)}`);
   if (args.dryRun) {
-    process.stdout.write(`${JSON.stringify({ dry_run: true, checkout, world_pages: pages.length, world_queries: queries.length, excluded_abstention_query_ids: loadedQueries.excluded_abstention_query_ids, excluded_example_query_ids: loadedQueries.excluded_example_query_ids, amara_pages: amara.documents.length, estimated_embed_usd: estimatedUsd, manifest: profileManifest('dry-run', checkout, args.maxEmbedUsd, provenance.commit), model: profile.model }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ dry_run: true, checkout, world_pages: pages.length, world_queries: queries.length, excluded_abstention_query_ids: loadedQueries.excluded_abstention_query_ids, excluded_example_query_ids: loadedQueries.excluded_example_query_ids, excluded_non_retrieval_query_ids: loadedQueries.excluded_non_retrieval_query_ids, amara_pages: amara.documents.length, estimated_embed_usd: estimatedUsd, manifest: profileManifest('dry-run', checkout, args.maxEmbedUsd, provenance.commit), model: profile.model }, null, 2)}\n`);
     return;
   }
   const campaignId = newCampaignId('brainbench');
@@ -471,6 +475,7 @@ async function main(): Promise<void> {
     query_count: queries.length,
     excluded_abstention_query_ids: loadedQueries.excluded_abstention_query_ids,
     excluded_example_query_ids: loadedQueries.excluded_example_query_ids,
+    excluded_non_retrieval_query_ids: loadedQueries.excluded_non_retrieval_query_ids,
     amara_page_count: amara.documents.length,
   });
   const world = await runWorld(campaignId, principalId, pages, queries, budgetSetup.budget);
@@ -493,7 +498,7 @@ async function main(): Promise<void> {
     recorded_embedding_spend_usd: spend,
     completed_at: new Date().toISOString(),
   });
-  writeImmutableFile(join(dir, 'report.md'), `# BrainBench Company Brain report\n\n- world-v1 page retrieval: five seeded upload-order runs\n- P@5: ${(world.summaries.precision_at_5.mean * 100).toFixed(2)}% ± ${(world.summaries.precision_at_5.stddev * 100).toFixed(2)}%\n- R@5: ${(world.summaries.recall_at_5.mean * 100).toFixed(2)}% ± ${(world.summaries.recall_at_5.stddev * 100).toFixed(2)}%\n- MRR: ${world.summaries.mrr.mean.toFixed(4)} ± ${world.summaries.mrr.stddev.toFixed(4)}\n- p50 / p95 query latency: ${world.summaries.p50_latency_ms.mean.toFixed(1)}ms / ${world.summaries.p95_latency_ms.mean.toFixed(1)}ms\n- errors / degraded retrievals: ${world.summaries.errors.mean.toFixed(2)} / ${world.summaries.degraded_retrievals.mean.toFixed(2)}\n- abstention queries excluded from retrieval denominator: ${loadedQueries.excluded_abstention_query_ids.length}\n- documentation example queries excluded from retrieval denominator: ${loadedQueries.excluded_example_query_ids.length}\n- Amara ingestion audit: ${amaraAudit.ingested_pages}/${amaraAudit.expected_pages} pages; RLS isolated: ${amaraAudit.workspace_isolated}\n- Recorded embedding spend: $${spend.toFixed(4)}\n\nAmara facts receipt, when requested, is an M10A operational audit and is not retrieval-impact evidence.\n`);
+  writeImmutableFile(join(dir, 'report.md'), `# BrainBench Company Brain report\n\n- world-v1 page retrieval: five seeded upload-order runs\n- P@5: ${(world.summaries.precision_at_5.mean * 100).toFixed(2)}% ± ${(world.summaries.precision_at_5.stddev * 100).toFixed(2)}%\n- R@5: ${(world.summaries.recall_at_5.mean * 100).toFixed(2)}% ± ${(world.summaries.recall_at_5.stddev * 100).toFixed(2)}%\n- MRR: ${world.summaries.mrr.mean.toFixed(4)} ± ${world.summaries.mrr.stddev.toFixed(4)}\n- p50 / p95 query latency: ${world.summaries.p50_latency_ms.mean.toFixed(1)}ms / ${world.summaries.p95_latency_ms.mean.toFixed(1)}ms\n- errors / degraded retrievals: ${world.summaries.errors.mean.toFixed(2)} / ${world.summaries.degraded_retrievals.mean.toFixed(2)}\n- abstention queries excluded from retrieval denominator: ${loadedQueries.excluded_abstention_query_ids.length}\n- documentation example queries excluded from retrieval denominator: ${loadedQueries.excluded_example_query_ids.length}\n- answer-only queries excluded from retrieval denominator: ${loadedQueries.excluded_non_retrieval_query_ids.length}\n- Amara ingestion audit: ${amaraAudit.ingested_pages}/${amaraAudit.expected_pages} pages; RLS isolated: ${amaraAudit.workspace_isolated}\n- Recorded embedding spend: $${spend.toFixed(4)}\n\nAmara facts receipt, when requested, is an M10A operational audit and is not retrieval-impact evidence.\n`);
   process.stdout.write(`BrainBench campaign ${campaignId} complete; artifacts: ${dir}\n`);
   await closePools({ timeout: 5 });
 }

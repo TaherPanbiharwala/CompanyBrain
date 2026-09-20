@@ -54,6 +54,15 @@ describe('BrainBench public corpus boundary', () => {
     expect(partition.excludedExampleQueryIds).toEqual(['example']);
     expect(normalizeBrainBenchQueries(partition.candidates, 'relational', new Set(['people/a']))).toHaveLength(1);
   });
+
+  it('excludes explicitly answer-only gold, but leaves a missing page qrel malformed', () => {
+    const partition = partitionBrainBenchGoldBearingQueries([
+      { id: 'answer-only', question: 'when?', expected_output_type: 'time-qualified-answer', gold: { expected_answer: '2024-01-01' } },
+      { id: 'malformed', question: 'where?', expected_output_type: 'cited-source-pages', gold: { expected_answer: 'not a page qrel' } },
+    ], 'outsider');
+    expect(partition.excludedNonRetrievalQueryIds).toEqual(['answer-only']);
+    expect(() => normalizeBrainBenchQueries(partition.candidates, 'outsider', new Set(['people/a']))).toThrow('gold.relevant');
+  });
 });
 
 describe('BrainBench page ranking and scoring', () => {

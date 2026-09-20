@@ -24,6 +24,7 @@ export interface BrainBenchGoldBearingPartition {
   candidates: unknown[];
   excludedAbstentionQueryIds: string[];
   excludedExampleQueryIds: string[];
+  excludedNonRetrievalQueryIds: string[];
 }
 
 export interface BrainBenchQueryScore {
@@ -168,6 +169,7 @@ export function partitionBrainBenchGoldBearingQueries(raw: unknown, family: stri
   const candidates: unknown[] = [];
   const excludedAbstentionQueryIds: string[] = [];
   const excludedExampleQueryIds: string[] = [];
+  const excludedNonRetrievalQueryIds: string[] = [];
   for (let index = 0; index < raw.length; index++) {
     const value = record(raw[index], `${family}[${index}]`);
     const id = nonEmpty(value.id ?? value.query_id, `${family}[${index}].id`);
@@ -178,15 +180,25 @@ export function partitionBrainBenchGoldBearingQueries(raw: unknown, family: stri
       continue;
     }
     const goldRecord = value.gold && typeof value.gold === 'object' && !Array.isArray(value.gold) ? (value.gold as RecordValue) : undefined;
-    if (goldRecord?.expected_abstention !== true && value.expected_abstention !== true) {
-      candidates.push(raw[index]);
+    if (goldRecord?.expected_abstention === true || value.expected_abstention === true) {
+      const relevant = value.relevant ?? value.relevantSlugs ?? value.relevant_slugs ?? goldRecord?.relevant ?? goldRecord?.relevant_slugs;
+      if (relevant !== undefined && (!Array.isArray(relevant) || relevant.length > 0)) {
+        throw new Error(`BrainBench abstention query ${id} unexpectedly has retrieval qrels`);
+      }
+      excludedAbstentionQueryIds.push(id);
       continue;
     }
-    const relevant = value.relevant ?? value.relevantSlugs ?? value.relevant_slugs ?? goldRecord?.relevant ?? goldRecord?.relevant_slugs;
-    if (relevant !== undefined && (!Array.isArray(relevant) || relevant.length > 0)) {
-      throw new Error(`BrainBench abstention query ${id} unexpectedly has retrieval qrels`);
+    const pageQrels = value.relevant ?? value.relevantSlugs ?? value.relevant_slugs ?? goldRecord?.relevant ?? goldRecord?.relevant_slugs;
+    // A page-level retrieval score cannot evaluate answer-only gold. Exclude only an upstream query
+    // that explicitly declares an answer-only output and provides a non-page expected value; every
+    // other missing/empty relevance list goes to the strict normalizer and fails preflight.
+    const answerOnlyOutput = new Set(['answer-string', 'canonical-entity-id', 'time-qualified-answer', 'contradiction-explanation', 'poison-flag', 'confidence-score']);
+    const hasExpectedNonPageGold = goldRecord && Object.keys(goldRecord).some((key) => key.startsWith('expected_'));
+    if (pageQrels === undefined && typeof value.expected_output_type === 'string' && answerOnlyOutput.has(value.expected_output_type) && hasExpectedNonPageGold) {
+      excludedNonRetrievalQueryIds.push(id);
+      continue;
     }
-    excludedAbstentionQueryIds.push(id);
+    candidates.push(raw[index]);
   }
   if (new Set(excludedAbstentionQueryIds).size !== excludedAbstentionQueryIds.length) {
     throw new Error(`${family} has duplicate abstention query ids`);
@@ -194,7 +206,10 @@ export function partitionBrainBenchGoldBearingQueries(raw: unknown, family: stri
   if (new Set(excludedExampleQueryIds).size !== excludedExampleQueryIds.length) {
     throw new Error(`${family} has duplicate example query ids`);
   }
-  return { candidates, excludedAbstentionQueryIds, excludedExampleQueryIds };
+  if (new Set(excludedNonRetrievalQueryIds).size !== excludedNonRetrievalQueryIds.length) {
+    throw new Error(`${family} has duplicate non-retrieval query ids`);
+  }
+  return { candidates, excludedAbstentionQueryIds, excludedExampleQueryIds, excludedNonRetrievalQueryIds };
 }
 
 /** Convert a native chunk result list to page ranking, retaining the first appearance of each page.
