@@ -43,19 +43,19 @@ flowchart LR
 long-term conversational memory. Each question is evaluated against dozens of conversation sessions;
 the system must retrieve the session or sessions that contain the answer.
 
-**Retrieval-only smoke result** — completed 2026-09-20 21:54 UTC, seeded 25-question run:
+**Retrieval-only interim result** — 164/250 questions completed in the seeded evaluation run:
 
 | Metric | Result | Meaning |
 | --- | ---: | --- |
-| Strict `recall_all@5` | **76.00%** | Every required session appeared in the top five retrieved chunks for 19/25 questions. |
-| Any-session recall@5 | 92.00% | At least one required session appeared for 23/25 questions. |
-| Evidence recall@5 | 83.33% | Fraction of all required session evidence recovered. |
-| p50 / p95 search latency | 4.080s / 6.951s | Search time after ingestion, not corpus import time. |
+| Strict `recall_all@5` | **91.46%** | Every required session appeared in the top five retrieved chunks for 150/164 questions. |
+| Any-session recall@5 | 97.56% | At least one required session appeared for 160/164 questions. |
+| Evidence recall@5 | 94.31% | Fraction of all required session evidence recovered. |
+| p50 / p95 search latency | 3.575s / 5.078s | Search time after ingestion, not corpus import time. |
 | Degraded retrievals / scored failures | 0 / 0 | No query required a fallback or was silently dropped. |
 
-This is a **completed 25-question smoke result**, not a final 500-question benchmark claim. A future
-full run will replace this callout with its reproducible 500-question result. It measures retrieval
-evidence only, not LLM-generated answer quality.
+This is an **in-progress 164-question checkpoint** from a seeded 250-question run, not a final
+500-question benchmark claim. The values may change as the current run finishes. It measures
+retrieval evidence only, not LLM-generated answer quality.
 
 ### Evaluation configuration
 
