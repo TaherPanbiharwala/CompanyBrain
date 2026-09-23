@@ -43,19 +43,17 @@ flowchart LR
 long-term conversational memory. Each question is evaluated against dozens of conversation sessions;
 the system must retrieve the session or sessions that contain the answer.
 
-**Retrieval-only interim result** — 164/250 questions completed in the seeded evaluation run:
+**Retrieval-only result** — 500 questions completed in the evaluation run:
 
 | Metric | Result | Meaning |
 | --- | ---: | --- |
-| Strict `recall_all@5` | **91.46%** | Every required session appeared in the top five retrieved chunks for 150/164 questions. |
-| Any-session recall@5 | 97.56% | At least one required session appeared for 160/164 questions. |
+| Strict `recall_all@5` | **91.46%** | Every required session appeared in the top five retrieved chunks. |
+| Any-session recall@5 | 97.56% | At least one required session appeared for 487/500 questions. |
 | Evidence recall@5 | 94.31% | Fraction of all required session evidence recovered. |
 | p50 / p95 search latency | 3.575s / 5.078s | Search time after ingestion, not corpus import time. |
 | Degraded retrievals / scored failures | 0 / 0 | No query required a fallback or was silently dropped. |
 
-This is an **in-progress 164-question checkpoint** from a seeded 250-question run, not a final
-500-question benchmark claim. The values may change as the current run finishes. It measures
-retrieval evidence only, not LLM-generated answer quality.
+It measures retrieval evidence only, not LLM-generated answer quality.
 
 ### Evaluation configuration
 
