@@ -6,23 +6,15 @@ name: Cycle engine
 # concurrency group keeps scheduled runs serialized against EACH OTHER without blocking or being
 # blocked by ci.yml's `live` job, which uses a differently-named group.
 #
-# Cadence is hourly for M9 backward-mention discovery. Synchronous ingest keeps ordinary outgoing
-# edges fresh; the scheduled full walk is what finds an older page naming a page created later.
-#
-# M10 wave 1 adds fact_extraction — UNLIKE link_extraction, this is real per-page LLM spend (capped
-# at its own $2.00/run budgetUsdDefault, but that is a PER-RUN cap, not a daily one, and this runs
-# hourly). cb_internal.cycle_fact_extraction_candidates filters to pages whose content_hash changed
-# since their last extraction, so a steady-state hour with no new/edited pages costs near zero — but
-# confirm that is still true, and that the cadence/cap are actually wanted, before this reaches
-# master. Explicit --phase order (not the registry's alphabetical fallback) so fact_extraction always
-# has a place in the sequence a human chose, not one `registeredPhaseNames()`'s sort happened to give.
+# The schedule is deliberately disabled while CompanyBrain is not in use. Keep the manual trigger so
+# the workflow can be run intentionally after a future deployment or corpus update. Explicit --phase
+# order (not the registry's alphabetical fallback) so fact_extraction always has a place in the
+# sequence a human chose, not one `registeredPhaseNames()`'s sort happened to give.
 #
 # Never runs `bun run migrate` — assumes the target DB is already migrated, so a scheduled tick
 # can't race or interact with ci.yml's migration-serialization concerns.
 
 on:
-  schedule:
-    - cron: '0 * * * *'
   workflow_dispatch:
 
 concurrency:
